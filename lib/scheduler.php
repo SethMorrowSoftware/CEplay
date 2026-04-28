@@ -379,6 +379,9 @@ class Scheduler {
         } catch (Exception $e) {
             error_log('Watchdog sync failed: ' . $e->getMessage());
         }
+        // Same throttled freshness check for kiosks. Non-fatal if /kiosks
+        // isn't supported (helper handles the exception internally).
+        self::syncKioskStatesIfStale(120);
 
         $summary = ['groups_checked' => 0, 'groups_enforced' => 0, 'results' => []];
         $groups = DB::query('SELECT id FROM pause_groups WHERE is_active = 1');
@@ -612,7 +615,7 @@ class Scheduler {
     }
 
     /**
-     * Core state change logic: resolve games, check states, patch CenterEdge.
+     * Core state change logic: resolve games + kiosks, check states, patch CenterEdge.
      */
     private static function executeStateChange(int $groupId, string $desiredStatus, string $source, bool $syncCache = true): array {
         $results = ['changed' => [], 'skipped' => [], 'errors' => []];
@@ -620,77 +623,137 @@ class Scheduler {
         try {
             $client = new CenterEdgeClient();
 
-            // Sync fresh game states
+            // Sync fresh states for both games and kiosks. Kiosk sync is
+            // non-fatal: if the card system doesn't expose /kiosks the call
+            // throws, but games should still be controllable.
             if ($syncCache) {
                 $client->syncGamesToCache();
+                try {
+                    $client->syncKiosksToCache();
+                } catch (Exception $e) {
+                    error_log('Kiosk sync skipped during state change: ' . $e->getMessage());
+                }
             }
 
-            // Resolve group to game IDs
+            // ---- Games ----
             $gameIds = self::resolveGroupGames($groupId);
-
-            if (empty($gameIds)) {
-                self::logAction($source, $desiredStatus === 'paused' ? 'pause' : 'unpause', $groupId, '', '', true, null, ['note' => 'No games in group']);
-                return $results;
-            }
-
-            // Get current states from cache
-            $changes = [];
+            $gameChanges = [];
             foreach ($gameIds as $gameId) {
                 $cached = DB::queryOne('SELECT * FROM game_state_cache WHERE game_id = :p0', [$gameId]);
                 if (!$cached) {
                     continue;
                 }
-
-                // Never touch outOfService games
                 if ($cached['operation_status'] === 'outOfService') {
                     $results['skipped'][] = ['game_id' => $gameId, 'game_name' => $cached['game_name'], 'reason' => 'outOfService'];
                     self::logAction($source, 'skip', $groupId, $gameId, $cached['game_name'], true, null, ['reason' => 'outOfService']);
                     continue;
                 }
-
-                // Skip if already in desired state
                 if ($cached['operation_status'] === $desiredStatus) {
                     $results['skipped'][] = ['game_id' => $gameId, 'game_name' => $cached['game_name'], 'reason' => 'already_' . $desiredStatus];
                     continue;
                 }
-
-                $changes[$gameId] = $desiredStatus;
+                $gameChanges[$gameId] = $desiredStatus;
             }
 
-            if (empty($changes)) {
-                return $results;
+            if (!empty($gameChanges)) {
+                $patchResult = $client->patchGames($gameChanges);
+
+                foreach ($patchResult['games'] ?? [] as $game) {
+                    $gid = (string)$game['id'];
+                    $gname = $game['name'] ?? '';
+                    $results['changed'][] = ['game_id' => $gid, 'game_name' => $gname, 'new_status' => $desiredStatus];
+
+                    DB::execute(
+                        'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
+                        [$game['operationStatus'] ?? $desiredStatus, $gid]
+                    );
+
+                    $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
+                    self::logAction($source, $actionName, $groupId, $gid, $gname, true);
+                }
+
+                foreach ($patchResult['errors'] ?? [] as $gid => $error) {
+                    $gname = '';
+                    $cached = DB::queryOne('SELECT game_name FROM game_state_cache WHERE game_id = :p0', [(string)$gid]);
+                    if ($cached) $gname = $cached['game_name'];
+
+                    $errorMsg = $error['message'] ?? 'Unknown error';
+                    $results['errors'][] = ['game_id' => (string)$gid, 'game_name' => $gname, 'error' => $errorMsg];
+
+                    $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
+                    self::logAction($source, $actionName, $groupId, (string)$gid, $gname, false, $errorMsg);
+                }
             }
 
-            // Patch games via CenterEdge API
-            $patchResult = $client->patchGames($changes);
-
-            // Process successes
-            foreach ($patchResult['games'] ?? [] as $game) {
-                $gid = (string)$game['id'];
-                $gname = $game['name'] ?? '';
-                $results['changed'][] = ['game_id' => $gid, 'game_name' => $gname, 'new_status' => $desiredStatus];
-
-                // Update cache
-                DB::execute(
-                    'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
-                    [$game['operationStatus'] ?? $desiredStatus, $gid]
-                );
-
-                $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
-                self::logAction($source, $actionName, $groupId, $gid, $gname, true);
+            // ---- Kiosks ----
+            // Same logic as games. A pause-group action targets every kiosk
+            // attached to the group, with the same outOfService / already-in-state
+            // skip rules. Kiosks reporting no operationStatus (treated as
+            // "unknown" per the API spec) are also skipped.
+            $kioskIds = self::resolveGroupKiosks($groupId);
+            $kioskChanges = [];
+            foreach ($kioskIds as $kioskId) {
+                $cached = DB::queryOne('SELECT * FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
+                if (!$cached) {
+                    continue;
+                }
+                $cachedStatus = $cached['operation_status'];
+                if ($cachedStatus === '' || $cachedStatus === null) {
+                    $results['skipped'][] = ['kiosk_id' => $kioskId, 'kiosk_name' => $cached['kiosk_name'], 'reason' => 'unknown_status'];
+                    continue;
+                }
+                if ($cachedStatus === 'outOfService') {
+                    $results['skipped'][] = ['kiosk_id' => $kioskId, 'kiosk_name' => $cached['kiosk_name'], 'reason' => 'outOfService'];
+                    self::logAction($source, 'skip', $groupId, $kioskId, $cached['kiosk_name'], true, null, ['reason' => 'outOfService', 'asset' => 'kiosk']);
+                    continue;
+                }
+                if ($cachedStatus === $desiredStatus) {
+                    $results['skipped'][] = ['kiosk_id' => $kioskId, 'kiosk_name' => $cached['kiosk_name'], 'reason' => 'already_' . $desiredStatus];
+                    continue;
+                }
+                $kioskChanges[$kioskId] = $desiredStatus;
             }
 
-            // Process errors
-            foreach ($patchResult['errors'] ?? [] as $gid => $error) {
-                $gname = '';
-                $cached = DB::queryOne('SELECT game_name FROM game_state_cache WHERE game_id = :p0', [(string)$gid]);
-                if ($cached) $gname = $cached['game_name'];
+            if (!empty($kioskChanges)) {
+                try {
+                    $kioskPatchResult = $client->patchKiosks($kioskChanges);
 
-                $errorMsg = $error['message'] ?? 'Unknown error';
-                $results['errors'][] = ['game_id' => (string)$gid, 'game_name' => $gname, 'error' => $errorMsg];
+                    foreach ($kioskPatchResult['kiosks'] ?? [] as $kiosk) {
+                        $kid = (string)$kiosk['id'];
+                        $kname = $kiosk['name'] ?? '';
+                        $results['changed'][] = ['kiosk_id' => $kid, 'kiosk_name' => $kname, 'new_status' => $desiredStatus];
 
-                $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
-                self::logAction($source, $actionName, $groupId, (string)$gid, $gname, false, $errorMsg);
+                        DB::execute(
+                            'UPDATE kiosk_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE kiosk_id = :p1',
+                            [$kiosk['operationStatus'] ?? $desiredStatus, $kid]
+                        );
+
+                        $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
+                        self::logAction($source, $actionName, $groupId, $kid, $kname, true, null, ['asset' => 'kiosk']);
+                    }
+
+                    foreach ($kioskPatchResult['errors'] ?? [] as $kid => $error) {
+                        $kname = '';
+                        $cached = DB::queryOne('SELECT kiosk_name FROM kiosk_state_cache WHERE kiosk_id = :p0', [(string)$kid]);
+                        if ($cached) $kname = $cached['kiosk_name'];
+
+                        $errorMsg = is_array($error) ? ($error['message'] ?? json_encode($error)) : (string)$error;
+                        $results['errors'][] = ['kiosk_id' => (string)$kid, 'kiosk_name' => $kname, 'error' => $errorMsg];
+
+                        $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
+                        self::logAction($source, $actionName, $groupId, (string)$kid, $kname, false, $errorMsg, ['asset' => 'kiosk']);
+                    }
+                } catch (Exception $e) {
+                    // The card system may not support PATCH /kiosks. Don't fail
+                    // the whole action — the games already got patched above.
+                    $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
+                    self::logAction($source, $actionName, $groupId, '', '', false, $e->getMessage(), ['asset' => 'kiosk']);
+                    $results['errors'][] = ['asset' => 'kiosk', 'error' => $e->getMessage()];
+                }
+            }
+
+            if (empty($gameIds) && empty($kioskIds)) {
+                self::logAction($source, $desiredStatus === 'paused' ? 'pause' : 'unpause', $groupId, '', '', true, null, ['note' => 'No games or kiosks in group']);
             }
         } catch (Exception $e) {
             $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
@@ -743,6 +806,22 @@ class Scheduler {
     }
 
     /**
+     * Resolve a pause group to a list of unique kiosk IDs.
+     * Membership is by individual kiosk only (no category-based assignment).
+     */
+    public static function resolveGroupKiosks(int $groupId): array {
+        $rows = DB::query(
+            'SELECT kiosk_id FROM pause_group_kiosks WHERE pause_group_id = :p0',
+            [$groupId]
+        );
+        $ids = [];
+        foreach ($rows as $row) {
+            $ids[$row['kiosk_id']] = true;
+        }
+        return array_keys($ids);
+    }
+
+    /**
      * Sync game states from CenterEdge to cache.
      */
     public static function syncGameStates(): int {
@@ -776,6 +855,28 @@ class Scheduler {
             }
         }
         return self::syncGameStates();
+    }
+
+    /**
+     * Sync kiosk states only if the cache is older than $maxAgeSeconds.
+     * Returns the number of kiosks synced, or 0 if the cache is still fresh.
+     * Returns 0 (not throws) when the upstream /kiosks endpoint is unsupported,
+     * so the watchdog stays alive on systems without kiosks.
+     */
+    public static function syncKioskStatesIfStale(int $maxAgeSeconds = 120): int {
+        $oldest = DB::queryOne('SELECT MIN(last_synced_at) as oldest FROM kiosk_state_cache');
+        if ($oldest && $oldest['oldest']) {
+            $ts = strtotime($oldest['oldest'] . ' UTC');
+            if ($ts !== false && (time() - $ts) < $maxAgeSeconds) {
+                return 0;
+            }
+        }
+        try {
+            return self::syncKioskStates();
+        } catch (Exception $e) {
+            error_log('syncKioskStatesIfStale: ' . $e->getMessage());
+            return 0;
+        }
     }
 
     /**
@@ -916,7 +1017,8 @@ class Scheduler {
 
             $desiredStatus = ($desiredAction === 'pause') ? 'paused' : 'enabled';
 
-            // Quick check: are any games in the wrong state? (cache-only, fast)
+            // Quick check: are any games OR kiosks in the wrong state?
+            // Cache-only — no CenterEdge calls — so this stays cheap.
             $gameIds = self::resolveGroupGames($groupId);
             $needsEnforcement = false;
             foreach ($gameIds as $gameId) {
@@ -928,6 +1030,22 @@ class Scheduler {
                     && $cached['operation_status'] !== 'outOfService') {
                     $needsEnforcement = true;
                     break;
+                }
+            }
+            if (!$needsEnforcement) {
+                $kioskIds = self::resolveGroupKiosks($groupId);
+                foreach ($kioskIds as $kid) {
+                    $cached = DB::queryOne(
+                        'SELECT operation_status FROM kiosk_state_cache WHERE kiosk_id = :p0',
+                        [$kid]
+                    );
+                    if ($cached
+                        && $cached['operation_status'] !== ''
+                        && $cached['operation_status'] !== $desiredStatus
+                        && $cached['operation_status'] !== 'outOfService') {
+                        $needsEnforcement = true;
+                        break;
+                    }
                 }
             }
 

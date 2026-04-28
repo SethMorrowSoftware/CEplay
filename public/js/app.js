@@ -206,20 +206,10 @@ const App = {
 
         const navItems = [
             { hash: '#/dashboard', icon: '\u25A3', label: 'Dashboard' },
-            { hash: '#/revenue', icon: '\u2261', label: 'Analytics' },
-            { hash: '#/announcements', icon: '\u2709', label: 'Announcements' },
             { hash: '#/groups', icon: '\u25CB', label: 'Pause Groups' },
             { hash: '#/kiosks', icon: '\u25A4', label: 'Kiosks' },
             { hash: '#/schedules', icon: '\u25F4', label: 'Schedules' },
             { hash: '#/overrides', icon: '\u26A1', label: 'Overrides' },
-            { hash: '#/attractions', icon: '\u2302', label: 'Attractions' },
-            { hash: '#/parties', icon: '\u2606', label: 'Party Bookings' },
-            { hash: '#/maintenance', icon: '\u2692', label: 'Maintenance' },
-            { hash: '#/cards', icon: '\u2660', label: 'Card Management' },
-            { hash: '#/card-lookup', icon: '\u2316', label: 'Card Lookup' },
-            { hash: '#/game-explorer', icon: '\u265F', label: 'Game Explorer' },
-            { hash: '#/privileges', icon: '\u2605', label: 'Privileges & Time' },
-            { hash: '#/system', icon: '\u2139', label: 'System Info' },
             { hash: '#/logs', icon: '\u2630', label: 'Action Log' },
             { hash: '#/settings', icon: '\u2699', label: 'Settings' },
         ];

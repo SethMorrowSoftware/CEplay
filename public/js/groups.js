@@ -77,7 +77,7 @@
                         ].filter(Boolean)),
                         App.el('div', { className: 'flex-center' }, [
                             App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
-                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' }),
+                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' + ((group.kiosk_stats && group.kiosk_stats.total) ? ', ' + group.kiosk_stats.total + ' kiosk' + (group.kiosk_stats.total !== 1 ? 's' : '') : '') }),
                                 App.el('div', { textContent: (group.schedule_count || 0) + ' schedules' })
                             ]),
                             quickActions
@@ -112,26 +112,34 @@
         container.appendChild(formWrap);
 
         try {
-            // Load data in parallel
-            const promises = [API.get('games'), API.get('games/categories')];
+            // Load data in parallel. Kiosks are best-effort: not every card
+            // system supports the /kiosks endpoint, so a failure here just
+            // means the kiosk picker stays empty.
+            const promises = [
+                API.get('games'),
+                API.get('games/categories'),
+                API.get('kiosks').catch(function() { return { kiosks: [] }; })
+            ];
             if (isEdit) promises.push(API.get('groups/' + encodeURIComponent(groupId)));
             const results = await Promise.all(promises);
 
             const allGames = (results[0] || {}).games || [];
             const allCategories = (results[1] || {}).categories || [];
-            const existing = isEdit ? results[2] : null;
+            const allKiosks = (results[2] || {}).kiosks || [];
+            const existing = isEdit ? results[3] : null;
 
             formWrap.innerHTML = '';
-            renderForm(formWrap, allGames, allCategories, existing, groupId);
+            renderForm(formWrap, allGames, allCategories, allKiosks, existing, groupId);
         } catch (err) {
             formWrap.innerHTML = '';
             App.toast(err.message, 'error');
         }
     }
 
-    function renderForm(container, allGames, allCategories, existing, groupId) {
+    function renderForm(container, allGames, allCategories, allKiosks, existing, groupId) {
         const selectedCategories = new Set((existing?.categories || []).map(c => c.category_id));
         const selectedGames = new Set((existing?.games || []).map(g => g.game_id));
+        const selectedKiosks = new Set((existing?.kiosks || []).map(k => k.kiosk_id));
 
         // Name
         const nameInput = App.el('input', { className: 'form-input', type: 'text', value: existing?.name || '', placeholder: 'e.g., Redemption Games' });
@@ -348,6 +356,41 @@
         showFilter.addEventListener('change', () => { pickerPage = 1; renderGamePicker(); });
         renderGamePicker();
 
+        // Kiosks — simple checkbox list. There aren't typically many kiosks
+        // (handful per venue), so the games picker's pagination is overkill.
+        container.appendChild(App.el('div', { className: 'form-group mt-2' }, [
+            App.el('label', { className: 'form-label', textContent: 'Kiosks' }),
+            App.el('p', { className: 'form-help', textContent: 'Selected kiosks are paused/unpaused with the group, alongside its games.' })
+        ]));
+
+        const kioskList = App.el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' } });
+        if (allKiosks.length === 0) {
+            kioskList.appendChild(App.el('p', { className: 'text-muted text-sm', textContent: 'No kiosks available. (The card system may not support the /kiosks endpoint, or kiosks have not been synced yet.)' }));
+        } else {
+            allKiosks.forEach(function(k) {
+                // Per the kiosk API spec, a kiosk reporting no operationStatus
+                // must NOT be pause-controlled — disable the checkbox so it
+                // can't be added to a pause group by mistake.
+                const unknown = !k.operationStatus;
+                const cb = App.el('input', { type: 'checkbox', value: String(k.id) });
+                cb.checked = selectedKiosks.has(k.id);
+                if (unknown) {
+                    cb.disabled = true;
+                    cb.title = 'Kiosk operation status unknown — cannot pause via API';
+                }
+                cb.addEventListener('change', function() {
+                    if (cb.checked) selectedKiosks.add(k.id);
+                    else selectedKiosks.delete(k.id);
+                });
+                const labelTxt = (k.name || k.id) + (unknown ? ' (status unknown)' : (' (' + k.operationStatus + ')'));
+                kioskList.appendChild(App.el('label', { className: 'checkbox-label' }, [
+                    cb,
+                    App.el('span', { textContent: labelTxt })
+                ]));
+            });
+        }
+        container.appendChild(kioskList);
+
         // Actions
         const saveBtn = App.el('button', { className: 'btn btn-primary', textContent: groupId ? 'Save Changes' : 'Create Group' });
         const deleteBtn = groupId ? App.el('button', { className: 'btn btn-danger', textContent: 'Delete', onClick: async () => {
@@ -372,7 +415,8 @@
                 description: descInput.value.trim(),
                 is_active: activeCheck.checked ? 1 : 0,
                 category_ids: Array.from(selectedCategories),
-                game_ids: Array.from(selectedGames)
+                game_ids: Array.from(selectedGames),
+                kiosk_ids: Array.from(selectedKiosks)
             };
 
             saveBtn.disabled = true;
@@ -458,7 +502,7 @@
                         ].filter(Boolean)),
                         App.el('div', { className: 'flex-center' }, [
                             App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
-                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' }),
+                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' + ((group.kiosk_stats && group.kiosk_stats.total) ? ', ' + group.kiosk_stats.total + ' kiosk' + (group.kiosk_stats.total !== 1 ? 's' : '') : '') }),
                                 App.el('div', { textContent: (group.schedule_count || 0) + ' schedules' })
                             ]),
                             quickActions

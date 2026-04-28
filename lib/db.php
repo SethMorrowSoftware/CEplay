@@ -88,6 +88,16 @@ class DB {
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_pgg_group ON pause_group_games(pause_group_id)');
 
+        // Kiosks linked to a pause group, paused/unpaused alongside the group's games.
+        $db->exec('CREATE TABLE IF NOT EXISTS pause_group_kiosks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pause_group_id INTEGER NOT NULL,
+            kiosk_id TEXT NOT NULL,
+            kiosk_name TEXT NOT NULL DEFAULT \'\',
+            FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE CASCADE
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_pgk_group ON pause_group_kiosks(pause_group_id)');
+
         $db->exec('CREATE TABLE IF NOT EXISTS schedules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pause_group_id INTEGER NOT NULL,
@@ -180,110 +190,23 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_ip ON login_attempts(ip_address)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_time ON login_attempts(attempted_at)');
 
-        // ---- Attractions / Rides ----
-        $db->exec('CREATE TABLE IF NOT EXISTS attractions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL DEFAULT \'ride\',
-            description TEXT DEFAULT \'\',
-            location TEXT DEFAULT \'\',
-            capacity INTEGER DEFAULT 0,
-            min_height_inches INTEGER DEFAULT 0,
-            max_height_inches INTEGER DEFAULT 0,
-            duration_minutes INTEGER DEFAULT 0,
-            status TEXT NOT NULL DEFAULT \'open\',
-            centeredge_game_id TEXT DEFAULT NULL,
-            requires_wristband INTEGER NOT NULL DEFAULT 0,
-            credit_cost INTEGER NOT NULL DEFAULT 0,
-            image_url TEXT DEFAULT \'\',
-            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
-        )');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_attractions_type ON attractions(type)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_attractions_status ON attractions(status)');
-
-        // ---- Maintenance Tracker ----
-        $db->exec('CREATE TABLE IF NOT EXISTS maintenance_tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset_type TEXT NOT NULL DEFAULT \'game\',
-            asset_id TEXT NOT NULL,
-            asset_name TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT DEFAULT \'\',
-            priority TEXT NOT NULL DEFAULT \'medium\',
-            status TEXT NOT NULL DEFAULT \'open\',
-            assigned_to TEXT DEFAULT \'\',
-            reported_by INTEGER,
-            resolved_by INTEGER,
-            resolution_notes TEXT DEFAULT \'\',
-            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            resolved_at TEXT DEFAULT NULL,
-            due_date TEXT DEFAULT NULL,
-            FOREIGN KEY (reported_by) REFERENCES admin_users(id),
-            FOREIGN KEY (resolved_by) REFERENCES admin_users(id)
-        )');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_maint_status ON maintenance_tickets(status)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_maint_priority ON maintenance_tickets(priority)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_maint_asset ON maintenance_tickets(asset_type, asset_id)');
-
-        // ---- Party / Event Bookings ----
-        $db->exec('CREATE TABLE IF NOT EXISTS party_packages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT DEFAULT \'\',
-            duration_minutes INTEGER NOT NULL DEFAULT 120,
-            max_guests INTEGER NOT NULL DEFAULT 20,
-            price_cents INTEGER NOT NULL DEFAULT 0,
-            includes_food INTEGER NOT NULL DEFAULT 0,
-            includes_drinks INTEGER NOT NULL DEFAULT 0,
-            game_credits INTEGER NOT NULL DEFAULT 0,
-            ride_passes INTEGER NOT NULL DEFAULT 0,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
-        )');
-
-        $db->exec('CREATE TABLE IF NOT EXISTS party_bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            package_id INTEGER,
-            guest_name TEXT NOT NULL,
-            guest_phone TEXT DEFAULT \'\',
-            guest_email TEXT DEFAULT \'\',
-            party_date TEXT NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            guest_count INTEGER NOT NULL DEFAULT 10,
-            special_requests TEXT DEFAULT \'\',
-            status TEXT NOT NULL DEFAULT \'confirmed\',
-            deposit_paid INTEGER NOT NULL DEFAULT 0,
-            total_price_cents INTEGER NOT NULL DEFAULT 0,
-            assigned_area TEXT DEFAULT \'\',
-            created_by INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            FOREIGN KEY (package_id) REFERENCES party_packages(id) ON DELETE SET NULL,
-            FOREIGN KEY (created_by) REFERENCES admin_users(id)
-        )');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_bookings_date ON party_bookings(party_date)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_bookings_status ON party_bookings(status)');
-
-        // ---- Staff Announcements ----
-        $db->exec('CREATE TABLE IF NOT EXISTS announcements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL,
-            priority TEXT NOT NULL DEFAULT \'normal\',
-            category TEXT NOT NULL DEFAULT \'general\',
-            is_pinned INTEGER NOT NULL DEFAULT 0,
-            expires_at TEXT DEFAULT NULL,
-            created_by INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
-            FOREIGN KEY (created_by) REFERENCES admin_users(id)
-        )');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_announce_pinned ON announcements(is_pinned)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_announce_expires ON announcements(expires_at)');
+        // One-time cleanup of tables from removed feature modules.
+        // The card/parties/maintenance/etc. modules were dropped to scope this
+        // app to pause-groups + kiosks only. DROP IF EXISTS is safe to run on
+        // every boot — it's a no-op once the tables are gone.
+        foreach ([
+            'attractions',
+            'maintenance_tickets',
+            'party_bookings',
+            'party_packages',
+            'announcements',
+        ] as $obsoleteTable) {
+            try {
+                $db->exec("DROP TABLE IF EXISTS $obsoleteTable");
+            } catch (Exception $e) {
+                error_log("Failed to drop obsolete table $obsoleteTable: " . $e->getMessage());
+            }
+        }
     }
 
     /**
