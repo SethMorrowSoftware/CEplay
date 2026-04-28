@@ -50,6 +50,16 @@ try {
         echo "  Continuing with cached data...\n";
     }
 
+    // Step 1b: Sync kiosks (best-effort; the card system may not support the
+    // /kiosks endpoint at all — the call will throw a 404 and we just continue).
+    echo "Syncing kiosks from CenterEdge...\n";
+    try {
+        $kioskCount = Scheduler::syncKioskStates();
+        echo "  Synced $kioskCount kiosks.\n";
+    } catch (Exception $e) {
+        echo "  Note: kiosk sync skipped — " . $e->getMessage() . "\n";
+    }
+
     // Step 2: Execute any missed actions from earlier
     echo "Checking for missed actions...\n";
     Scheduler::executeMissedActions($today);

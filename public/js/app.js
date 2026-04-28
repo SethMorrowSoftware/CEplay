@@ -209,6 +209,7 @@ const App = {
             { hash: '#/revenue', icon: '\u2261', label: 'Analytics' },
             { hash: '#/announcements', icon: '\u2709', label: 'Announcements' },
             { hash: '#/groups', icon: '\u25CB', label: 'Pause Groups' },
+            { hash: '#/kiosks', icon: '\u25A4', label: 'Kiosks' },
             { hash: '#/schedules', icon: '\u25F4', label: 'Schedules' },
             { hash: '#/overrides', icon: '\u26A1', label: 'Overrides' },
             { hash: '#/attractions', icon: '\u2302', label: 'Attractions' },
