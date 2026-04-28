@@ -182,6 +182,29 @@ class DB {
             last_synced_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
 
+        // Pending retries for game/kiosk pause/unpause actions that failed
+        // because the asset was in use (or any other transient per-asset
+        // error). The watchdog re-attempts these once per cycle and gives up
+        // after max_attempts. UNIQUE(asset_type, asset_id) means a newer
+        // intent supersedes any older pending retry via UPSERT.
+        $db->exec('CREATE TABLE IF NOT EXISTS action_retries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_type TEXT NOT NULL,
+            asset_id TEXT NOT NULL,
+            desired_status TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT \'unknown\',
+            pause_group_id INTEGER,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 10,
+            last_attempted_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            UNIQUE(asset_type, asset_id),
+            FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE SET NULL
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_ar_asset ON action_retries(asset_type, asset_id)');
+
         $db->exec('CREATE TABLE IF NOT EXISTS login_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ip_address TEXT NOT NULL,

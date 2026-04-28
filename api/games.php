@@ -7,6 +7,7 @@
  */
 
 require_once __DIR__ . '/../lib/centeredge_client.php';
+require_once __DIR__ . '/../lib/scheduler.php';
 
 function handleGames(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
@@ -36,9 +37,13 @@ function handleGames(string $method, array $parts, ?array $input): void {
             }
         }
 
-        // Parse categories JSON for each game
-        $games = array_map(function ($g) {
+        $pendingRetries = Scheduler::getPendingRetriesByType('game');
+
+        // Parse categories JSON for each game; attach pending retry status
+        // so the UI can surface "retry 3/10" and the last error.
+        $games = array_map(function ($g) use ($pendingRetries) {
             $g['categories'] = json_decode($g['categories'], true) ?: [];
+            $g['pending_retry'] = $pendingRetries[$g['game_id']] ?? null;
             return $g;
         }, $cached);
 
@@ -106,12 +111,24 @@ function handleGames(string $method, array $parts, ?array $input): void {
 
         $result = $client->patchGames($changes);
 
-        // Update cache
+        // Update cache only for games that actually succeeded, and reconcile
+        // the retry queue: clear retries on success, queue/refresh on failure.
+        // Older code wrote optimistically for every requested change, which
+        // meant the cache would lie if the upstream API rejected the patch.
+        $errors = $result['errors'] ?? [];
         foreach ($changes as $gameId => $status) {
-            DB::execute(
-                'UPDATE game_state_cache SET operation_status = :p0 WHERE game_id = :p1',
-                [$status, (string)$gameId]
-            );
+            $gid = (string)$gameId;
+            if (!isset($errors[$gameId]) && !isset($errors[$gid])) {
+                DB::execute(
+                    'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
+                    [$status, $gid]
+                );
+                Scheduler::clearRetry('game', $gid);
+            } else {
+                $err = $errors[$gameId] ?? $errors[$gid];
+                $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
+                Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errorText);
+            }
         }
 
         echo json_encode($result);

@@ -81,6 +81,19 @@ try {
         error_log("[" . date('c') . "] watchdog queueAtJobs error: " . $e->getMessage());
     }
 
+    // Re-attempt any pause/unpause actions that previously failed at the
+    // source (e.g. kiosk in use). Cap is enforced inside processRetries —
+    // assets that hit max_attempts are dropped with a give-up audit entry.
+    try {
+        $retrySummary = Scheduler::processRetries();
+        if (!empty($retrySummary['attempted'])) {
+            echo "[" . date('c') . "] watchdog retries: " . json_encode($retrySummary) . "\n";
+        }
+    } catch (Exception $e) {
+        $errors[] = "processRetries: " . $e->getMessage();
+        error_log("[" . date('c') . "] watchdog processRetries error: " . $e->getMessage());
+    }
+
     // Write heartbeat even if individual steps had transient errors,
     // so long as the watchdog itself is running
     Scheduler::writeHeartbeat('watchdog');
