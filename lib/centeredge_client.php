@@ -1,0 +1,776 @@
+<?php
+/**
+ * CenterEdge Card System API client.
+ * Handles authentication (SHA-1 hash), token caching, and all game management endpoints.
+ */
+
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/crypto.php';
+
+class CenterEdgeClient {
+    private const MAX_PAGINATION_LOOPS = 1000;
+    private ?string $baseUrl = null;
+    private ?string $username = null;
+    private ?string $password = null;
+    private ?string $apiKey = null;
+    private ?string $bearerToken = null;
+    private ?string $tokenFetchedAt = null;
+
+    public function __construct() {
+        $this->loadConfig();
+    }
+
+    /**
+     * Load API configuration from the database.
+     */
+    private function loadConfig(): void {
+        $this->baseUrl = DB::getConfig('base_url');
+        $this->username = DB::getConfig('username');
+        $this->password = DB::getConfig('password');
+        $this->apiKey = DB::getConfig('api_key');
+        $this->bearerToken = DB::getConfig('bearer_token');
+        $this->tokenFetchedAt = DB::getConfig('token_fetched_at');
+    }
+
+    /**
+     * Check if the client is configured with API credentials.
+     */
+    public function isConfigured(): bool {
+        return !empty($this->baseUrl) && !empty($this->username) && !empty($this->password);
+    }
+
+    // -----------------------------------------------
+    // Authentication
+    // -----------------------------------------------
+
+    /**
+     * Authenticate with CenterEdge using SHA-1 hash flow.
+     * Returns the bearer token.
+     */
+    public function authenticate(): string {
+        if (!$this->isConfigured()) {
+            throw new RuntimeException('CenterEdge API is not configured. Please set up API credentials in Settings.');
+        }
+
+        // Generate timestamp in ISO 8601 UTC with milliseconds
+        $dt = new DateTime('now', new DateTimeZone('UTC'));
+        $requestTimestamp = $dt->format('Y-m-d\TH:i:s.v\Z');
+
+        // Build the hash: SHA-1(username + password + requestTimestamp), then base64
+        $concat = $this->username . $this->password . $requestTimestamp;
+        $rawHash = sha1($concat, true);
+        $passwordHash = base64_encode($rawHash);
+
+        $body = [
+            'username'         => $this->username,
+            'passwordHash'     => $passwordHash,
+            'password'         => $this->password,
+            'requestTimestamp'  => $requestTimestamp,
+        ];
+
+        $result = $this->httpRequest('POST', '/login', $body, false);
+
+        if (!isset($result['bearerToken'])) {
+            throw new RuntimeException('CenterEdge login failed: no bearer token in response.');
+        }
+
+        $this->bearerToken = $result['bearerToken'];
+        $this->tokenFetchedAt = gmdate('Y-m-d H:i:s');
+
+        // Cache the token encrypted in the database
+        DB::setConfig('bearer_token', $this->bearerToken, true);
+        DB::setConfig('token_fetched_at', $this->tokenFetchedAt, false);
+
+        return $this->bearerToken;
+    }
+
+    /**
+     * Get a valid bearer token (reuses cached if fresh enough).
+     */
+    private function getToken(): string {
+        if ($this->bearerToken && !$this->tokenNeedsRefresh()) {
+            return $this->bearerToken;
+        }
+        return $this->authenticate();
+    }
+
+    /**
+     * Check if the cached token needs refresh (older than TOKEN_MAX_AGE).
+     */
+    private function tokenNeedsRefresh(): bool {
+        if (!$this->tokenFetchedAt) {
+            return true;
+        }
+        $fetchedAt = strtotime($this->tokenFetchedAt . ' UTC');
+        return (time() - $fetchedAt) > TOKEN_MAX_AGE;
+    }
+
+    // -----------------------------------------------
+    // Game Endpoints
+    // -----------------------------------------------
+
+    /**
+     * Fetch ALL games from CenterEdge (handles pagination).
+     * Returns array of game objects.
+     */
+    public function getGames(): array {
+        $allGames = [];
+        $skip = 0;
+        $take = GAMES_PAGE_SIZE;
+        $pagesFetched = 0;
+
+        do {
+            $pagesFetched++;
+            if ($pagesFetched > self::MAX_PAGINATION_LOOPS) {
+                throw new RuntimeException('CenterEdge API pagination exceeded safety limit while fetching games. Check API pagination behavior.');
+            }
+
+            $result = $this->request('GET', '/games', null, ['skip' => $skip, 'take' => $take]);
+            $games = $result['games'] ?? [];
+            $allGames = array_merge($allGames, $games);
+            $totalCount = $result['totalCount'] ?? null;
+            $skip += count($games);
+
+            // Stop if we got fewer than requested or reached totalCount
+            if (count($games) < $take) {
+                break;
+            }
+            if ($totalCount !== null && $skip >= $totalCount) {
+                break;
+            }
+        } while (true);
+
+        return $allGames;
+    }
+
+    /**
+     * Fetch ALL game categories from CenterEdge.
+     * Returns array of category objects.
+     */
+    public function getCategories(): array {
+        $allCategories = [];
+        $skip = 0;
+        $take = GAMES_PAGE_SIZE;
+        $pagesFetched = 0;
+
+        do {
+            $pagesFetched++;
+            if ($pagesFetched > self::MAX_PAGINATION_LOOPS) {
+                throw new RuntimeException('CenterEdge API pagination exceeded safety limit while fetching categories. Check API pagination behavior.');
+            }
+
+            $result = $this->request('GET', '/games/categories', null, ['skip' => $skip, 'take' => $take]);
+            $categories = $result['categories'] ?? [];
+            $allCategories = array_merge($allCategories, $categories);
+            $totalCount = $result['totalCount'] ?? null;
+            $skip += count($categories);
+
+            if (count($categories) < $take) {
+                break;
+            }
+            if ($totalCount !== null && $skip >= $totalCount) {
+                break;
+            }
+        } while (true);
+
+        return $allCategories;
+    }
+
+    /**
+     * Patch game operation statuses using JSON Patch format.
+     * $changes = ['gameId' => 'paused', 'gameId2' => 'enabled', ...]
+     * Returns ['games' => [...], 'errors' => [...]]
+     */
+    public function patchGames(array $changes): array {
+        if (empty($changes)) {
+            return ['games' => [], 'errors' => []];
+        }
+
+        $gamesPayload = [];
+        foreach ($changes as $gameId => $status) {
+            if (!in_array($status, ['enabled', 'paused', 'outOfService'], true)) {
+                throw new RuntimeException("Invalid operationStatus '$status' for game '$gameId'.");
+            }
+            $gamesPayload[(string)$gameId] = [
+                ['op' => 'replace', 'path' => '/operationStatus', 'value' => $status]
+            ];
+        }
+
+        $result = $this->request('PATCH', '/games', ['games' => $gamesPayload]);
+
+        return [
+            'games' => is_array($result['games'] ?? null) ? $result['games'] : [],
+            'errors' => is_array($result['errors'] ?? null) ? $result['errors'] : [],
+        ];
+    }
+
+    /**
+     * Get API capabilities.
+     */
+    public function getCapabilities(): array {
+        return $this->request('GET', '/capabilities');
+    }
+
+    // -----------------------------------------------
+    // Card Endpoints
+    // -----------------------------------------------
+
+    /**
+     * Get card information by card number.
+     */
+    public function getCard(string $cardNumber): array {
+        return $this->request('GET', '/cards/' . urlencode($cardNumber));
+    }
+
+    /**
+     * Create an empty card.
+     */
+    public function createEmptyCard(string $cardNumber, array $operator, ?array $customer = null): array {
+        $body = ['operator' => $operator];
+        if ($customer) {
+            $body['customer'] = $customer;
+        }
+        return $this->request('POST', '/cards/' . urlencode($cardNumber), $body);
+    }
+
+    /**
+     * Wipe (delete) a card.
+     * Returns response array or empty array for 204.
+     */
+    public function wipeCard(string $cardNumber, array $operator): array {
+        return $this->requestWithDelete('DELETE', '/cards/' . urlencode($cardNumber), ['operator' => $operator]);
+    }
+
+    /**
+     * Combine two cards (transfer source into destination).
+     */
+    public function combineCards(string $destinationCardNumber, string $sourceCardNumber, array $operator): array {
+        return $this->request('POST', '/cards/' . urlencode($destinationCardNumber) . '/combine', [
+            'sourceCardNumber' => $sourceCardNumber,
+            'operator' => $operator,
+        ]);
+    }
+
+    /**
+     * Validate a card PIN.
+     */
+    public function validateCardPin(string $cardNumber, ?string $pin = null): array {
+        $query = [];
+        if ($pin !== null) {
+            $query['validate'] = $pin;
+        }
+        return $this->request('GET', '/cards/' . urlencode($cardNumber) . '/pin', null, $query);
+    }
+
+    /**
+     * Get card transactions (paginated).
+     */
+    public function getCardTransactions(string $cardNumber, int $skip = 0, int $take = 100): array {
+        return $this->request('GET', '/cards/' . urlencode($cardNumber) . '/transactions', null, [
+            'skip' => $skip,
+            'take' => $take,
+        ]);
+    }
+
+    /**
+     * Create a card transaction (adjustment or game play).
+     */
+    public function createCardTransaction(string $cardNumber, array $transaction): array {
+        return $this->request('POST', '/cards/' . urlencode($cardNumber) . '/transactions', $transaction);
+    }
+
+    /**
+     * Get a specific card transaction by ID.
+     */
+    public function getCardTransaction(string $cardNumber, int $transactionId): array {
+        return $this->request('GET', '/cards/' . urlencode($cardNumber) . '/transactions/' . $transactionId);
+    }
+
+    /**
+     * Bulk issue cards.
+     */
+    public function bulkIssueCards(array $bulkIssueRequest): array {
+        return $this->request('POST', '/cards/bulkIssue', $bulkIssueRequest);
+    }
+
+    // -----------------------------------------------
+    // Single Game & Game Actions
+    // -----------------------------------------------
+
+    /**
+     * Get a single game by ID.
+     */
+    public function getGame(string $gameId): array {
+        return $this->request('GET', '/games/' . urlencode($gameId));
+    }
+
+    /**
+     * Perform an action on a game.
+     */
+    public function performGameAction(string $gameId, string $actionId, array $operator): array {
+        return $this->request('POST', '/games/' . urlencode($gameId) . '/performAction', [
+            'actionId' => $actionId,
+            'operator' => $operator,
+        ]);
+    }
+
+    /**
+     * Get game transaction feed (paginated via sinceId cursor).
+     */
+    public function getGameTransactions(string $sinceId, ?string $feedName = null, int $take = 100): array {
+        $query = ['sinceId' => $sinceId, 'take' => $take];
+        if ($feedName) {
+            $query['feedName'] = $feedName;
+        }
+        return $this->request('GET', '/games/transactions', null, $query);
+    }
+
+    // -----------------------------------------------
+    // Privileges & Time Plays
+    // -----------------------------------------------
+
+    /**
+     * Get all privilege groups (paginated).
+     */
+    public function getPrivilegeGroups(int $skip = 0, int $take = 100): array {
+        return $this->request('GET', '/privilegeGroups', null, ['skip' => $skip, 'take' => $take]);
+    }
+
+    /**
+     * Fetch ALL privilege groups (handles pagination).
+     */
+    public function getAllPrivilegeGroups(): array {
+        return $this->fetchAllPaginated('/privilegeGroups', 'privilegeGroups');
+    }
+
+    /**
+     * Get all time play groups (paginated).
+     */
+    public function getTimePlayGroups(int $skip = 0, int $take = 100): array {
+        return $this->request('GET', '/timePlayGroups', null, ['skip' => $skip, 'take' => $take]);
+    }
+
+    /**
+     * Fetch ALL time play groups (handles pagination).
+     */
+    public function getAllTimePlayGroups(): array {
+        return $this->fetchAllPaginated('/timePlayGroups', 'timePlayGroups');
+    }
+
+    // -----------------------------------------------
+    // System
+    // -----------------------------------------------
+
+    /**
+     * Get system transactions (merge, expiration).
+     */
+    public function getSystemTransactions(string $sinceId, array $types, int $take = 100): array {
+        $queryParts = ['sinceId=' . urlencode($sinceId), 'take=' . $take];
+        foreach ($types as $type) {
+            $queryParts[] = 'type=' . urlencode($type);
+        }
+        return $this->requestRaw('GET', '/system/transactions?' . implode('&', $queryParts));
+    }
+
+    /**
+     * Get card number formats.
+     */
+    public function getCardNumberFormats(int $skip = 0, int $take = 100): array {
+        return $this->request('GET', '/cardNumberFormats', null, ['skip' => $skip, 'take' => $take]);
+    }
+
+    // -----------------------------------------------
+    // Generic Pagination Helper
+    // -----------------------------------------------
+
+    /**
+     * Fetch all records from a paginated endpoint.
+     */
+    private function fetchAllPaginated(string $path, string $dataKey): array {
+        $all = [];
+        $skip = 0;
+        $take = GAMES_PAGE_SIZE;
+        $pages = 0;
+
+        do {
+            $pages++;
+            if ($pages > self::MAX_PAGINATION_LOOPS) {
+                throw new RuntimeException("Pagination safety limit exceeded for $path.");
+            }
+
+            $result = $this->request('GET', $path, null, ['skip' => $skip, 'take' => $take]);
+            $items = $result[$dataKey] ?? [];
+            $all = array_merge($all, $items);
+            $totalCount = $result['totalCount'] ?? null;
+            $skip += count($items);
+
+            if (count($items) < $take) break;
+            if ($totalCount !== null && $skip >= $totalCount) break;
+        } while (true);
+
+        return $all;
+    }
+
+    /**
+     * Test the connection: authenticate, check capabilities, count games.
+     * Returns status array.
+     */
+    public function testConnection(): array {
+        try {
+            $this->authenticate();
+            $capabilities = $this->getCapabilities();
+            $games = $this->getGames();
+            $categories = $this->getCategories();
+
+            $supportsOperationStatus = $capabilities['games']['operationStatus'] ?? false;
+
+            return [
+                'success'                 => true,
+                'system_name'             => $capabilities['systemName'] ?? 'Unknown',
+                'interface_version'       => $capabilities['interfaceVersion'] ?? 'Unknown',
+                'supports_operation_status' => $supportsOperationStatus,
+                'supports_categories'     => $capabilities['games']['categories'] ?? false,
+                'game_count'              => count($games),
+                'category_count'          => count($categories),
+                'error'                   => null,
+            ];
+        } catch (Exception $e) {
+            return [
+                'success'                 => false,
+                'system_name'             => null,
+                'interface_version'       => null,
+                'supports_operation_status' => false,
+                'supports_categories'     => false,
+                'game_count'              => 0,
+                'category_count'          => 0,
+                'error'                   => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Sync all games to the game_state_cache table.
+     * Returns count of games synced.
+     */
+    public function syncGamesToCache(): int {
+        $games = $this->getGames();
+        $seenGameIds = [];
+
+        foreach ($games as $game) {
+            $gameId = (string)$game['id'];
+            $seenGameIds[] = $gameId;
+            $gameName = $game['name'] ?? '';
+            $opStatus = $game['operationStatus'] ?? 'enabled';
+            $categories = json_encode($game['categories'] ?? []);
+
+            DB::execute(
+                'INSERT INTO game_state_cache (game_id, game_name, operation_status, categories, last_synced_at)
+                 VALUES (:p0, :p1, :p2, :p3, datetime(\'now\'))
+                 ON CONFLICT(game_id) DO UPDATE SET
+                     game_name = :p1, operation_status = :p2, categories = :p3, last_synced_at = datetime(\'now\')',
+                [$gameId, $gameName, $opStatus, $categories]
+            );
+        }
+
+        if (empty($seenGameIds)) {
+            DB::execute('DELETE FROM game_state_cache');
+        } else {
+            $params = [];
+            $placeholders = [];
+            foreach ($seenGameIds as $i => $gameId) {
+                $placeholders[] = ':p' . $i;
+                $params[] = $gameId;
+            }
+            DB::execute(
+                'DELETE FROM game_state_cache WHERE game_id NOT IN (' . implode(',', $placeholders) . ')',
+                $params
+            );
+        }
+
+        return count($games);
+    }
+
+    // -----------------------------------------------
+    // HTTP Layer
+    // -----------------------------------------------
+
+    /**
+     * Make an authenticated DELETE request that handles 204 No Content.
+     */
+    private function requestWithDelete(string $method, string $path, ?array $body = null, array $query = []): array {
+        $token = $this->getToken();
+        $maxRetries = 3;
+        $lastException = null;
+
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            try {
+                return $this->httpRequestAllowEmpty($method, $path, $body, true, $query);
+            } catch (RuntimeException $e) {
+                $lastException = $e;
+                $msg = $e->getMessage();
+                if (strpos($msg, 'HTTP 401') !== false && $attempt === 0) {
+                    $this->authenticate();
+                    continue;
+                }
+                if (preg_match('/HTTP (4\d\d)/', $msg, $m)) {
+                    $code = (int)$m[1];
+                    if ($code !== 408 && $code !== 429) throw $e;
+                }
+                if ($attempt < $maxRetries) {
+                    $delay = (int)pow(2, $attempt + 1);
+                    sleep($delay);
+                }
+            }
+        }
+        throw $lastException;
+    }
+
+    /**
+     * Make an authenticated request where the raw query string is pre-built.
+     */
+    private function requestRaw(string $method, string $pathWithQuery): array {
+        $token = $this->getToken();
+        $url = rtrim($this->baseUrl, '/') . $pathWithQuery;
+        $headers = [
+            'Accept: application/json',
+            'Content-Type: application/json',
+        ];
+        if ($this->bearerToken) {
+            $headers[] = 'Authorization: Bearer ' . $this->bearerToken;
+        }
+        if ($this->apiKey) {
+            $headers[] = 'X-Api-Key: ' . $this->apiKey;
+        }
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => API_TIMEOUT,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 3,
+        ]);
+
+        $responseBody = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlError) {
+            throw new RuntimeException("CenterEdge API connection error ($url): $curlError");
+        }
+
+        $data = [];
+        if ($responseBody !== '' && $responseBody !== false) {
+            $data = json_decode($responseBody, true);
+            if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException("CenterEdge API ($url) returned non-JSON (HTTP $httpCode).");
+            }
+        }
+
+        if ($httpCode >= 400) {
+            $msg = $data['message'] ?? ($data['error'] ?? "HTTP $httpCode");
+            throw new RuntimeException("CenterEdge API error: $msg (HTTP $httpCode)");
+        }
+
+        return $data ?? [];
+    }
+
+    /**
+     * Make an authenticated API request with retry on 401 and transient errors.
+     * Retries up to 3 times with exponential backoff for network errors and 5xx.
+     */
+    private function request(string $method, string $path, ?array $body = null, array $query = []): array {
+        $token = $this->getToken();
+        $maxRetries = 3;
+        $lastException = null;
+
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            try {
+                return $this->httpRequest($method, $path, $body, true, $query);
+            } catch (RuntimeException $e) {
+                $lastException = $e;
+                $msg = $e->getMessage();
+
+                // If 401, re-authenticate and retry once (don't count as transient retry)
+                if (strpos($msg, 'HTTP 401') !== false && $attempt === 0) {
+                    $this->authenticate();
+                    continue;
+                }
+
+                // Don't retry client errors (4xx) other than 401/408/429
+                if (preg_match('/HTTP (4\d\d)/', $msg, $m)) {
+                    $code = (int)$m[1];
+                    if ($code !== 408 && $code !== 429) {
+                        throw $e;
+                    }
+                }
+
+                // Retry on transient errors: network failures, 5xx, 408, 429
+                if ($attempt < $maxRetries) {
+                    $delay = (int)pow(2, $attempt + 1); // 2s, 4s, 8s
+                    error_log("CenterEdge API transient error (attempt " . ($attempt + 1) . "/$maxRetries, retrying in {$delay}s): $msg");
+                    sleep($delay);
+                }
+            }
+        }
+
+        throw $lastException;
+    }
+
+    /**
+     * Execute an HTTP request to the CenterEdge API.
+     */
+    private function httpRequest(string $method, string $path, ?array $body = null, bool $auth = true, array $query = []): array {
+        $url = rtrim($this->baseUrl, '/') . $path;
+        if (!empty($query)) {
+            $url .= '?' . http_build_query($query);
+        }
+
+        $headers = [
+            'Accept: application/json',
+            'Content-Type: application/json',
+        ];
+
+        if ($auth && $this->bearerToken) {
+            $headers[] = 'Authorization: Bearer ' . $this->bearerToken;
+        }
+
+        if ($this->apiKey) {
+            $headers[] = 'X-Api-Key: ' . $this->apiKey;
+        }
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => API_TIMEOUT,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 3,
+        ]);
+
+        if ($method === 'POST') {
+            curl_setopt($ch, CURLOPT_POST, true);
+            if ($body !== null) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+            }
+        } elseif ($method === 'PATCH') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PATCH');
+            if ($body !== null) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+            }
+        } elseif ($method === 'PUT') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+            if ($body !== null) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+            }
+        } elseif ($method === 'DELETE') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+            if ($body !== null) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+            }
+        }
+
+        $responseBody = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlError) {
+            throw new RuntimeException("CenterEdge API connection error ($url): $curlError");
+        }
+
+        $data = [];
+        if ($responseBody !== '' && $responseBody !== false) {
+            $data = json_decode($responseBody, true);
+            if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+                $snippet = substr(trim($responseBody), 0, 200);
+                throw new RuntimeException("CenterEdge API ($url) returned non-JSON (HTTP $httpCode). Response begins with: $snippet");
+            }
+        }
+
+        if ($httpCode === 401) {
+            $msg = $data['message'] ?? ($data['error'] ?? 'Unauthorized – check username, password, and API key');
+            throw new RuntimeException("CenterEdge API error: $msg (HTTP 401)");
+        }
+
+        if ($httpCode === 403) {
+            $msg = $data['message'] ?? ($data['error'] ?? 'Forbidden – invalid credentials');
+            throw new RuntimeException("CenterEdge API error: $msg (HTTP 403)");
+        }
+
+        if ($httpCode >= 400) {
+            $msg = $data['message'] ?? ($data['error'] ?? "HTTP $httpCode");
+            throw new RuntimeException("CenterEdge API error: $msg (HTTP $httpCode)");
+        }
+
+        return $data ?? [];
+    }
+
+    /**
+     * HTTP request that treats 204 No Content as success with empty array.
+     */
+    private function httpRequestAllowEmpty(string $method, string $path, ?array $body = null, bool $auth = true, array $query = []): array {
+        $url = rtrim($this->baseUrl, '/') . $path;
+        if (!empty($query)) {
+            $url .= '?' . http_build_query($query);
+        }
+
+        $headers = ['Accept: application/json', 'Content-Type: application/json'];
+        if ($auth && $this->bearerToken) {
+            $headers[] = 'Authorization: Bearer ' . $this->bearerToken;
+        }
+        if ($this->apiKey) {
+            $headers[] = 'X-Api-Key: ' . $this->apiKey;
+        }
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => API_TIMEOUT,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_CUSTOMREQUEST  => $method,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 3,
+        ]);
+
+        if ($body !== null) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+        }
+
+        $responseBody = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlError) {
+            throw new RuntimeException("CenterEdge API connection error ($url): $curlError");
+        }
+
+        // 204 No Content is a success with no body
+        if ($httpCode === 204) {
+            return ['success' => true, 'httpCode' => 204];
+        }
+
+        $data = [];
+        if ($responseBody !== '' && $responseBody !== false) {
+            $data = json_decode($responseBody, true);
+            if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException("CenterEdge API ($url) returned non-JSON (HTTP $httpCode).");
+            }
+        }
+
+        if ($httpCode >= 400) {
+            $msg = $data['message'] ?? ($data['error'] ?? "HTTP $httpCode");
+            throw new RuntimeException("CenterEdge API error: $msg (HTTP $httpCode)");
+        }
+
+        return $data ?? [];
+    }
+}
