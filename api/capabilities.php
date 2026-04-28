@@ -16,22 +16,9 @@ function handleCapabilities(string $method, array $parts, ?array $input): void {
         return;
     }
 
-    $subResource = $parts[0] ?? '';
-
     if ($method !== 'GET') {
         http_response_code(405);
         echo json_encode(['error' => 'Method not allowed']);
-        return;
-    }
-
-    if ($subResource === 'card-formats') {
-        try {
-            $result = $client->getCardNumberFormats();
-            echo json_encode($result);
-        } catch (RuntimeException $e) {
-            http_response_code(500);
-            echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
-        }
         return;
     }
 

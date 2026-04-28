@@ -190,49 +190,9 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/users.php';
                 handleUsers($method, $parts, $input);
                 break;
-            case 'cards':
-                require_once __DIR__ . '/api/cards.php';
-                handleCards($method, $parts, $input);
-                break;
             case 'capabilities':
                 require_once __DIR__ . '/api/capabilities.php';
                 handleCapabilities($method, $parts, $input);
-                break;
-            case 'privileges':
-                require_once __DIR__ . '/api/privileges.php';
-                handlePrivileges($method, $parts, $input);
-                break;
-            case 'timeplays':
-                require_once __DIR__ . '/api/timeplays.php';
-                handleTimePlays($method, $parts, $input);
-                break;
-            case 'system':
-                require_once __DIR__ . '/api/system.php';
-                handleSystem($method, $parts, $input);
-                break;
-            case 'gamedetails':
-                require_once __DIR__ . '/api/gamedetails.php';
-                handleGameDetails($method, $parts, $input);
-                break;
-            case 'attractions':
-                require_once __DIR__ . '/api/attractions.php';
-                handleAttractions($method, $parts, $input);
-                break;
-            case 'maintenance':
-                require_once __DIR__ . '/api/maintenance.php';
-                handleMaintenance($method, $parts, $input);
-                break;
-            case 'parties':
-                require_once __DIR__ . '/api/parties.php';
-                handleParties($method, $parts, $input);
-                break;
-            case 'announcements':
-                require_once __DIR__ . '/api/announcements.php';
-                handleAnnouncements($method, $parts, $input);
-                break;
-            case 'revenue':
-                require_once __DIR__ . '/api/revenue.php';
-                handleRevenue($method, $parts, $input);
                 break;
             case 'health':
                 handleHealthCheck();
@@ -435,15 +395,5 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/overrides.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/logs.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/settings.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/cards.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/gamedetails.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/privileges.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/systeminfo.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/attractions.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/maintenance.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/parties.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/announcements.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/revenue.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/cardlookup.js"></script>
 </body>
 </html>

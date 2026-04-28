@@ -1,6 +1,9 @@
-# Castle Fun Center - Management System
+# Castle Fun Center - Pause Group Automation
 
-A self-hosted operations platform for Castle Fun Center. It includes the original pause-group automation system plus additional modules for attractions, maintenance, parties, announcements, analytics, and card operations. Built with PHP and vanilla JavaScript — no frameworks, no external dependencies.
+A self-hosted automation tool for the CenterEdge Card System: pause groups,
+schedule recurring active-hours, run one-off overrides, and now also pause
+kiosks alongside games. Built with PHP and vanilla JavaScript — no frameworks,
+no external dependencies.
 
 ## Requirements
 
@@ -19,43 +22,21 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
 
 ## Feature Modules
 
-### 1) Attractions & Rides Management (`#/attractions`)
-- Full CRUD for attractions (rides, laser tag, bumper cars, go-karts, mini golf, bowling, arcade zones).
-- Quick status changes for `open`, `closed`, `maintenance`, and `seasonal`.
-- Tracks capacity, height requirement, duration, credit cost, and wristband requirement.
-- Optional CenterEdge game-ID linking for integrated visibility.
-- Grid view with filtering by type and status.
+### Pause Groups (`#/groups`)
+- Define named groups of games and/or kiosks (by category and/or individual ID).
+- Recurring weekly schedules define active (unpaused) hours.
+- Override windows for one-off events (parties, maintenance) take priority over schedules.
+- Manual pause/unpause buttons on the dashboard with optimistic UI updates.
+- Watchdog cron + per-API-call safety nets enforce the desired state continuously.
 
-### 2) Maintenance Tracker (`#/maintenance`)
-- Ticket workflow with priorities (`critical`, `high`, `medium`, `low`).
-- Status lifecycle (`open` → `in_progress` → `waiting_parts` → `resolved` → `closed`).
-- Assignment, due dates, overdue tracking, resolution notes, and reopen action.
-- Dashboard stats for open/critical/resolved today/overdue.
-
-### 3) Party & Event Bookings (`#/parties`)
-- Party package management (duration, max guests, pricing, and inclusions).
-- Booking records with guest details, schedule, area assignment, deposit tracking, and special requests.
-- “Today’s Parties” operational view.
-- Calendar view grouped by date (`YYYY-MM` query).
-- Booking status flow: `pending` → `confirmed` → `completed` / `cancelled`.
-
-### 4) Staff Announcements (`#/announcements`)
-- Internal communication board with categories (`general`, `safety`, `maintenance`, `events`, `policy`, `kudos`).
-- Priority flags with visual emphasis (including urgent/high styles).
-- Pinning and expiration support for time-sensitive notices.
-- Author attribution and active/expired separation.
-
-### 5) Analytics Dashboard (`#/revenue`)
-- Operational snapshot of games, attractions, maintenance, and party activity.
-- Game fleet health and attraction status breakdown charts.
-- Hourly activity aggregation for today.
-- Recent CenterEdge transaction feed for quick diagnostics.
-
-### 6) Card Quick Lookup (`#/card-lookup`)
-- Front-counter-oriented lookup flow with fast scan/type entry.
-- Quick card status + balance checks.
-- Recent transactions and raw data display for troubleshooting.
-- Complements the full cards module (`#/cards`) for issuing, pinning, and combining cards.
+### Kiosks (`#/kiosks`)
+- Standalone page listing every kiosk reported by the CenterEdge `/kiosks` endpoint.
+- Per-kiosk Pause / Unpause / Out-of-service controls plus any RPC actions the
+  kiosk advertises in its `supportedActions` list (e.g. `reboot`).
+- Capabilities-aware: when the card system reports `kiosks.operationStatus = false`,
+  the pause/unpause controls are hidden and a banner explains why.
+- Kiosks can also be added to a pause group, where they'll be paused/unpaused
+  alongside the group's games via the same schedules and overrides.
 
 ## Hosting Compatibility
 
@@ -337,12 +318,9 @@ SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
 | `scheduled_actions` | Planned actions for the day (group, action, time, date, source, at_job_id, execution status) |
 | `action_log` | Audit trail of all actions (timestamp, source, action, game, success/error) |
 | `game_state_cache` | Local mirror of CenterEdge game data (ID, name, operation status, categories, sync time) |
+| `kiosk_state_cache` | Local mirror of CenterEdge kiosks (ID, name, operation status, categories, supported actions, sync time) |
+| `pause_group_kiosks` | Kiosk memberships for pause groups (paused/unpaused alongside the group's games) |
 | `login_attempts` | Login rate-limiting state by IP (failed attempt counter + lockout window). |
-| `attractions` | Attractions and ride inventory with status, capacity, and requirements metadata. |
-| `maintenance_tickets` | Maintenance issue tracking, assignment, due dates, and resolution metadata. |
-| `party_packages` | Saved party package definitions used by bookings. |
-| `party_bookings` | Party/event bookings linked to packages with schedule and status fields. |
-| `announcements` | Staff communication posts with category/priority/pin/expiry state. |
 
 **Execution status codes** in `scheduled_actions.executed`:
 - `0` — pending (not yet executed)
@@ -382,14 +360,27 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/groups` | GET | List all groups with member counts, game stats (enabled/paused/outOfService), next transition, and active override. |
-| `/api/groups` | POST | Create a group with optional `category_ids` and `game_ids`. |
-| `/api/groups/{id}` | GET | Single group with categories, games, and schedules. |
-| `/api/groups/{id}` | PUT | Update group name, description, active flag, categories, and games. |
-| `/api/groups/{id}` | DELETE | Delete group (cascades to schedules, categories, games). |
-| `/api/groups/{id}/pause` | POST | Immediately pause all games in the group (manual action). |
-| `/api/groups/{id}/unpause` | POST | Immediately unpause all games in the group (manual action). |
+| `/api/groups` | GET | List all groups with member counts, game and kiosk stats (enabled/paused/outOfService), next transition, and active override. |
+| `/api/groups` | POST | Create a group with optional `category_ids`, `game_ids`, and `kiosk_ids`. |
+| `/api/groups/{id}` | GET | Single group with categories, games, kiosks, and schedules. |
+| `/api/groups/{id}` | PUT | Update group name, description, active flag, categories, games, and kiosks. |
+| `/api/groups/{id}` | DELETE | Delete group (cascades to schedules, categories, games, kiosks). |
+| `/api/groups/{id}/pause` | POST | Immediately pause all games and kiosks in the group (manual action). |
+| `/api/groups/{id}/unpause` | POST | Immediately unpause all games and kiosks in the group (manual action). |
 | `/api/groups/{id}/enforce` | POST | Immediately enforce the correct state based on current schedules and overrides. |
+
+### Kiosks
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/kiosks` | GET | List cached kiosks. Auto-syncs if cache is empty. |
+| `/api/kiosks/{id}` | GET | Live single-kiosk lookup (bypasses cache). |
+| `/api/kiosks/sync` | POST | Force resync from CenterEdge. |
+| `/api/kiosks/{id}/pause` | POST | Set `operationStatus = paused`. |
+| `/api/kiosks/{id}/unpause` | POST | Set `operationStatus = enabled`. |
+| `/api/kiosks/{id}/out-of-service` | POST | Set `operationStatus = outOfService`. |
+| `/api/kiosks/{id}/action` | POST | RPC perform-action passthrough (e.g. `{ "actionId": "reboot" }`). |
+| `/api/kiosks` | PATCH | Bulk JSON Patch passthrough (multi-kiosk operationStatus update). |
 
 ### Schedules
 
@@ -421,77 +412,6 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/logs` | GET | Paginated action log. Filters: `from`, `to` (dates), `source`, `group_id`, `action`, `success`. Pagination: `page`, `per_page` (max 200). |
-
-### Attractions
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/attractions` | GET | List attractions with optional status/type filters. |
-| `/api/attractions` | POST | Create an attraction/ride record. |
-| `/api/attractions/{id}` | GET | Fetch a single attraction. |
-| `/api/attractions/{id}` | PUT | Update attraction metadata/status fields. |
-| `/api/attractions/{id}` | DELETE | Delete an attraction. |
-| `/api/attractions/{id}/status` | POST | Quick status change action. |
-
-### Maintenance
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/maintenance` | GET | List maintenance tickets (supports filtering). |
-| `/api/maintenance` | POST | Create ticket. |
-| `/api/maintenance/{id}` | GET | Get single ticket. |
-| `/api/maintenance/{id}` | PUT | Update ticket fields/status/assignment. |
-| `/api/maintenance/{id}` | DELETE | Delete ticket. |
-| `/api/maintenance/stats` | GET | Return dashboard summary counts. |
-| `/api/maintenance/{id}/resolve` | POST | Resolve ticket with notes. |
-| `/api/maintenance/{id}/reopen` | POST | Reopen a resolved/closed ticket. |
-
-### Parties
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/parties/packages` | GET | List party packages. |
-| `/api/parties/packages` | POST | Create package. |
-| `/api/parties/packages/{id}` | GET | Get package detail. |
-| `/api/parties/packages/{id}` | PUT | Update package. |
-| `/api/parties/packages/{id}` | DELETE | Delete package. |
-| `/api/parties` | GET | List bookings. |
-| `/api/parties` | POST | Create booking. |
-| `/api/parties/{id}` | GET | Booking detail. |
-| `/api/parties/{id}` | PUT | Update booking fields. |
-| `/api/parties/{id}` | DELETE | Delete booking. |
-| `/api/parties/{id}/status` | POST | Update booking status quickly. |
-| `/api/parties/calendar?month=YYYY-MM` | GET | Month calendar-style booking view. |
-| `/api/parties/today` | GET | Today’s bookings for operations desk. |
-
-### Announcements
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/announcements` | GET | List announcements (active/expired sorting). |
-| `/api/announcements` | POST | Create announcement. |
-| `/api/announcements/{id}` | GET | Get announcement. |
-| `/api/announcements/{id}` | PUT | Update announcement. |
-| `/api/announcements/{id}` | DELETE | Delete announcement. |
-| `/api/announcements/{id}/pin` | POST | Toggle or set pinned state. |
-
-### Revenue / Analytics
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/revenue/summary` | GET | Combined operational summary metrics. |
-| `/api/revenue/games` | GET | Game and attraction status breakdown dataset. |
-| `/api/revenue/hourly` | GET | Hourly activity/transaction rollup for today. |
-
-### Cards + Card Lookup
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/cards/{cardNumber}` | GET | Card details for lookup/troubleshooting screens. |
-| `/api/cards/{cardNumber}/pin` | POST | Set or update card PIN. |
-| `/api/cards/{cardNumber}/transactions` | GET | Card transaction history. |
-| `/api/cards/bulk-issue` | POST | Bulk card issue action. |
-| `/api/cards/combine` | POST | Combine/source-transfer card balances. |
 
 ### Health
 

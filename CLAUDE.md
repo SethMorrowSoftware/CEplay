@@ -1,7 +1,7 @@
 # Castle Fun Center - Pause Group Automation
 
 ## Project Overview
-Self-hosted, framework-free operations platform for Castle Fun Center (arcade/entertainment venue). Automates game scheduling (pause/unpause) via recurring time windows, overrides, and multi-tier enforcement. Includes modules for attractions, maintenance, parties, announcements, analytics, and card operations.
+Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade/entertainment venue). Automates pausing/unpausing of CenterEdge games AND kiosks via recurring time windows, overrides, manual actions, and multi-tier enforcement. Pause groups can mix games and kiosks; kiosks also have a standalone management page.
 
 ## Architecture
 - **Backend:** Pure PHP 7.4+ (no Composer, no frameworks). SQLite database with WAL mode.
@@ -15,7 +15,7 @@ Self-hosted, framework-free operations platform for Castle Fun Center (arcade/en
 - `cron_watchdog.php` — Per-minute watchdog: missed actions, state enforcement, re-queue
 - `run_action.php` — Single-action executor invoked by `at` jobs
 - `lib/scheduler.php` — Core scheduling engine (plan, execute, enforce, resolve conflicts)
-- `lib/centeredge_client.php` — CenterEdge API client (auth, games, cards, pagination, retry)
+- `lib/centeredge_client.php` — CenterEdge API client (auth, games, kiosks, capabilities, pagination, retry)
 - `lib/db.php` — SQLite singleton, schema init, query helpers (`:p0` positional params)
 - `lib/auth.php` — Session management (bcrypt, HttpOnly, SameSite, 2h timeout, rate limiting)
 - `lib/csrf.php` — CSRF token generation + timing-safe validation
@@ -24,12 +24,12 @@ Self-hosted, framework-free operations platform for Castle Fun Center (arcade/en
 
 ## Directory Layout
 ```
-api/          — 19 API endpoint handlers (auth, groups, schedules, overrides, cards, etc.)
+api/          — API endpoint handlers (auth, settings, games, groups, kiosks, schedules, overrides, logs, users, capabilities)
 lib/          — 7 core libraries
-public/js/    — 19 vanilla JS modules (~6250 lines)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, groups, kiosks, schedules, overrides, logs, settings)
 public/css/   — Dark/light theme stylesheet
 data/         — Runtime: SQLite DB, locks, heartbeats, logs (gitignored)
-docs/         — Internal docs: security audit, CenterEdge API reference (OpenAPI spec)
+docs/         — Internal docs: security audit, CenterEdge API reference (HTML + OpenAPI YAML)
 ```
 
 ## Development Notes
@@ -59,6 +59,11 @@ docs/         — Internal docs: security audit, CenterEdge API reference (OpenA
 - `planDay()` computes transition points, resolves conflicts, deduplicates
 - Missed-action optimization: only latest per group executed, earlier superseded (status 3)
 - Concurrency via file lock (flock). Different retry strategies per script.
+- `executeStateChange()` patches both games AND kiosks for a group in one
+  invocation — kiosks share the GameOperationStatus enum (enabled/paused/outOfService).
+  Kiosk patching is best-effort; failure does not roll back game changes.
+- Per the kiosk API spec, kiosks reporting no `operationStatus` ("unknown")
+  must NOT be pause-controlled — the scheduler skips them automatically.
 
 ### Security
 - Passwords: bcrypt cost 12, auto-rehash

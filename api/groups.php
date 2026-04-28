@@ -96,8 +96,11 @@ function listGroups(): void {
     foreach ($groups as &$group) {
         $gid = (int)$group['id'];
 
-        // Game stats from cache
+        // Aggregate state across both games and kiosks. Effective state and
+        // counts treat them as a single pool so the dashboard's "Pause Group"
+        // button reflects whether everything in the group is paused.
         $gameIds = Scheduler::resolveGroupGames($gid);
+        $kioskIds = Scheduler::resolveGroupKiosks($gid);
         $enabledCount = 0;
         $pausedCount = 0;
         $oosCount = 0;
@@ -107,6 +110,19 @@ function listGroups(): void {
             if ($cached['operation_status'] === 'enabled') $enabledCount++;
             elseif ($cached['operation_status'] === 'paused') $pausedCount++;
             elseif ($cached['operation_status'] === 'outOfService') $oosCount++;
+        }
+        $kioskEnabled = 0;
+        $kioskPaused = 0;
+        $kioskOos = 0;
+        $kioskUnknown = 0;
+        foreach ($kioskIds as $kioskId) {
+            $cached = DB::queryOne('SELECT operation_status FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
+            if (!$cached) continue;
+            $st = $cached['operation_status'];
+            if ($st === 'enabled') { $kioskEnabled++; $enabledCount++; }
+            elseif ($st === 'paused') { $kioskPaused++; $pausedCount++; }
+            elseif ($st === 'outOfService') { $kioskOos++; $oosCount++; }
+            else { $kioskUnknown++; }
         }
         $total = $enabledCount + $pausedCount + $oosCount;
         $group['effective_state'] = $total === 0 ? 'empty'
@@ -118,7 +134,15 @@ function listGroups(): void {
             'paused' => $pausedCount,
             'out_of_service' => $oosCount,
         ];
+        $group['kiosk_stats'] = [
+            'total' => count($kioskIds),
+            'enabled' => $kioskEnabled,
+            'paused' => $kioskPaused,
+            'out_of_service' => $kioskOos,
+            'unknown' => $kioskUnknown,
+        ];
         $group['game_ids'] = array_values($gameIds);
+        $group['kiosk_ids'] = array_values($kioskIds);
 
         // Next scheduled transition today.
         // Schedule windows define active (unpaused) hours:
@@ -272,6 +296,10 @@ function getGroup(int $groupId): void {
         'SELECT id, game_id, game_name FROM pause_group_games WHERE pause_group_id = :p0',
         [$groupId]
     );
+    $group['kiosks'] = DB::query(
+        'SELECT id, kiosk_id, kiosk_name FROM pause_group_kiosks WHERE pause_group_id = :p0',
+        [$groupId]
+    );
     $group['schedules'] = DB::query(
         'SELECT * FROM schedules WHERE pause_group_id = :p0 ORDER BY day_of_week, start_time',
         [$groupId]
@@ -292,6 +320,7 @@ function createGroup(?array $input): void {
     $isActive = isset($input['is_active']) ? (filter_var($input['is_active'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0) : 1;
     $categoryIds = Validator::optionalIntArray($input, 'category_ids');
     $gameIds = Validator::optionalStringArray($input, 'game_ids');
+    $kioskIds = Validator::optionalStringArray($input, 'kiosk_ids');
 
     $db = DB::getInstance();
     $db->exec('BEGIN TRANSACTION');
@@ -318,6 +347,15 @@ function createGroup(?array $input): void {
             DB::execute(
                 'INSERT INTO pause_group_games (pause_group_id, game_id, game_name) VALUES (:p0, :p1, :p2)',
                 [$groupId, $gameId, $gameName]
+            );
+        }
+
+        // Insert kiosk links
+        foreach ($kioskIds as $kioskId) {
+            $kioskName = getKioskName($kioskId);
+            DB::execute(
+                'INSERT INTO pause_group_kiosks (pause_group_id, kiosk_id, kiosk_name) VALUES (:p0, :p1, :p2)',
+                [$groupId, $kioskId, $kioskName]
             );
         }
 
@@ -350,6 +388,7 @@ function updateGroup(int $groupId, ?array $input): void {
     $isActive = isset($input['is_active']) ? (filter_var($input['is_active'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0) : 1;
     $categoryIds = Validator::optionalIntArray($input, 'category_ids');
     $gameIds = Validator::optionalStringArray($input, 'game_ids');
+    $kioskIds = Validator::optionalStringArray($input, 'kiosk_ids');
 
     $db = DB::getInstance();
     $db->exec('BEGIN TRANSACTION');
@@ -377,6 +416,16 @@ function updateGroup(int $groupId, ?array $input): void {
             DB::execute(
                 'INSERT INTO pause_group_games (pause_group_id, game_id, game_name) VALUES (:p0, :p1, :p2)',
                 [$groupId, $gameId, $gameName]
+            );
+        }
+
+        // Replace kiosk links
+        DB::execute('DELETE FROM pause_group_kiosks WHERE pause_group_id = :p0', [$groupId]);
+        foreach ($kioskIds as $kioskId) {
+            $kioskName = getKioskName($kioskId);
+            DB::execute(
+                'INSERT INTO pause_group_kiosks (pause_group_id, kiosk_id, kiosk_name) VALUES (:p0, :p1, :p2)',
+                [$groupId, $kioskId, $kioskName]
             );
         }
 
@@ -434,4 +483,12 @@ function getCategoryName(int $categoryId): string {
 function getGameName(string $gameId): string {
     $row = DB::queryOne('SELECT game_name FROM game_state_cache WHERE game_id = :p0', [$gameId]);
     return $row ? $row['game_name'] : "Game $gameId";
+}
+
+/**
+ * Look up a kiosk name from the kiosk_state_cache.
+ */
+function getKioskName(string $kioskId): string {
+    $row = DB::queryOne('SELECT kiosk_name FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
+    return $row ? $row['kiosk_name'] : "Kiosk $kioskId";
 }
