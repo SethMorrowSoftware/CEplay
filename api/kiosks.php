@@ -14,6 +14,7 @@
 
 require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/validator.php';
+require_once __DIR__ . '/../lib/scheduler.php';
 
 function handleKiosks(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
@@ -91,7 +92,9 @@ function kioskList(): void {
         }
     }
 
-    $kiosks = array_map(function ($k) {
+    $pendingRetries = Scheduler::getPendingRetriesByType('kiosk');
+
+    $kiosks = array_map(function ($k) use ($pendingRetries) {
         return [
             'id' => $k['kiosk_id'],
             'name' => $k['kiosk_name'],
@@ -99,6 +102,7 @@ function kioskList(): void {
             'categories' => json_decode($k['categories'] ?? '[]', true) ?: [],
             'supportedActions' => json_decode($k['supported_actions'] ?? '[]', true) ?: [],
             'last_synced_at' => $k['last_synced_at'],
+            'pending_retry' => $pendingRetries[$k['kiosk_id']] ?? null,
         ];
     }, $cached);
 
@@ -160,16 +164,24 @@ function kioskSetStatus(string $kioskId, string $status, string $actionLabel): v
 
     if ($errForThis) {
         $userId = Auth::check()['id'] ?? null;
+        $errorText = is_array($errForThis) ? ($errForThis['message'] ?? json_encode($errForThis)) : (string)$errForThis;
         DB::auditLog('kiosk-' . $actionLabel, 'kiosk_action_failed', $userId, [
             'kiosk_id' => $kioskId,
             'requested_status' => $status,
             'error' => $errForThis,
         ]);
+
+        // Queue a retry so the watchdog re-attempts this every minute (up to
+        // max_attempts). The kiosk was likely in use when we tried to act.
+        Scheduler::queueRetry('kiosk', $kioskId, $status, 'manual', null, $errorText);
+        $pending = Scheduler::getPendingRetry('kiosk', $kioskId);
+
         http_response_code(422);
         echo json_encode([
             'success' => false,
             'kiosk_id' => $kioskId,
-            'error' => is_array($errForThis) ? ($errForThis['message'] ?? json_encode($errForThis)) : (string)$errForThis,
+            'error' => $errorText,
+            'pending_retry' => $pending,
         ]);
         return;
     }
@@ -179,6 +191,10 @@ function kioskSetStatus(string $kioskId, string $status, string $actionLabel): v
         'UPDATE kiosk_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE kiosk_id = :p1',
         [$status, $kioskId]
     );
+
+    // Drop any stale pending retry for this kiosk — the operator's manual
+    // action just succeeded, so older retry intent is moot.
+    Scheduler::clearRetry('kiosk', $kioskId);
 
     $updated = null;
     foreach (($result['kiosks'] ?? []) as $k) {
@@ -258,13 +274,20 @@ function kioskPatchBulk(?array $input): void {
         return;
     }
 
-    // Reflect successful changes in the local cache.
+    // Reflect successful changes in the local cache, and update the retry
+    // queue: clear retries for kiosks that succeeded, queue/refresh for those
+    // that failed (the watchdog will re-attempt).
     foreach ($changes as $kioskId => $status) {
         if (!isset($result['errors'][$kioskId])) {
             DB::execute(
                 'UPDATE kiosk_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE kiosk_id = :p1',
                 [$status, $kioskId]
             );
+            Scheduler::clearRetry('kiosk', (string)$kioskId);
+        } else {
+            $err = $result['errors'][$kioskId];
+            $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
+            Scheduler::queueRetry('kiosk', (string)$kioskId, $status, 'manual', null, $errorText);
         }
     }
 

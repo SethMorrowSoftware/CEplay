@@ -614,6 +614,339 @@ class Scheduler {
         );
     }
 
+    // -----------------------------------------------
+    // Retry Queue (games + kiosks)
+    // -----------------------------------------------
+
+    /** Default cap on retry attempts before giving up. */
+    const RETRY_MAX_ATTEMPTS = 10;
+
+    /**
+     * Enqueue (or supersede) a pending retry for an asset whose pause/unpause
+     * patch failed at the source — typically because the asset was in use.
+     * The watchdog re-attempts up to max_attempts and then gives up.
+     *
+     * UPSERT semantics: if a retry already exists for this asset, the
+     * desired_status / source / pause_group_id are replaced AND the attempts
+     * counter is reset to 0 if the desired state changed (latest intent wins).
+     * If the desired state matches the existing pending retry, attempts is
+     * preserved (we just update last_error / last_attempted_at).
+     */
+    public static function queueRetry(
+        string $assetType,
+        string $assetId,
+        string $desiredStatus,
+        string $source,
+        ?int $pauseGroupId,
+        ?string $errorMessage
+    ): void {
+        if ($assetType !== 'game' && $assetType !== 'kiosk') {
+            return; // unknown asset type; ignore
+        }
+
+        $existing = DB::queryOne(
+            'SELECT desired_status, attempts FROM action_retries
+             WHERE asset_type = :p0 AND asset_id = :p1',
+            [$assetType, $assetId]
+        );
+
+        if ($existing && $existing['desired_status'] === $desiredStatus) {
+            // Same intent — keep attempt count, just refresh error/timestamp.
+            DB::execute(
+                'UPDATE action_retries
+                 SET source = :p0, pause_group_id = :p1, last_error = :p2,
+                     updated_at = datetime(\'now\')
+                 WHERE asset_type = :p3 AND asset_id = :p4',
+                [$source, $pauseGroupId, $errorMessage, $assetType, $assetId]
+            );
+            return;
+        }
+
+        // New row, or desired_status changed — reset attempts.
+        DB::execute(
+            'INSERT INTO action_retries
+                 (asset_type, asset_id, desired_status, source, pause_group_id,
+                  attempts, max_attempts, last_error, created_at, updated_at)
+             VALUES (:p0, :p1, :p2, :p3, :p4, 0, :p5, :p6, datetime(\'now\'), datetime(\'now\'))
+             ON CONFLICT(asset_type, asset_id) DO UPDATE SET
+                 desired_status = :p2,
+                 source = :p3,
+                 pause_group_id = :p4,
+                 attempts = 0,
+                 last_error = :p6,
+                 updated_at = datetime(\'now\')',
+            [$assetType, $assetId, $desiredStatus, $source, $pauseGroupId,
+             self::RETRY_MAX_ATTEMPTS, $errorMessage]
+        );
+    }
+
+    /**
+     * Drop the pending retry (if any) for an asset.
+     * Called whenever a fresh pause/unpause for that asset succeeds.
+     */
+    public static function clearRetry(string $assetType, string $assetId): void {
+        DB::execute(
+            'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
+            [$assetType, $assetId]
+        );
+    }
+
+    /**
+     * Process all pending action retries: re-attempt each asset's stored
+     * desired_status, increment attempts on failure, delete on success or
+     * after max_attempts. Designed to be called once per watchdog cycle
+     * (i.e. once per minute) so a 10-attempt cap means a 10-minute window.
+     *
+     * Returns a summary array for logging.
+     */
+    public static function processRetries(): array {
+        $summary = ['attempted' => 0, 'succeeded' => 0, 'failed' => 0, 'gave_up' => 0];
+
+        $pending = DB::query(
+            'SELECT id, asset_type, asset_id, desired_status, source, pause_group_id,
+                    attempts, max_attempts
+             FROM action_retries
+             WHERE attempts < max_attempts
+             ORDER BY asset_type ASC, id ASC'
+        );
+
+        if (empty($pending)) {
+            return $summary;
+        }
+
+        // Group by asset_type so we can issue one bulk PATCH per type.
+        $byType = ['game' => [], 'kiosk' => []];
+        foreach ($pending as $row) {
+            $type = $row['asset_type'];
+            if (!isset($byType[$type])) {
+                continue;
+            }
+            $byType[$type][$row['asset_id']] = $row;
+        }
+
+        try {
+            $client = new CenterEdgeClient();
+        } catch (Exception $e) {
+            error_log('processRetries: client init failed: ' . $e->getMessage());
+            return $summary;
+        }
+
+        // ---- Games ----
+        if (!empty($byType['game'])) {
+            $changes = [];
+            foreach ($byType['game'] as $row) {
+                $changes[$row['asset_id']] = $row['desired_status'];
+            }
+            try {
+                $result = $client->patchGames($changes);
+                self::applyRetryResult('game', $byType['game'], $result, 'games', 'game_state_cache', 'game_id', $summary);
+            } catch (Exception $e) {
+                self::handleBulkRetryFailure('game', $byType['game'], $e->getMessage(), $summary);
+            }
+        }
+
+        // ---- Kiosks ----
+        if (!empty($byType['kiosk'])) {
+            $changes = [];
+            foreach ($byType['kiosk'] as $row) {
+                $changes[$row['asset_id']] = $row['desired_status'];
+            }
+            try {
+                $result = $client->patchKiosks($changes);
+                self::applyRetryResult('kiosk', $byType['kiosk'], $result, 'kiosks', 'kiosk_state_cache', 'kiosk_id', $summary);
+            } catch (Exception $e) {
+                self::handleBulkRetryFailure('kiosk', $byType['kiosk'], $e->getMessage(), $summary);
+            }
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Apply per-asset success/failure results from a bulk patch retry.
+     * On success: update cache, clear retry row, log action_log success.
+     * On failure: increment attempts; if at max, log give-up audit and delete row.
+     */
+    private static function applyRetryResult(
+        string $assetType,
+        array $rowsById,
+        array $result,
+        string $successKey,
+        string $cacheTable,
+        string $cacheIdColumn,
+        array &$summary
+    ): void {
+        $now = date('Y-m-d H:i:s');
+
+        foreach ($result[$successKey] ?? [] as $asset) {
+            $aid = (string)($asset['id'] ?? '');
+            if ($aid === '' || !isset($rowsById[$aid])) {
+                continue;
+            }
+            $row = $rowsById[$aid];
+            $summary['attempted']++;
+            $summary['succeeded']++;
+
+            DB::execute(
+                "UPDATE $cacheTable SET operation_status = :p0, last_synced_at = datetime('now')
+                 WHERE $cacheIdColumn = :p1",
+                [$asset['operationStatus'] ?? $row['desired_status'], $aid]
+            );
+
+            $actionName = $row['desired_status'] === 'paused' ? 'pause' : 'unpause';
+            self::logAction(
+                'retry',
+                $actionName,
+                $row['pause_group_id'] !== null ? (int)$row['pause_group_id'] : null,
+                $aid,
+                $asset['name'] ?? '',
+                true,
+                null,
+                ['asset' => $assetType, 'attempt' => (int)$row['attempts'] + 1]
+            );
+
+            self::clearRetry($assetType, $aid);
+            unset($rowsById[$aid]);
+        }
+
+        // Anything left in $rowsById either errored or was silently dropped.
+        // Treat both as failures so the counter advances.
+        $errorById = [];
+        foreach ($result['errors'] ?? [] as $eid => $err) {
+            $errorById[(string)$eid] = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
+        }
+
+        foreach ($rowsById as $aid => $row) {
+            $errorMsg = $errorById[$aid] ?? 'no response from server';
+            self::recordRetryFailure($assetType, $aid, $row, $errorMsg, $now, $summary);
+        }
+    }
+
+    /**
+     * Bulk patch threw (e.g. /kiosks unsupported, network error). Record a
+     * failure for every asset of that type so the attempt counter advances.
+     */
+    private static function handleBulkRetryFailure(string $assetType, array $rowsById, string $errorMsg, array &$summary): void {
+        $now = date('Y-m-d H:i:s');
+        foreach ($rowsById as $aid => $row) {
+            self::recordRetryFailure($assetType, $aid, $row, $errorMsg, $now, $summary);
+        }
+    }
+
+    /**
+     * Increment a retry's attempts. If we've now reached max_attempts, log a
+     * give-up audit entry and delete the row; otherwise update last_error /
+     * last_attempted_at so the UI can surface progress.
+     */
+    private static function recordRetryFailure(
+        string $assetType,
+        string $assetId,
+        array $row,
+        string $errorMsg,
+        string $now,
+        array &$summary
+    ): void {
+        $summary['attempted']++;
+        $newAttempts = (int)$row['attempts'] + 1;
+        $maxAttempts = (int)$row['max_attempts'];
+
+        $actionName = $row['desired_status'] === 'paused' ? 'pause' : 'unpause';
+
+        if ($newAttempts >= $maxAttempts) {
+            $summary['gave_up']++;
+            self::logAction(
+                'retry',
+                $actionName,
+                $row['pause_group_id'] !== null ? (int)$row['pause_group_id'] : null,
+                $assetId,
+                '',
+                false,
+                $errorMsg,
+                [
+                    'asset' => $assetType,
+                    'attempt' => $newAttempts,
+                    'max_attempts' => $maxAttempts,
+                    'gave_up' => true,
+                ]
+            );
+            DB::execute(
+                'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
+                [$assetType, $assetId]
+            );
+            return;
+        }
+
+        $summary['failed']++;
+        DB::execute(
+            'UPDATE action_retries
+             SET attempts = :p0, last_attempted_at = :p1, last_error = :p2,
+                 updated_at = datetime(\'now\')
+             WHERE asset_type = :p3 AND asset_id = :p4',
+            [$newAttempts, $now, $errorMsg, $assetType, $assetId]
+        );
+
+        self::logAction(
+            'retry',
+            $actionName,
+            $row['pause_group_id'] !== null ? (int)$row['pause_group_id'] : null,
+            $assetId,
+            '',
+            false,
+            $errorMsg,
+            ['asset' => $assetType, 'attempt' => $newAttempts, 'max_attempts' => $maxAttempts]
+        );
+    }
+
+    /**
+     * Look up the pending retry (if any) for a given asset, formatted for
+     * inclusion in API responses.
+     */
+    public static function getPendingRetry(string $assetType, string $assetId): ?array {
+        $row = DB::queryOne(
+            'SELECT desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
+             FROM action_retries
+             WHERE asset_type = :p0 AND asset_id = :p1',
+            [$assetType, $assetId]
+        );
+        if (!$row) {
+            return null;
+        }
+        return [
+            'desired_status'    => $row['desired_status'],
+            'source'            => $row['source'],
+            'attempts'          => (int)$row['attempts'],
+            'max_attempts'      => (int)$row['max_attempts'],
+            'last_attempted_at' => $row['last_attempted_at'],
+            'last_error'        => $row['last_error'],
+            'created_at'        => $row['created_at'],
+        ];
+    }
+
+    /**
+     * Bulk lookup of pending retries by asset_type, keyed by asset_id.
+     * Avoids N+1 queries when listing kiosks or games.
+     */
+    public static function getPendingRetriesByType(string $assetType): array {
+        $rows = DB::query(
+            'SELECT asset_id, desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
+             FROM action_retries WHERE asset_type = :p0',
+            [$assetType]
+        );
+        $out = [];
+        foreach ($rows as $r) {
+            $out[$r['asset_id']] = [
+                'desired_status'    => $r['desired_status'],
+                'source'            => $r['source'],
+                'attempts'          => (int)$r['attempts'],
+                'max_attempts'      => (int)$r['max_attempts'],
+                'last_attempted_at' => $r['last_attempted_at'],
+                'last_error'        => $r['last_error'],
+                'created_at'        => $r['created_at'],
+            ];
+        }
+        return $out;
+    }
+
     /**
      * Core state change logic: resolve games + kiosks, check states, patch CenterEdge.
      */
@@ -670,6 +1003,9 @@ class Scheduler {
 
                     $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
                     self::logAction($source, $actionName, $groupId, $gid, $gname, true);
+
+                    // Successful patch supersedes any pending retry for this game.
+                    self::clearRetry('game', $gid);
                 }
 
                 foreach ($patchResult['errors'] ?? [] as $gid => $error) {
@@ -677,11 +1013,15 @@ class Scheduler {
                     $cached = DB::queryOne('SELECT game_name FROM game_state_cache WHERE game_id = :p0', [(string)$gid]);
                     if ($cached) $gname = $cached['game_name'];
 
-                    $errorMsg = $error['message'] ?? 'Unknown error';
+                    $errorMsg = is_array($error) ? ($error['message'] ?? json_encode($error)) : (string)$error;
                     $results['errors'][] = ['game_id' => (string)$gid, 'game_name' => $gname, 'error' => $errorMsg];
 
                     $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
                     self::logAction($source, $actionName, $groupId, (string)$gid, $gname, false, $errorMsg);
+
+                    // Queue a retry: game may have been in use; the watchdog
+                    // will re-attempt once per minute up to max_attempts.
+                    self::queueRetry('game', (string)$gid, $desiredStatus, $source, $groupId, $errorMsg);
                 }
             }
 
@@ -730,6 +1070,9 @@ class Scheduler {
 
                         $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
                         self::logAction($source, $actionName, $groupId, $kid, $kname, true, null, ['asset' => 'kiosk']);
+
+                        // Successful patch supersedes any pending retry for this kiosk.
+                        self::clearRetry('kiosk', $kid);
                     }
 
                     foreach ($kioskPatchResult['errors'] ?? [] as $kid => $error) {
@@ -742,6 +1085,10 @@ class Scheduler {
 
                         $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
                         self::logAction($source, $actionName, $groupId, (string)$kid, $kname, false, $errorMsg, ['asset' => 'kiosk']);
+
+                        // Queue a retry: kiosk may have been in use; the watchdog
+                        // will re-attempt once per minute up to max_attempts.
+                        self::queueRetry('kiosk', (string)$kid, $desiredStatus, $source, $groupId, $errorMsg);
                     }
                 } catch (Exception $e) {
                     // The card system may not support PATCH /kiosks. Don't fail
@@ -1171,7 +1518,7 @@ class Scheduler {
     private static function logAction(
         string $source,
         string $action,
-        int $groupId,
+        ?int $groupId,
         string $gameId,
         string $gameName,
         bool $success,
