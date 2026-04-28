@@ -23,73 +23,109 @@
 
         try {
             const data = await API.get('groups') || {};
-            listEl.innerHTML = '';
-            const groups = data.groups || [];
-
-            if (groups.length === 0) {
-                listEl.appendChild(App.emptyState('\u25CB', 'No pause groups yet.', App.el('button', {
-                    className: 'btn btn-primary', textContent: 'Create First Group',
-                    onClick: () => { window.location.hash = '#/groups/new'; }
-                })));
-                return;
-            }
-
-            groups.forEach(group => {
-                const state = group.effective_state || 'empty';
-                const stats = group.game_stats || {};
-                const isActive = group.is_active == 1;
-
-                // Build state badge for active groups
-                const stateBadge = isActive && state !== 'empty'
-                    ? App.el('span', {
-                        className: 'badge badge-' + (state === 'enabled' ? 'enabled' : state === 'paused' ? 'paused' : 'info'),
-                        textContent: state === 'enabled' ? 'Running' : state === 'paused' ? 'Paused' : 'Mixed'
-                    }) : null;
-
-                // Quick action buttons (only for active groups with games)
-                const quickActions = isActive && state !== 'empty'
-                    ? App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } }, [
-                        state !== 'enabled' ? App.el('button', {
-                            className: 'btn btn-sm btn-success',
-                            textContent: 'Unpause',
-                            onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'unpause', group.name, listEl); }
-                        }) : null,
-                        state !== 'paused' ? App.el('button', {
-                            className: 'btn btn-sm btn-warning',
-                            textContent: 'Pause',
-                            onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'pause', group.name, listEl); }
-                        }) : null
-                    ].filter(Boolean)) : null;
-
-                const card = App.el('div', { className: 'card', style: { marginBottom: '0.75rem', cursor: 'pointer' },
-                    onClick: () => { window.location.hash = '#/groups/' + group.id; }
-                }, [
-                    App.el('div', { className: 'flex-between' }, [
-                        App.el('div', { style: { flex: '1', minWidth: '0' } }, [
-                            App.el('div', { className: 'flex-center gap-sm' }, [
-                                App.el('span', { className: 'status-dot status-dot-' + (isActive ? state : 'empty') }),
-                                App.el('span', { className: 'card-title', textContent: group.name }),
-                                App.el('span', { className: 'badge ' + (isActive ? 'badge-active' : 'badge-inactive'),
-                                    textContent: isActive ? 'Active' : 'Inactive' }),
-                                stateBadge
-                            ].filter(Boolean)),
-                            group.description ? App.el('p', { className: 'text-sm text-secondary mt-1', textContent: group.description }) : null
-                        ].filter(Boolean)),
-                        App.el('div', { className: 'flex-center' }, [
-                            App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
-                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' + ((group.kiosk_stats && group.kiosk_stats.total) ? ', ' + group.kiosk_stats.total + ' kiosk' + (group.kiosk_stats.total !== 1 ? 's' : '') : '') }),
-                                App.el('div', { textContent: (group.schedule_count || 0) + ' schedules' })
-                            ]),
-                            quickActions
-                        ].filter(Boolean))
-                    ])
-                ]);
-                listEl.appendChild(card);
-            });
+            renderGroupCards(listEl, data.groups || []);
         } catch (err) {
             listEl.innerHTML = '';
             App.toast(err.message, 'error');
         }
+    }
+
+    /**
+     * Render the list of group cards. Used both on initial load and after a
+     * quick action (pause/unpause) so the same layout is produced in both
+     * code paths.
+     */
+    function renderGroupCards(listEl, groups) {
+        listEl.innerHTML = '';
+
+        if (groups.length === 0) {
+            listEl.appendChild(App.emptyState('\u25CB', 'No pause groups yet.', App.el('button', {
+                className: 'btn btn-primary', textContent: 'Create First Group',
+                onClick: () => { window.location.hash = '#/groups/new'; }
+            })));
+            return;
+        }
+
+        groups.forEach(group => {
+            listEl.appendChild(buildGroupCard(group, listEl));
+        });
+    }
+
+    /**
+     * Build a single group card element. State badge, member summary, and
+     * quick-action buttons are all derived from the group payload.
+     */
+    function buildGroupCard(group, listEl) {
+        const state = group.effective_state || 'empty';
+        const isActive = group.is_active == 1;
+
+        const stateBadge = isActive && state !== 'empty'
+            ? App.el('span', {
+                className: 'badge badge-' + (state === 'enabled' ? 'enabled' : state === 'paused' ? 'paused' : 'info'),
+                textContent: state === 'enabled' ? 'Running' : state === 'paused' ? 'Paused' : 'Mixed'
+            }) : null;
+
+        const quickActions = isActive && state !== 'empty'
+            ? App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } }, [
+                state !== 'enabled' ? App.el('button', {
+                    className: 'btn btn-sm btn-success',
+                    textContent: 'Unpause',
+                    onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'unpause', group.name, listEl); }
+                }) : null,
+                state !== 'paused' ? App.el('button', {
+                    className: 'btn btn-sm btn-warning',
+                    textContent: 'Pause',
+                    onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'pause', group.name, listEl); }
+                }) : null
+            ].filter(Boolean)) : null;
+
+        return App.el('div', { className: 'card', style: { marginBottom: '0.75rem', cursor: 'pointer' },
+            onClick: () => { window.location.hash = '#/groups/' + group.id; }
+        }, [
+            App.el('div', { className: 'flex-between' }, [
+                App.el('div', { style: { flex: '1', minWidth: '0' } }, [
+                    App.el('div', { className: 'flex-center gap-sm' }, [
+                        App.el('span', { className: 'status-dot status-dot-' + (isActive ? state : 'empty') }),
+                        App.el('span', { className: 'card-title', textContent: group.name }),
+                        App.el('span', { className: 'badge ' + (isActive ? 'badge-active' : 'badge-inactive'),
+                            textContent: isActive ? 'Active' : 'Inactive' }),
+                        stateBadge
+                    ].filter(Boolean)),
+                    group.description ? App.el('p', { className: 'text-sm text-secondary mt-1', textContent: group.description }) : null
+                ].filter(Boolean)),
+                App.el('div', { className: 'flex-center' }, [
+                    App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
+                        App.el('div', { textContent: formatGroupMembers(group) }),
+                        App.el('div', { textContent: pluralize(group.schedule_count || 0, 'schedule') })
+                    ]),
+                    quickActions
+                ].filter(Boolean))
+            ])
+        ]);
+    }
+
+    /**
+     * Build a one-line summary of what a group contains. Empty parts are
+     * omitted so a kiosk-only group reads "2 kiosks" rather than
+     * "0 categories, 0 games, 2 kiosks".
+     */
+    function formatGroupMembers(group) {
+        const stats = group.game_stats || {};
+        const gameCount = stats.total != null ? stats.total : (group.game_count || 0);
+        const kioskCount = (group.kiosk_stats && group.kiosk_stats.total) || 0;
+        const catCount = group.category_count || 0;
+
+        const parts = [];
+        if (catCount > 0) parts.push(pluralize(catCount, 'category', 'categories'));
+        if (gameCount > 0) parts.push(pluralize(gameCount, 'game'));
+        if (kioskCount > 0) parts.push(pluralize(kioskCount, 'kiosk'));
+
+        return parts.length === 0 ? 'No members' : parts.join(', ');
+    }
+
+    function pluralize(n, singular, plural) {
+        const word = n === 1 ? singular : (plural || (singular + 's'));
+        return n + ' ' + word;
     }
 
     async function renderGroupForm(container, params) {
@@ -438,7 +474,7 @@
 
     async function quickAction(groupId, action, groupName, listEl) {
         const verb = action === 'pause' ? 'Pause' : 'Unpause';
-        const confirmed = await App.confirm(verb + ' all games in "' + groupName + '"?');
+        const confirmed = await App.confirm(verb + ' "' + groupName + '"?');
         if (!confirmed) return;
 
         // Disable all quick-action buttons
@@ -452,65 +488,14 @@
             if (errors > 0) {
                 App.toast(verb + ' partially failed: ' + changed + ' changed, ' + errors + ' error(s).', 'warning');
             } else if (changed > 0) {
-                App.toast(groupName + ': ' + changed + ' game' + (changed !== 1 ? 's' : '') + ' ' + action + 'd.', 'success');
+                App.toast(groupName + ': ' + pluralize(changed, 'item') + ' ' + action + 'd.', 'success');
             } else {
-                App.toast(groupName + ': all games already ' + action + 'd.', 'info');
+                App.toast(groupName + ': already ' + action + 'd.', 'info');
             }
 
             // Reload group list to reflect new state
             const data = await API.get('groups') || {};
-            listEl.innerHTML = '';
-            const groups = data.groups || [];
-            groups.forEach(group => {
-                const state = group.effective_state || 'empty';
-                const stats = group.game_stats || {};
-                const isActive = group.is_active == 1;
-
-                const stateBadge = isActive && state !== 'empty'
-                    ? App.el('span', {
-                        className: 'badge badge-' + (state === 'enabled' ? 'enabled' : state === 'paused' ? 'paused' : 'info'),
-                        textContent: state === 'enabled' ? 'Running' : state === 'paused' ? 'Paused' : 'Mixed'
-                    }) : null;
-
-                const quickActions = isActive && state !== 'empty'
-                    ? App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } }, [
-                        state !== 'enabled' ? App.el('button', {
-                            className: 'btn btn-sm btn-success',
-                            textContent: 'Unpause',
-                            onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'unpause', group.name, listEl); }
-                        }) : null,
-                        state !== 'paused' ? App.el('button', {
-                            className: 'btn btn-sm btn-warning',
-                            textContent: 'Pause',
-                            onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'pause', group.name, listEl); }
-                        }) : null
-                    ].filter(Boolean)) : null;
-
-                const card = App.el('div', { className: 'card', style: { marginBottom: '0.75rem', cursor: 'pointer' },
-                    onClick: () => { window.location.hash = '#/groups/' + group.id; }
-                }, [
-                    App.el('div', { className: 'flex-between' }, [
-                        App.el('div', { style: { flex: '1', minWidth: '0' } }, [
-                            App.el('div', { className: 'flex-center gap-sm' }, [
-                                App.el('span', { className: 'status-dot status-dot-' + (isActive ? state : 'empty') }),
-                                App.el('span', { className: 'card-title', textContent: group.name }),
-                                App.el('span', { className: 'badge ' + (isActive ? 'badge-active' : 'badge-inactive'),
-                                    textContent: isActive ? 'Active' : 'Inactive' }),
-                                stateBadge
-                            ].filter(Boolean)),
-                            group.description ? App.el('p', { className: 'text-sm text-secondary mt-1', textContent: group.description }) : null
-                        ].filter(Boolean)),
-                        App.el('div', { className: 'flex-center' }, [
-                            App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
-                                App.el('div', { textContent: (group.category_count || 0) + ' categories, ' + (stats.total || group.game_count || 0) + ' games' + ((group.kiosk_stats && group.kiosk_stats.total) ? ', ' + group.kiosk_stats.total + ' kiosk' + (group.kiosk_stats.total !== 1 ? 's' : '') : '') }),
-                                App.el('div', { textContent: (group.schedule_count || 0) + ' schedules' })
-                            ]),
-                            quickActions
-                        ].filter(Boolean))
-                    ])
-                ]);
-                listEl.appendChild(card);
-            });
+            renderGroupCards(listEl, data.groups || []);
         } catch (err) {
             App.toast(verb + ' failed: ' + err.message, 'error');
             listEl.querySelectorAll('.btn-success, .btn-warning').forEach(b => { b.disabled = false; });

@@ -780,13 +780,12 @@
         if (summaryEl) {
             activeGroups.forEach(function(group) {
                 var state = group.effective_state || 'empty';
-                var stats = group.game_stats || {};
                 var item = App.el('div', { className: 'groups-summary-item' }, [
                     App.el('span', { className: 'status-dot status-dot-' + state }),
                     App.el('span', { textContent: group.name, style: { fontWeight: '500', fontSize: '0.82rem' } }),
                     App.el('span', {
                         className: 'text-xs text-muted',
-                        textContent: (stats.total || 0) + ' games'
+                        textContent: formatMemberSummary(group)
                     })
                 ]);
                 summaryEl.appendChild(item);
@@ -795,7 +794,7 @@
 
         // Full card view
         activeGroups.forEach(function(group) {
-            var stats = group.game_stats || {};
+            var combined = group.combined_stats || group.game_stats || {};
             var state = group.effective_state || 'empty';
             var override = group.active_override;
             var nextTrans = group.next_transition;
@@ -803,10 +802,9 @@
             var stateLabel = state === 'paused' ? 'Paused'
                 : state === 'enabled' ? 'Running'
                 : state === 'mixed' ? 'Mixed'
-                : 'No Games';
+                : 'No Members';
 
             var isPaused = state === 'paused';
-            var isEnabled = state === 'enabled';
             var isEmpty = state === 'empty';
 
             var card = App.el('div', {
@@ -826,28 +824,28 @@
                 })
             ]));
 
-            // Stats: game count + progress bar + breakdown
-            if (stats.total > 0) {
-                var enabledPct = (stats.enabled / stats.total * 100).toFixed(1);
-                var pausedPct = (stats.paused / stats.total * 100).toFixed(1);
-                var oosPct = (stats.out_of_service / stats.total * 100).toFixed(1);
+            // Stats: member summary + progress bar + breakdown across games AND kiosks
+            if (combined.total > 0) {
+                var enabledPct = (combined.enabled / combined.total * 100).toFixed(1);
+                var pausedPct = (combined.paused / combined.total * 100).toFixed(1);
+                var oosPct = (combined.out_of_service / combined.total * 100).toFixed(1);
 
                 card.appendChild(App.el('div', { className: 'group-control-stats' }, [
-                    App.el('span', { className: 'text-muted', textContent: stats.total + ' game' + (stats.total !== 1 ? 's' : '') }),
+                    App.el('span', { className: 'text-muted', textContent: formatMemberSummary(group) }),
                     App.el('div', { className: 'progress-bar' }, [
                         App.el('div', { className: 'progress-fill-enabled', style: { width: enabledPct + '%' } }),
                         App.el('div', { className: 'progress-fill-paused', style: { width: pausedPct + '%' } }),
                         App.el('div', { className: 'progress-fill-oos', style: { width: oosPct + '%' } })
                     ]),
                     App.el('span', { className: 'text-xs' }, [
-                        App.el('span', { className: 'text-success', textContent: String(stats.enabled) }),
+                        App.el('span', { className: 'text-success', textContent: String(combined.enabled) }),
                         App.el('span', { className: 'text-muted', textContent: ' / ' }),
-                        App.el('span', { className: 'text-warning', textContent: String(stats.paused) }),
-                        stats.out_of_service > 0
+                        App.el('span', { className: 'text-warning', textContent: String(combined.paused) }),
+                        combined.out_of_service > 0
                             ? App.el('span', { className: 'text-muted', textContent: ' / ' })
                             : null,
-                        stats.out_of_service > 0
-                            ? App.el('span', { className: 'text-danger', textContent: String(stats.out_of_service) })
+                        combined.out_of_service > 0
+                            ? App.el('span', { className: 'text-danger', textContent: String(combined.out_of_service) })
                             : null
                     ].filter(Boolean))
                 ]));
@@ -885,29 +883,29 @@
             var actionRow = App.el('div', { className: 'group-control-actions' });
 
             if (isEmpty) {
-                actionRow.appendChild(App.el('span', { className: 'text-muted text-xs', style: { padding: '0.35rem 0', display: 'block', textAlign: 'center', width: '100%' }, textContent: 'No games assigned to this group' }));
+                actionRow.appendChild(App.el('span', { className: 'text-muted text-xs', style: { padding: '0.35rem 0', display: 'block', textAlign: 'center', width: '100%' }, textContent: 'No games or kiosks assigned to this group' }));
             } else if (state === 'mixed') {
                 actionRow.appendChild(App.el('button', {
                     className: 'btn btn-success',
                     textContent: 'Unpause All',
-                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, stats.total); }
+                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }
                 }));
                 actionRow.appendChild(App.el('button', {
                     className: 'btn btn-warning',
                     textContent: 'Pause All',
-                    onClick: function() { doGroupAction(group.id, 'pause', group.name, stats.total); }
+                    onClick: function() { doGroupAction(group.id, 'pause', group.name, combined.total); }
                 }));
             } else if (isPaused) {
                 actionRow.appendChild(App.el('button', {
                     className: 'btn btn-success',
                     textContent: 'Unpause Group',
-                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, stats.total); }
+                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }
                 }));
             } else {
                 actionRow.appendChild(App.el('button', {
                     className: 'btn btn-warning',
                     textContent: 'Pause Group',
-                    onClick: function() { doGroupAction(group.id, 'pause', group.name, stats.total); }
+                    onClick: function() { doGroupAction(group.id, 'pause', group.name, combined.total); }
                 }));
             }
 
@@ -916,9 +914,11 @@
         });
     }
 
-    async function doGroupAction(groupId, action, groupName, gameCount) {
+    async function doGroupAction(groupId, action, groupName, memberCount) {
         var verb = action === 'pause' ? 'Pause' : 'Unpause';
-        var msg = verb + ' all ' + gameCount + ' game' + (gameCount !== 1 ? 's' : '') + ' in "' + groupName + '"?';
+        var noun = memberCount === 1 ? 'item' : 'items';
+        var countLabel = memberCount > 0 ? memberCount + ' ' + noun : 'everything';
+        var msg = verb + ' ' + countLabel + ' in "' + groupName + '"?';
         var confirmed = await App.confirm(msg);
         if (!confirmed) return;
 
@@ -1031,6 +1031,8 @@
      * Optimistic update: apply expected state change to all games in a group
      * and update the group's local state, before the API call returns.
      * Uses game_ids from the groups API to know which games belong to the group.
+     * Kiosks are flipped only at the stats level (we don't track kiosk state
+     * locally) so the group card still toggles state immediately.
      */
     function applyOptimisticGroupAction(groupId, desiredStatus) {
         // Find the group and its game IDs
@@ -1038,41 +1040,78 @@
         for (var i = 0; i < allGroups.length; i++) {
             if (allGroups[i].id == groupId) { group = allGroups[i]; break; }
         }
-        if (!group || !group.game_ids) return;
+        if (!group) return;
 
         // Build a set of game IDs in this group
         var groupGameSet = {};
-        group.game_ids.forEach(function(id) { groupGameSet[id] = true; });
+        (group.game_ids || []).forEach(function(id) { groupGameSet[id] = true; });
 
         // Update allGames in place
-        var enabledCount = 0, pausedCount = 0, oosCount = 0;
+        var gEnabled = 0, gPaused = 0, gOos = 0;
         allGames.forEach(function(game) {
             if (groupGameSet[game.game_id]) {
                 // Only change non-outOfService games
                 if (game.operation_status !== 'outOfService') {
                     game.operation_status = desiredStatus;
                 }
-                // Tally for group stats
-                if (game.operation_status === 'enabled') enabledCount++;
-                else if (game.operation_status === 'paused') pausedCount++;
-                else if (game.operation_status === 'outOfService') oosCount++;
+                if (game.operation_status === 'enabled') gEnabled++;
+                else if (game.operation_status === 'paused') gPaused++;
+                else if (game.operation_status === 'outOfService') gOos++;
             }
         });
 
-        // Update group's local state
-        var total = enabledCount + pausedCount + oosCount;
         group.game_stats = {
-            total: total,
-            enabled: enabledCount,
-            paused: pausedCount,
-            out_of_service: oosCount
+            total: gEnabled + gPaused + gOos,
+            enabled: gEnabled,
+            paused: gPaused,
+            out_of_service: gOos
         };
-        group.effective_state = total === 0 ? 'empty'
-            : (pausedCount > 0 && enabledCount === 0 ? 'paused'
-            : (enabledCount > 0 && pausedCount === 0 ? 'enabled' : 'mixed'));
+
+        // Optimistically flip kiosk stats too (server reconciles on next poll).
+        var ks = group.kiosk_stats || { total: 0, enabled: 0, paused: 0, out_of_service: 0, unknown: 0 };
+        var kFlippable = ks.total - (ks.out_of_service || 0) - (ks.unknown || 0);
+        var kEnabled = desiredStatus === 'paused' ? 0 : kFlippable;
+        var kPaused = desiredStatus === 'paused' ? kFlippable : 0;
+        group.kiosk_stats = {
+            total: ks.total,
+            enabled: kEnabled,
+            paused: kPaused,
+            out_of_service: ks.out_of_service || 0,
+            unknown: ks.unknown || 0
+        };
+
+        var cEnabled = gEnabled + kEnabled;
+        var cPaused = gPaused + kPaused;
+        var cOos = gOos + (ks.out_of_service || 0);
+        var cTotal = cEnabled + cPaused + cOos;
+        group.combined_stats = {
+            total: cTotal,
+            enabled: cEnabled,
+            paused: cPaused,
+            out_of_service: cOos
+        };
+        group.effective_state = cTotal === 0 ? 'empty'
+            : (cPaused > 0 && cEnabled === 0 ? 'paused'
+            : (cEnabled > 0 && cPaused === 0 ? 'enabled' : 'mixed'));
 
         // Mark as manually overridden
         group.manual_override = { action: desiredStatus === 'paused' ? 'pause' : 'unpause', at: new Date().toISOString() };
+    }
+
+    /**
+     * One-line summary of what's in a group, omitting empty parts and
+     * pluralizing properly. Example outputs:
+     *   "12 games"  /  "2 kiosks"  /  "12 games, 2 kiosks"  /  "no members"
+     */
+    function formatMemberSummary(group) {
+        var gs = group.game_stats || {};
+        var ks = group.kiosk_stats || {};
+        var games = gs.total || 0;
+        var kiosks = ks.total || 0;
+        var parts = [];
+        if (games > 0) parts.push(games + ' game' + (games !== 1 ? 's' : ''));
+        if (kiosks > 0) parts.push(kiosks + ' kiosk' + (kiosks !== 1 ? 's' : ''));
+        return parts.length === 0 ? 'no members' : parts.join(', ');
     }
 
     /**

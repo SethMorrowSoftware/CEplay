@@ -72,7 +72,7 @@
                 listEl.appendChild(App.el('p', {
                     className: 'text-sm text-secondary',
                     style: { marginBottom: '0.75rem' },
-                    textContent: 'Last synced: ' + data.last_synced + ' UTC'
+                    textContent: 'Last synced: ' + App.formatDatetime(data.last_synced) + ' (' + App.appTimezone + ')'
                 }));
             }
 
@@ -177,7 +177,8 @@
 
     async function doStatusChange(kiosk, action) {
         var verb = action === 'pause' ? 'Pause' : action === 'unpause' ? 'Unpause' : 'Take out of service';
-        if (!confirm(verb + ' "' + (kiosk.name || kiosk.id) + '"?')) return;
+        var confirmed = await App.confirm(verb + ' "' + (kiosk.name || kiosk.id) + '"?');
+        if (!confirmed) return;
 
         try {
             var result = await API.post('kiosks/' + encodeURIComponent(kiosk.id) + '/' + action);
@@ -193,7 +194,8 @@
     }
 
     async function doRpcAction(kiosk, action) {
-        if (!confirm('Run "' + (action.name || action.id) + '" on "' + (kiosk.name || kiosk.id) + '"?')) return;
+        var confirmed = await App.confirm('Run "' + (action.name || action.id) + '" on "' + (kiosk.name || kiosk.id) + '"?');
+        if (!confirmed) return;
         try {
             await API.post('kiosks/' + encodeURIComponent(kiosk.id) + '/action', { actionId: action.id });
             App.toast('Action "' + (action.name || action.id) + '" sent.', 'success');

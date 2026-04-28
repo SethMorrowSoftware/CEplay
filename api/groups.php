@@ -96,21 +96,25 @@ function listGroups(): void {
     foreach ($groups as &$group) {
         $gid = (int)$group['id'];
 
-        // Aggregate state across both games and kiosks. Effective state and
-        // counts treat them as a single pool so the dashboard's "Pause Group"
-        // button reflects whether everything in the group is paused.
+        // Resolve full member lists (games via categories + individual; kiosks).
+        // Game and kiosk counts are kept separate so the UI can present them
+        // distinctly. The combined `effective_state` aggregates across both
+        // pools so a kiosk-only or mixed group still reports a meaningful
+        // pause state to the dashboard's "Pause Group" button.
         $gameIds = Scheduler::resolveGroupGames($gid);
         $kioskIds = Scheduler::resolveGroupKiosks($gid);
-        $enabledCount = 0;
-        $pausedCount = 0;
-        $oosCount = 0;
+
+        $gameEnabled = 0;
+        $gamePaused = 0;
+        $gameOos = 0;
         foreach ($gameIds as $gameId) {
             $cached = DB::queryOne('SELECT operation_status FROM game_state_cache WHERE game_id = :p0', [$gameId]);
             if (!$cached) continue;
-            if ($cached['operation_status'] === 'enabled') $enabledCount++;
-            elseif ($cached['operation_status'] === 'paused') $pausedCount++;
-            elseif ($cached['operation_status'] === 'outOfService') $oosCount++;
+            if ($cached['operation_status'] === 'enabled') $gameEnabled++;
+            elseif ($cached['operation_status'] === 'paused') $gamePaused++;
+            elseif ($cached['operation_status'] === 'outOfService') $gameOos++;
         }
+
         $kioskEnabled = 0;
         $kioskPaused = 0;
         $kioskOos = 0;
@@ -119,20 +123,25 @@ function listGroups(): void {
             $cached = DB::queryOne('SELECT operation_status FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
             if (!$cached) continue;
             $st = $cached['operation_status'];
-            if ($st === 'enabled') { $kioskEnabled++; $enabledCount++; }
-            elseif ($st === 'paused') { $kioskPaused++; $pausedCount++; }
-            elseif ($st === 'outOfService') { $kioskOos++; $oosCount++; }
-            else { $kioskUnknown++; }
+            if ($st === 'enabled') $kioskEnabled++;
+            elseif ($st === 'paused') $kioskPaused++;
+            elseif ($st === 'outOfService') $kioskOos++;
+            else $kioskUnknown++;
         }
-        $total = $enabledCount + $pausedCount + $oosCount;
-        $group['effective_state'] = $total === 0 ? 'empty'
-            : ($pausedCount > 0 && $enabledCount === 0 ? 'paused'
-            : ($enabledCount > 0 && $pausedCount === 0 ? 'enabled' : 'mixed'));
+
+        $combinedEnabled = $gameEnabled + $kioskEnabled;
+        $combinedPaused = $gamePaused + $kioskPaused;
+        $combinedOos = $gameOos + $kioskOos;
+        $combinedTotal = $combinedEnabled + $combinedPaused + $combinedOos;
+
+        $group['effective_state'] = $combinedTotal === 0 ? 'empty'
+            : ($combinedPaused > 0 && $combinedEnabled === 0 ? 'paused'
+            : ($combinedEnabled > 0 && $combinedPaused === 0 ? 'enabled' : 'mixed'));
         $group['game_stats'] = [
-            'total' => $total,
-            'enabled' => $enabledCount,
-            'paused' => $pausedCount,
-            'out_of_service' => $oosCount,
+            'total' => $gameEnabled + $gamePaused + $gameOos,
+            'enabled' => $gameEnabled,
+            'paused' => $gamePaused,
+            'out_of_service' => $gameOos,
         ];
         $group['kiosk_stats'] = [
             'total' => count($kioskIds),
@@ -140,6 +149,12 @@ function listGroups(): void {
             'paused' => $kioskPaused,
             'out_of_service' => $kioskOos,
             'unknown' => $kioskUnknown,
+        ];
+        $group['combined_stats'] = [
+            'total' => $combinedTotal,
+            'enabled' => $combinedEnabled,
+            'paused' => $combinedPaused,
+            'out_of_service' => $combinedOos,
         ];
         $group['game_ids'] = array_values($gameIds);
         $group['kiosk_ids'] = array_values($kioskIds);
