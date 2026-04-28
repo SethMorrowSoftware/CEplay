@@ -326,6 +326,119 @@ class CenterEdgeClient {
     }
 
     // -----------------------------------------------
+    // Kiosk Endpoints
+    // -----------------------------------------------
+
+    /**
+     * Get a paginated list of kiosks.
+     */
+    public function getKiosks(int $skip = 0, int $take = 100): array {
+        return $this->request('GET', '/kiosks', null, ['skip' => $skip, 'take' => $take]);
+    }
+
+    /**
+     * Fetch ALL kiosks from CenterEdge (handles pagination).
+     */
+    public function getAllKiosks(): array {
+        return $this->fetchAllPaginated('/kiosks', 'kiosks');
+    }
+
+    /**
+     * Get a single kiosk by ID.
+     */
+    public function getKiosk(string $kioskId): array {
+        return $this->request('GET', '/kiosks/' . urlencode($kioskId));
+    }
+
+    /**
+     * Patch kiosk operation statuses using JSON Patch format.
+     * $changes = ['kioskId' => 'paused', 'kioskId2' => 'enabled', ...]
+     * Returns ['kiosks' => [...], 'errors' => [...]]
+     *
+     * Per the API spec, only call this when the capabilities endpoint reports
+     * `kiosks.operationStatus` is true. The server may reject otherwise.
+     */
+    public function patchKiosks(array $changes): array {
+        if (empty($changes)) {
+            return ['kiosks' => [], 'errors' => []];
+        }
+
+        $kiosksPayload = [];
+        foreach ($changes as $kioskId => $status) {
+            if (!in_array($status, ['enabled', 'paused', 'outOfService'], true)) {
+                throw new RuntimeException("Invalid operationStatus '$status' for kiosk '$kioskId'.");
+            }
+            $kiosksPayload[(string)$kioskId] = [
+                ['op' => 'replace', 'path' => '/operationStatus', 'value' => $status]
+            ];
+        }
+
+        $result = $this->request('PATCH', '/kiosks', ['kiosks' => $kiosksPayload]);
+
+        return [
+            'kiosks' => is_array($result['kiosks'] ?? null) ? $result['kiosks'] : [],
+            'errors' => is_array($result['errors'] ?? null) ? $result['errors'] : [],
+        ];
+    }
+
+    /**
+     * Perform an action on a kiosk (RPC-style, e.g. "reboot").
+     */
+    public function performKioskAction(string $kioskId, string $actionId, array $operator): array {
+        return $this->request('POST', '/kiosks/' . urlencode($kioskId) . '/performAction', [
+            'actionId' => $actionId,
+            'operator' => $operator,
+        ]);
+    }
+
+    /**
+     * Sync all kiosks to the kiosk_state_cache table.
+     * Returns count of kiosks synced.
+     */
+    public function syncKiosksToCache(): int {
+        $kiosks = $this->getAllKiosks();
+        $seenIds = [];
+
+        foreach ($kiosks as $kiosk) {
+            $kioskId = (string)($kiosk['id'] ?? '');
+            if ($kioskId === '') continue;
+            $seenIds[] = $kioskId;
+            $name = $kiosk['name'] ?? '';
+            // Per spec: missing operationStatus means "unknown" — clients MUST NOT
+            // try to change it. Store as-is so the UI can hide pause controls.
+            $opStatus = isset($kiosk['operationStatus']) ? (string)$kiosk['operationStatus'] : '';
+            $categories = json_encode($kiosk['categories'] ?? []);
+            $actions = json_encode($kiosk['supportedActions'] ?? []);
+
+            DB::execute(
+                'INSERT INTO kiosk_state_cache (kiosk_id, kiosk_name, operation_status, categories, supported_actions, last_synced_at)
+                 VALUES (:p0, :p1, :p2, :p3, :p4, datetime(\'now\'))
+                 ON CONFLICT(kiosk_id) DO UPDATE SET
+                     kiosk_name = :p1, operation_status = :p2, categories = :p3,
+                     supported_actions = :p4, last_synced_at = datetime(\'now\')',
+                [$kioskId, $name, $opStatus, $categories, $actions]
+            );
+        }
+
+        if (empty($seenIds)) {
+            DB::execute('DELETE FROM kiosk_state_cache');
+        } else {
+            $placeholders = [];
+            $params = [];
+            foreach ($seenIds as $i => $kid) {
+                $placeholders[] = ':p' . $i;
+                $params[] = $kid;
+            }
+            DB::execute(
+                'DELETE FROM kiosk_state_cache WHERE kiosk_id NOT IN (' . implode(',', $placeholders) . ')',
+                $params
+            );
+        }
+
+        return count($kiosks);
+    }
+
+    // -----------------------------------------------
     // Privileges & Time Plays
     // -----------------------------------------------
 

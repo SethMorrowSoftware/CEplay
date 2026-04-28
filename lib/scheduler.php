@@ -751,6 +751,14 @@ class Scheduler {
     }
 
     /**
+     * Sync kiosk states from CenterEdge to cache.
+     */
+    public static function syncKioskStates(): int {
+        $client = new CenterEdgeClient();
+        return $client->syncKiosksToCache();
+    }
+
+    /**
      * Sync game states only if the cache is older than $maxAgeSeconds.
      * Returns the number of games synced, or 0 if the cache is still fresh.
      */

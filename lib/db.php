@@ -158,6 +158,20 @@ class DB {
             last_synced_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
 
+        // Cache of kiosks pulled from the CenterEdge `/kiosks` endpoint.
+        // operation_status mirrors the API's GameOperationStatus enum
+        // (enabled | paused | outOfService) and may be empty when the
+        // device reports "unknown" (per spec, such kiosks must NOT be
+        // pause-controlled via the PATCH /kiosks endpoint).
+        $db->exec('CREATE TABLE IF NOT EXISTS kiosk_state_cache (
+            kiosk_id TEXT PRIMARY KEY,
+            kiosk_name TEXT NOT NULL,
+            operation_status TEXT NOT NULL DEFAULT \'\',
+            categories TEXT DEFAULT \'[]\',
+            supported_actions TEXT DEFAULT \'[]\',
+            last_synced_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+
         $db->exec('CREATE TABLE IF NOT EXISTS login_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ip_address TEXT NOT NULL,
