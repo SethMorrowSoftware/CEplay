@@ -1466,7 +1466,7 @@ class Scheduler {
      * 30 days of executed scheduled_actions, and removes expired overrides
      * older than 90 days.
      */
-    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90): array {
+    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $playFeedRetentionDays = 14): array {
         $summary = [];
 
         // Purge old action_log entries
@@ -1492,6 +1492,16 @@ class Scheduler {
             [$cutoff]
         );
         $summary['overrides_purged'] = $deleted;
+
+        // Purge old game-play transactions. We only need a recent rolling
+        // window for the live feed and top-games widget; longer-term reporting
+        // is owned by CenterEdge itself.
+        $cutoff = date('c', strtotime("-$playFeedRetentionDays days"));
+        $deleted = DB::execute(
+            'DELETE FROM game_play_transactions WHERE transaction_time < :p0',
+            [$cutoff]
+        );
+        $summary['game_plays_purged'] = $deleted;
 
         return $summary;
     }

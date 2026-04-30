@@ -206,6 +206,8 @@ const App = {
 
         const navItems = [
             { hash: '#/dashboard', icon: '\u25A3', label: 'Dashboard' },
+            { hash: '#/games', icon: '\u25C6', label: 'Games' },
+            { hash: '#/cards', icon: '\u25EB', label: 'Card Lookup' },
             { hash: '#/groups', icon: '\u25CB', label: 'Pause Groups' },
             { hash: '#/kiosks', icon: '\u25A4', label: 'Kiosks' },
             { hash: '#/schedules', icon: '\u25F4', label: 'Schedules' },

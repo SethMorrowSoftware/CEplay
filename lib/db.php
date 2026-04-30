@@ -213,6 +213,35 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_ip ON login_attempts(ip_address)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_time ON login_attempts(attempted_at)');
 
+        // Local cache of the CenterEdge game-play transaction stream. We poll
+        // /games/transactions on the watchdog cron and append into this table
+        // using INSERT OR IGNORE on transaction_id so duplicate fetches are
+        // safe. This powers the live activity feed and top-games widget.
+        // The checkpoint (last processed transaction ID per feed) is stored
+        // in api_config under "game_tx_last_id_<feedName>".
+        $db->exec('CREATE TABLE IF NOT EXISTS game_play_transactions (
+            transaction_id INTEGER NOT NULL,
+            feed_name TEXT NOT NULL DEFAULT \'default\',
+            card_number TEXT NOT NULL DEFAULT \'\',
+            type TEXT NOT NULL DEFAULT \'\',
+            game_id TEXT NOT NULL DEFAULT \'\',
+            game_description TEXT DEFAULT \'\',
+            transaction_time TEXT NOT NULL DEFAULT \'\',
+            regular_points REAL NOT NULL DEFAULT 0,
+            bonus_points REAL NOT NULL DEFAULT 0,
+            redemption_tickets REAL NOT NULL DEFAULT 0,
+            cash_amount REAL NOT NULL DEFAULT 0,
+            used_time_play INTEGER NOT NULL DEFAULT 0,
+            used_play_privilege INTEGER NOT NULL DEFAULT 0,
+            raw_payload TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (feed_name, transaction_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_time ON game_play_transactions(transaction_time DESC)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_game ON game_play_transactions(game_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
+
         // One-time cleanup of tables from removed feature modules.
         // The card/parties/maintenance/etc. modules were dropped to scope this
         // app to pause-groups + kiosks only. DROP IF EXISTS is safe to run on

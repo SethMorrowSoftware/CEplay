@@ -94,6 +94,23 @@ try {
         error_log("[" . date('c') . "] watchdog processRetries error: " . $e->getMessage());
     }
 
+    // Poll the upstream game-play transaction feed. Best-effort: if the API is
+    // unreachable or the card system doesn't expose the feed yet, swallow the
+    // error so the rest of the watchdog cycle still runs. Capped at 20 pages
+    // per cycle (4000 plays) to keep watchdog runtime bounded.
+    try {
+        $client = new CenterEdgeClient();
+        if ($client->isConfigured()) {
+            $txSummary = $client->pollGameTransactions('default');
+            if (!empty($txSummary['fetched'])) {
+                echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
+            }
+        }
+    } catch (Exception $e) {
+        $errors[] = "pollGameTransactions: " . $e->getMessage();
+        error_log("[" . date('c') . "] watchdog pollGameTransactions error: " . $e->getMessage());
+    }
+
     // Write heartbeat even if individual steps had transient errors,
     // so long as the watchdog itself is running
     Scheduler::writeHeartbeat('watchdog');

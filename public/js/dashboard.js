@@ -232,6 +232,24 @@
         var statsGrid = App.el('div', { className: 'stats-grid', id: 'stats-grid' });
         container.appendChild(statsGrid);
 
+        // Top games today (live cache)
+        container.appendChild(App.el('div', { className: 'card mt-2', id: 'top-games-card' }, [
+            App.el('div', { className: 'card-header flex-between' }, [
+                App.el('div', { className: 'flex-center gap-sm' }, [
+                    App.el('div', { className: 'card-title', textContent: 'Top games today' }),
+                    App.el('span', { id: 'top-games-meta', className: 'text-sm text-secondary' })
+                ]),
+                App.el('a', {
+                    className: 'btn btn-ghost btn-sm',
+                    href: '#/games',
+                    textContent: 'Open games page'
+                })
+            ]),
+            App.el('div', { id: 'top-games-body', className: 'card-body' }, [
+                App.el('p', { className: 'text-sm text-secondary', textContent: 'Loading…' })
+            ])
+        ]));
+
         // Group controls (collapsible)
         container.appendChild(App.el('div', { className: 'card mt-2', id: 'group-controls-card' }, [
             App.el('div', { className: 'card-header' }, [
@@ -396,11 +414,55 @@
             var syncEl = document.getElementById('last-sync');
             if (syncEl) {
                 syncEl.textContent = gamesData.last_synced
-                    ? 'Last synced: ' + App.formatDatetime(gamesData.last_synced) + ' (' + App.appTimezone + ')' 
+                    ? 'Last synced: ' + App.formatDatetime(gamesData.last_synced) + ' (' + App.appTimezone + ')'
                     : 'Not yet synced';
             }
+
+            // Top-games widget — fire-and-forget; failure shouldn't break the
+            // rest of the dashboard.
+            loadTopGames();
         } catch (err) {
             App.toast(err.message, 'error');
+        }
+    }
+
+    async function loadTopGames() {
+        var body = document.getElementById('top-games-body');
+        var meta = document.getElementById('top-games-meta');
+        if (!body) return;
+        try {
+            var data = await API.get('games/transactions/top?window=today&limit=5');
+            body.innerHTML = '';
+            var rows = data.top || [];
+            if (meta) meta.textContent = rows.length ? (rows.length + ' game' + (rows.length === 1 ? '' : 's') + ' active today') : '';
+            if (rows.length === 0) {
+                body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                    textContent: 'No plays cached yet today. The watchdog cron polls every minute once the card system has play data.' }));
+                return;
+            }
+            var maxPlays = rows.reduce(function(m, r) { return Math.max(m, r.plays || 0); }, 0) || 1;
+            var list = App.el('ol', { className: 'top-games-list' });
+            rows.forEach(function(r, i) {
+                var pct = Math.max(4, Math.round((r.plays / maxPlays) * 100));
+                var name = r.game_name || ('Game ' + r.game_id);
+                var meta2 = r.plays + (r.plays === 1 ? ' play' : ' plays');
+                if (r.sum_tickets > 0) meta2 += '  •  ' + Math.round(r.sum_tickets) + ' tickets';
+                list.appendChild(App.el('li', { className: 'top-games-item' }, [
+                    App.el('div', { className: 'top-games-rank', textContent: '#' + (i + 1) }),
+                    App.el('div', { className: 'top-games-body' }, [
+                        App.el('div', { className: 'plain-list-title', textContent: name }),
+                        App.el('div', { className: 'top-games-bar' }, [
+                            App.el('div', { className: 'top-games-bar-fill', style: { width: pct + '%' } })
+                        ]),
+                        App.el('div', { className: 'text-sm text-secondary', textContent: meta2 })
+                    ])
+                ]));
+            });
+            body.appendChild(list);
+        } catch (err) {
+            // Non-fatal — show a quiet hint rather than a toast.
+            body.innerHTML = '';
+            body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Top games unavailable.' }));
         }
     }
 

@@ -83,7 +83,8 @@ try {
         $purged = Scheduler::purgeOldData();
         echo "  Purged: {$purged['action_log_purged']} log entries, "
             . "{$purged['scheduled_actions_purged']} old actions, "
-            . "{$purged['overrides_purged']} expired overrides.\n";
+            . "{$purged['overrides_purged']} expired overrides, "
+            . "{$purged['game_plays_purged']} old game plays.\n";
     } catch (Exception $e) {
         echo "  WARNING: Data purge failed: " . $e->getMessage() . "\n";
     }

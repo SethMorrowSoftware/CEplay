@@ -277,6 +277,156 @@ class CenterEdgeClient {
         ]);
     }
 
+    // -----------------------------------------------
+    // Single Game / Game RPC Actions
+    // -----------------------------------------------
+
+    /**
+     * Fetch a single game by ID. Returns the game object as the API delivers it
+     * (id, name, operationStatus, categories, supportedActions, etc.).
+     */
+    public function getGame(string $gameId): array {
+        return $this->request('GET', '/games/' . urlencode($gameId));
+    }
+
+    /**
+     * Perform an RPC-style action on a game (e.g. "reboot").
+     * Returns the updated Game object per the spec.
+     */
+    public function performGameAction(string $gameId, string $actionId, array $operator): array {
+        return $this->request('POST', '/games/' . urlencode($gameId) . '/performAction', [
+            'actionId' => $actionId,
+            'operator' => $operator,
+        ]);
+    }
+
+    // -----------------------------------------------
+    // Game Transactions Stream (live play feed)
+    // -----------------------------------------------
+
+    /**
+     * Fetch a page of game-play transactions since (exclusive) the given ID.
+     * Returns the raw API payload: ['transactions' => [...], 'sinceId' => <int>].
+     *
+     * The API guarantees ascending order by ID and that IDs are unique within
+     * a feed, so callers can checkpoint the highest ID they've processed.
+     */
+    public function getGameTransactions(int $sinceId, ?string $feedName = null, int $take = 200): array {
+        $query = ['sinceId' => $sinceId, 'take' => $take];
+        if ($feedName !== null && $feedName !== '') {
+            $query['feedName'] = $feedName;
+        }
+        return $this->request('GET', '/games/transactions', null, $query);
+    }
+
+    /**
+     * Poll game-play transactions and persist them into the local cache.
+     * Walks the feed forward from the last processed ID until either the API
+     * returns an empty page or the safety cap is hit (avoids unbounded loops
+     * if the upstream feed is huge).
+     *
+     * Returns ['fetched' => <int>, 'last_id' => <int>].
+     */
+    public function pollGameTransactions(string $feedName = 'default', int $maxPages = 20, int $pageSize = 200): array {
+        $stateKey = 'game_tx_last_id_' . $feedName;
+        $sinceId = (int)(DB::getConfig($stateKey) ?? '0');
+        $totalFetched = 0;
+        $lastId = $sinceId;
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $result = $this->getGameTransactions($sinceId, $feedName, $pageSize);
+            $txs = $result['transactions'] ?? [];
+            if (empty($txs)) {
+                break;
+            }
+
+            foreach ($txs as $tx) {
+                $txId = isset($tx['id']) ? (int)$tx['id'] : 0;
+                if ($txId <= 0) continue;
+
+                $cardNumber = isset($tx['cardNumber']) ? (string)$tx['cardNumber'] : '';
+                $type = isset($tx['type']) ? (string)$tx['type'] : '';
+                $gameId = isset($tx['gameId']) ? (string)$tx['gameId'] : '';
+                $gameDescription = isset($tx['gameDescription']) ? (string)$tx['gameDescription'] : '';
+                $transactionTime = isset($tx['transactionTime']) ? (string)$tx['transactionTime'] : '';
+                $usedTimePlay = !empty($tx['usedTimePlay']) ? 1 : 0;
+                $usedPlayPrivilege = !empty($tx['usedPlayPrivilege']) ? 1 : 0;
+
+                $amount = $tx['amount'] ?? [];
+                $regular = isset($amount['regularPoints']) ? (float)$amount['regularPoints'] : 0;
+                $bonus = isset($amount['bonusPoints']) ? (float)$amount['bonusPoints'] : 0;
+                $tickets = isset($amount['redemptionTickets']) ? (float)$amount['redemptionTickets'] : 0;
+                $cash = isset($amount['cash']) ? (float)$amount['cash'] : 0;
+
+                DB::execute(
+                    'INSERT OR IGNORE INTO game_play_transactions
+                        (transaction_id, feed_name, card_number, type, game_id, game_description,
+                         transaction_time, regular_points, bonus_points, redemption_tickets, cash_amount,
+                         used_time_play, used_play_privilege, raw_payload, fetched_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, :p10, :p11, :p12, :p13, datetime(\'now\'))',
+                    [
+                        $txId, $feedName, $cardNumber, $type, $gameId, $gameDescription,
+                        $transactionTime, $regular, $bonus, $tickets, $cash,
+                        $usedTimePlay, $usedPlayPrivilege, json_encode($tx)
+                    ]
+                );
+
+                if ($txId > $lastId) $lastId = $txId;
+                $totalFetched++;
+            }
+
+            // Persist checkpoint after every page so an interrupted poll
+            // doesn't replay work next cycle.
+            if ($lastId > $sinceId) {
+                DB::setConfig($stateKey, (string)$lastId, false);
+                $sinceId = $lastId;
+            }
+
+            // If we got fewer than requested, the feed is caught up.
+            if (count($txs) < $pageSize) {
+                break;
+            }
+        }
+
+        return ['fetched' => $totalFetched, 'last_id' => $lastId];
+    }
+
+    // -----------------------------------------------
+    // Card Endpoints
+    // -----------------------------------------------
+
+    /**
+     * Fetch a card by number. 404 from upstream surfaces as "HTTP 404"
+     * in the RuntimeException message.
+     */
+    public function getCard(string $cardNumber): array {
+        return $this->request('GET', '/cards/' . urlencode($cardNumber));
+    }
+
+    /**
+     * Fetch a paginated page of transactions for a card. Per spec, transactions
+     * are sorted descending (most recent first).
+     */
+    public function getCardTransactions(string $cardNumber, int $skip = 0, int $take = 50): array {
+        return $this->request('GET', '/cards/' . urlencode($cardNumber) . '/transactions', null, [
+            'skip' => $skip,
+            'take' => $take,
+        ]);
+    }
+
+    /**
+     * Probe / validate a card's PIN. If $validate is null we just probe whether
+     * the card has a PIN; otherwise we test the supplied PIN.
+     * 404 (no PIN / unknown card) is propagated as a RuntimeException.
+     */
+    public function getCardPin(string $cardNumber, ?string $validate = null): array {
+        $query = [];
+        if ($validate !== null && $validate !== '') {
+            $query['validate'] = $validate;
+        }
+        return $this->request('GET', '/cards/' . urlencode($cardNumber) . '/pin', null, $query);
+    }
+
     /**
      * Sync all kiosks to the kiosk_state_cache table.
      * Returns count of kiosks synced.

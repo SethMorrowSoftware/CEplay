@@ -166,6 +166,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/games.php';
                 handleGames($method, $parts, $input);
                 break;
+            case 'cards':
+                require_once __DIR__ . '/api/cards.php';
+                handleCards($method, $parts, $input);
+                break;
             case 'groups':
                 require_once __DIR__ . '/api/groups.php';
                 handleGroups($method, $parts, $input);
@@ -389,6 +393,8 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/app.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/login.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/dashboard.js"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/games.js"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/cards.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/groups.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/kiosks.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/schedules.js"></script>
