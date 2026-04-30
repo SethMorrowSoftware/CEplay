@@ -1,0 +1,14 @@
+# Runtime state — created at install/runtime, never committed.
+data/
+
+# Local environment overrides
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
