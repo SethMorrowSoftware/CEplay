@@ -8,9 +8,12 @@
  * What it does:
  *   1. Removes old database files
  *   2. Generates a new encryption key and writes it into config.php
- *   3. Initializes a fresh database with all tables
- *   4. Creates a default admin user (admin / admin123!)
+ *   3. Initializes a fresh database with all tables (including the role column)
+ *   4. Creates a default admin user (admin / admin123!) with role 'admin'
  *   5. Sets default timezone
+ *
+ * Roles available after install: admin (full access), tech (no sales),
+ * manager (no settings). Create tech/manager users from the Settings page.
  */
 
 $isCli = (php_sapi_name() === 'cli');
@@ -201,10 +204,10 @@ $adminDisplay = 'Administrator';
 $hash = password_hash($adminPass, PASSWORD_BCRYPT, ['cost' => 12]);
 try {
     DB::execute(
-        'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
-        [$adminUser, $hash, $adminDisplay]
+        'INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, :p3)',
+        [$adminUser, $hash, $adminDisplay, 'admin']
     );
-    out("Admin user created — username: $adminUser / password: $adminPass", 'ok');
+    out("Admin user created — username: $adminUser / password: $adminPass (role: admin)", 'ok');
 } catch (Exception $e) {
     out('Could not create admin user: ' . $e->getMessage(), 'error');
     if (!$isCli) { renderWeb($webOutput); }

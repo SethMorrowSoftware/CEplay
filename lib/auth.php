@@ -8,6 +8,12 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/csrf.php';
 
 class Auth {
+    /** Valid role identifiers. Order is informational only — no implicit hierarchy. */
+    public const ROLE_ADMIN   = 'admin';
+    public const ROLE_TECH    = 'tech';
+    public const ROLE_MANAGER = 'manager';
+    public const ROLES = [self::ROLE_ADMIN, self::ROLE_TECH, self::ROLE_MANAGER];
+
     /** Max failed login attempts allowed per IP within the rate-limit window. */
     private const RATE_LIMIT_MAX_TRIES = 10;
     /** Sliding window in seconds for counting failed attempts (15 minutes). */
@@ -53,7 +59,7 @@ class Auth {
      */
     public static function login(string $username, string $password, string $clientIp = ''): ?array {
         $user = DB::queryOne(
-            'SELECT id, username, password_hash, display_name, is_active FROM admin_users WHERE username = :p0',
+            'SELECT id, username, password_hash, display_name, is_active, role FROM admin_users WHERE username = :p0',
             [$username]
         );
 
@@ -87,6 +93,7 @@ class Auth {
             'id'           => $user['id'],
             'username'     => $user['username'],
             'display_name' => $user['display_name'],
+            'role'         => self::normalizeRole($user['role'] ?? self::ROLE_ADMIN),
         ];
         $_SESSION['auth_time'] = time();
 
@@ -131,6 +138,19 @@ class Auth {
         // Refresh last activity time
         $_SESSION['auth_time'] = time();
 
+        // Refresh role from DB on every check so role changes take effect within
+        // the existing session without requiring re-login.
+        $row = DB::queryOne(
+            'SELECT role, is_active FROM admin_users WHERE id = :p0',
+            [(int)$_SESSION['auth_user']['id']]
+        );
+        if (!$row || !$row['is_active']) {
+            // Account deactivated mid-session — kill the session.
+            self::logout();
+            return null;
+        }
+        $_SESSION['auth_user']['role'] = self::normalizeRole($row['role'] ?? self::ROLE_ADMIN);
+
         return $_SESSION['auth_user'];
     }
 
@@ -143,6 +163,38 @@ class Auth {
         if ($user === null) {
             http_response_code(401);
             echo json_encode(['error' => 'Authentication required']);
+            exit;
+        }
+        return $user;
+    }
+
+    /**
+     * Coerce an arbitrary role string to a known role, defaulting to admin
+     * for legacy/unknown values so upgrades don't lock out existing accounts.
+     */
+    public static function normalizeRole(?string $role): string {
+        $role = strtolower(trim((string)$role));
+        return in_array($role, self::ROLES, true) ? $role : self::ROLE_ADMIN;
+    }
+
+    /**
+     * Return true if the current authenticated user has any of the given roles.
+     */
+    public static function hasRole(array $allowedRoles): bool {
+        $user = self::check();
+        if (!$user) return false;
+        return in_array($user['role'] ?? self::ROLE_ADMIN, $allowedRoles, true);
+    }
+
+    /**
+     * Require the authenticated user to hold one of the allowed roles.
+     * Sends 401 if unauthenticated, 403 if authenticated but unauthorized.
+     */
+    public static function requireRole(array $allowedRoles): array {
+        $user = self::requireAuth();
+        if (!in_array($user['role'] ?? self::ROLE_ADMIN, $allowedRoles, true)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have permission to access this resource.']);
             exit;
         }
         return $user;

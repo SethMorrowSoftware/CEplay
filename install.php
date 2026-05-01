@@ -3,6 +3,9 @@
  * Guided first-run setup. Creates database, first admin user, optional API config.
  *
  * Usage (CLI):  php install.php
+ *               php install.php --migrate (idempotent: upgrade an existing install in place,
+ *                                           preserves all data, runs schema migrations,
+ *                                           reports user-role state)
  *               php install.php --reset   (wipe database and start fresh)
  * Usage (Web):  Navigate to /install.php in browser
  */
@@ -70,6 +73,54 @@ if ($isCli) {
         echo "[WARN] 'at' scheduler binaries (at/atrm) not found.\n";
         echo "       Fallback mode will still run schedules via watchdog cron.\n";
         echo "       Optional install for native queueing: sudo apt-get install at\n\n";
+    }
+
+    // Handle --migrate flag: idempotent upgrade for existing installs.
+    // Initializes any missing schema, runs ALTER TABLE migrations, backfills
+    // role values, reports what changed. NEVER destructive — safe to re-run.
+    if (in_array('--migrate', $argv ?? [], true)) {
+        echo "Running idempotent migration over existing installation...\n";
+        $dataDir = dirname(DB_PATH);
+        if (!is_dir($dataDir)) {
+            echo "[ERROR] Data directory missing: $dataDir\n";
+            echo "        Run 'php install.php' (without --migrate) for a first-time install.\n";
+            exit(1);
+        }
+
+        try {
+            $db = DB::getInstance(); // triggers schema init + ALTER TABLE migrations
+        } catch (Exception $e) {
+            echo "[ERROR] Database initialization/migration failed: " . $e->getMessage() . "\n";
+            exit(1);
+        }
+
+        // Report user-role state
+        $roleCounts = DB::query(
+            "SELECT role, COUNT(*) AS cnt FROM admin_users GROUP BY role ORDER BY role"
+        );
+        if ($roleCounts) {
+            echo "[OK] User role distribution:\n";
+            foreach ($roleCounts as $r) {
+                $label = $r['role'] !== '' ? $r['role'] : '(unset — backfilled to admin)';
+                echo "       - $label: {$r['cnt']}\n";
+            }
+        }
+
+        $adminCount = DB::queryOne(
+            "SELECT COUNT(*) AS cnt FROM admin_users WHERE role = 'admin' AND is_active = 1"
+        );
+        if ((int)($adminCount['cnt'] ?? 0) === 0) {
+            echo "[WARN] No active admin users found. Promote one with:\n";
+            echo "         sqlite3 " . DB_PATH . " \"UPDATE admin_users SET role='admin', is_active=1 WHERE id=<USER_ID>;\"\n";
+        }
+
+        @chmod(DB_PATH, 0660);
+        @chmod(DB_PATH . '-wal', 0660);
+        @chmod(DB_PATH . '-shm', 0660);
+
+        echo "[OK] Migration complete. Existing data preserved.\n";
+        echo "     Roles: admin (full access), tech (no sales), manager (no settings).\n";
+        exit(0);
     }
 
     // Handle --reset flag: wipe existing database to start fresh
@@ -152,11 +203,14 @@ if ($isCli) {
         } while (true);
 
         $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+        // First user is always created with the 'admin' role — the highest tier.
+        // Additional roles (tech, manager) can be assigned via the web UI afterwards.
         DB::execute(
-            'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
-            [$username, $hash, $displayName]
+            'INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, :p3)',
+            [$username, $hash, $displayName, 'admin']
         );
-        echo "[OK] Admin user '$username' created.\n";
+        echo "[OK] Admin user '$username' created with role 'admin'.\n";
+        echo "     To create technician or manager accounts, log in and use Settings > Admin Users.\n";
     }
 
     // Step 4: Timezone
@@ -289,10 +343,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
                 DB::execute(
-                    'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
-                    [$username, $hash, $displayName]
+                    'INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, :p3)',
+                    [$username, $hash, $displayName, 'admin']
                 );
-                $message = "Admin user '$username' created successfully.";
+                $message = "Admin user '$username' created successfully (role: admin).";
                 $messageType = 'success';
                 $step = 'done';
                 break;

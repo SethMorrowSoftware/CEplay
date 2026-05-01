@@ -10,7 +10,7 @@ require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
 function handleSettings(string $method, array $parts, ?array $input): void {
-    Auth::requireAuth();
+    Auth::requireRole([Auth::ROLE_ADMIN, Auth::ROLE_TECH]);
 
     $action = $parts[0] ?? '';
 
