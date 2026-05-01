@@ -1,0 +1,14 @@
+# Runtime data directory: SQLite DB, locks, heartbeats, logs
+data/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# PHP
+vendor/
+composer.lock
