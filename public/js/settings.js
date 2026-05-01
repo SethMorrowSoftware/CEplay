@@ -6,7 +6,10 @@
 
     async function renderSettings(container) {
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('h1', { className: 'page-title', textContent: 'Settings' })
+            App.el('div', {}, [
+                App.el('h1', { className: 'page-title', textContent: 'Settings' }),
+                App.el('p', { className: 'page-subtitle', textContent: 'CenterEdge API connection, application timezone, and admin user accounts.' })
+            ])
         ]));
 
         const content = App.el('div', { id: 'settings-content' });
@@ -226,12 +229,15 @@
 
     function buildUsersSection(users) {
         const section = App.el('div', { className: 'card' });
+        const addBtn = App.el('button', {
+            className: 'btn btn-primary btn-sm',
+            onClick: showCreateUserForm
+        });
+        addBtn.appendChild(App.iconEl('plus', 12));
+        addBtn.appendChild(App.el('span', { textContent: 'Add User' }));
         section.appendChild(App.el('div', { className: 'card-header' }, [
             App.el('h3', { className: 'card-title', textContent: 'Admin Users' }),
-            App.el('button', {
-                className: 'btn btn-primary btn-sm', textContent: '+ Add User',
-                onClick: showCreateUserForm
-            })
+            addBtn
         ]));
 
         const body = App.el('div', { className: 'card-body', id: 'users-list' });

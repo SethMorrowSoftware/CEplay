@@ -351,9 +351,11 @@ $appTimezoneJson = json_encode($appTimezone);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0b0e14">
-    <meta name="description" content="Castle Fun Center Management System - Game scheduling and automation">
-    <title>Castle Fun Center - Management System</title>
+    <meta name="theme-color" content="#0a0d14" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f4f7fc" media="(prefers-color-scheme: light)">
+    <meta name="color-scheme" content="dark light">
+    <meta name="description" content="Castle Fun Center Management System — game and kiosk pause-group automation, scheduling, and overrides.">
+    <title>Castle Fun Center · Management System</title>
     <link rel="icon" href="data:,">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken) ?>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -363,16 +365,17 @@ $appTimezoneJson = json_encode($appTimezone);
 </head>
 <body>
     <div id="app">
-        <div class="loading-overlay" id="app-loading">
-            <div class="spinner"></div>
-            <span>Loading...</span>
+        <div class="loading-overlay" id="app-loading" style="min-height:100vh;">
+            <div class="spinner" aria-hidden="true"></div>
+            <span>Loading workspace…</span>
         </div>
     </div>
     <noscript>
-        <div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#e1e4ed;background:#0b0e14;text-align:center;padding:2rem;">
-            <div>
-                <h1 style="font-size:1.5rem;margin-bottom:1rem;">JavaScript Required</h1>
-                <p>This application requires JavaScript to be enabled in your browser.</p>
+        <div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;color:#e6e9f2;background:#0a0d14;text-align:center;padding:2rem;">
+            <div style="max-width:380px;">
+                <div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#5d8eff,#3ddb91);margin:0 auto 1.25rem;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:1.4rem;letter-spacing:-0.025em;">CE</div>
+                <h1 style="font-size:1.4rem;margin-bottom:0.6rem;letter-spacing:-0.02em;">JavaScript Required</h1>
+                <p style="color:#93a0bd;line-height:1.5;">The Castle Fun Center management console needs JavaScript enabled in your browser.</p>
             </div>
         </div>
     </noscript>

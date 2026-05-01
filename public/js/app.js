@@ -13,6 +13,60 @@ const App = {
     DAYS: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
     DAYS_SHORT: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
 
+    // ---- SVG Icon Library ----
+    // Inline SVG icons, designed at 24x24 viewBox, stroke-based.
+    // Each entry is the inner SVG markup (paths/lines) — see iconEl().
+    ICONS: {
+        dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+        groups: '<circle cx="9" cy="7" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.6"/><path d="M14.5 20a4.5 4.5 0 0 1 6.5-4.05"/>',
+        kiosk: '<rect x="4" y="3" width="16" height="14" rx="1.5"/><path d="M9 17v3h6v-3"/><path d="M7 20h10"/><circle cx="12" cy="10" r="2.5"/>',
+        clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>',
+        bolt: '<polygon points="13 2 4 14 11 14 10 22 20 10 13 10 13 2"/>',
+        list: '<line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.2"/><circle cx="4" cy="12" r="1.2"/><circle cx="4" cy="18" r="1.2"/>',
+        settings: '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/><circle cx="12" cy="12" r="3"/>',
+
+        // Status / action icons
+        check: '<polyline points="20 6 9 17 4 12"/>',
+        cross: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+        info: '<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16"/>',
+        warning: '<path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="17"/>',
+        sparkles: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>',
+        sun: '<circle cx="12" cy="12" r="4.2"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.9" y1="4.9" x2="6.3" y2="6.3"/><line x1="17.7" y1="17.7" x2="19.1" y2="19.1"/><line x1="4.9" y1="19.1" x2="6.3" y2="17.7"/><line x1="17.7" y1="6.3" x2="19.1" y2="4.9"/>',
+        moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+        plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+        chevronLeft: '<polyline points="15 6 9 12 15 18"/>',
+        sync: '<path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><polyline points="3 21 3 16 8 16"/>',
+        logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+        menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
+        search: '<circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.5" y2="16.5"/>',
+        hand: '<path d="M9 11V5a1.5 1.5 0 0 1 3 0v6"/><path d="M12 11V4a1.5 1.5 0 0 1 3 0v7"/><path d="M15 11V6a1.5 1.5 0 0 1 3 0v8a7 7 0 0 1-7 7h-1a6 6 0 0 1-5.6-3.8L3 16a1.5 1.5 0 0 1 2.7-1.3l1.5 2.3"/><path d="M9 11V8a1.5 1.5 0 0 0-3 0v6"/>',
+        shield: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5z"/>',
+        lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+        play: '<polygon points="6 4 19 12 6 20 6 4"/>',
+        pause: '<rect x="6" y="4" width="4" height="16" rx="0.5"/><rect x="14" y="4" width="4" height="16" rx="0.5"/>',
+        empty: '<path d="M5 8h14l-1.5 11a2 2 0 0 1-2 1.7H8.5A2 2 0 0 1 6.5 19z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
+        gamepad: '<rect x="3" y="6" width="18" height="12" rx="3"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="6" y1="12" x2="10" y2="12"/><circle cx="15.5" cy="10.5" r="0.8"/><circle cx="17.5" cy="13.5" r="0.8"/>',
+        calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/>'
+    },
+
+    /**
+     * Build an inline SVG icon element for the named icon.
+     * Pass `size` (px) and optional className.
+     */
+    iconEl(name, size, className) {
+        size = size || 18;
+        const inner = this.ICONS[name] || this.ICONS.info;
+        const wrap = document.createElement('span');
+        wrap.className = (className || 'icon');
+        wrap.setAttribute('aria-hidden', 'true');
+        wrap.innerHTML =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '"' +
+            ' viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+            ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            inner + '</svg>';
+        return wrap;
+    },
+
     init() {
         API.init(window.APP_CONFIG);
         this.currentUser = window.APP_CONFIG.user;
@@ -29,7 +83,7 @@ const App = {
         this.createThemeToggle();
 
         // Remove initial loading overlay
-        var appLoading = document.getElementById('app-loading');
+        const appLoading = document.getElementById('app-loading');
         if (appLoading) appLoading.remove();
 
         this.route();
@@ -44,7 +98,11 @@ const App = {
     applyTheme() {
         document.documentElement.setAttribute('data-theme', this.theme);
         if (this.themeToggleBtn) {
-            this.themeToggleBtn.textContent = this.theme === 'dark' ? '\u263D Light mode' : '\u2600 Dark mode';
+            this.themeToggleBtn.innerHTML = '';
+            this.themeToggleBtn.appendChild(this.iconEl(this.theme === 'dark' ? 'sun' : 'moon', 14));
+            this.themeToggleBtn.appendChild(this.el('span', {
+                textContent: this.theme === 'dark' ? 'Light' : 'Dark'
+            }));
         }
     },
 
@@ -64,7 +122,6 @@ const App = {
         });
         this.applyTheme();
     },
-
 
     mountThemeToggle() {
         if (!this.themeToggleBtn) return;
@@ -94,7 +151,7 @@ const App = {
 
         // Cleanup previous page
         if (this.currentCleanup) {
-            try { this.currentCleanup(); } catch(e) { console.warn('Page cleanup error:', e); }
+            try { this.currentCleanup(); } catch (e) { console.warn('Page cleanup error:', e); }
             this.currentCleanup = null;
         }
 
@@ -151,17 +208,14 @@ const App = {
         this.mountThemeToggle();
     },
 
-
     setAppStateClass() {
         document.body.classList.toggle('app-authenticated', !!this.currentUser);
         document.body.classList.toggle('app-guest', !this.currentUser);
     },
 
     matchRoute(pattern, hash) {
-        // Convert #/groups/:id to regex
         const parts = pattern.split('/');
         const hashParts = hash.split('/');
-
         if (parts.length !== hashParts.length) return null;
 
         const params = {};
@@ -173,6 +227,18 @@ const App = {
             }
         }
         return params;
+    },
+
+    /**
+     * Initials helper for the user avatar (max 2 characters).
+     */
+    initialsFor(user) {
+        if (!user) return 'U';
+        const name = (user.display_name || user.username || 'U').trim();
+        const parts = name.split(/\s+/).filter(Boolean);
+        if (parts.length === 0) return 'U';
+        if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     },
 
     ensureLayout(container) {
@@ -188,9 +254,9 @@ const App = {
             id: 'mobile-menu-btn',
             type: 'button',
             'aria-label': 'Open navigation menu',
-            textContent: '\u2630',
             onClick: () => this.toggleMobileMenu()
         });
+        menuBtn.appendChild(this.iconEl('menu', 18));
         overlay.addEventListener('click', () => this.toggleMobileMenu(false));
         layout.appendChild(overlay);
         layout.appendChild(menuBtn);
@@ -198,58 +264,84 @@ const App = {
         // Sidebar
         const sidebar = this.el('aside', { className: 'sidebar', id: 'app-sidebar' });
 
-        const brand = this.el('div', { className: 'sidebar-brand' }, [
-            this.el('h1', { textContent: 'Castle Fun Center' }),
-            this.el('p', { textContent: 'Management System' })
+        // Brand: mark + title + status pulse dot
+        const brand = this.el('div', { className: 'sidebar-brand' });
+        const brandRow = this.el('div', { className: 'sidebar-brand-row' }, [
+            this.el('div', { className: 'sidebar-brand-mark', textContent: 'CE' }),
+            this.el('div', { style: { minWidth: '0', flex: '1' } }, [
+                this.el('h1', { textContent: 'Castle Fun Center' }),
+                this.el('p', { textContent: 'Pause Groups' })
+            ])
         ]);
+        brand.appendChild(brandRow);
+        brand.appendChild(this.el('span', {
+            className: 'sidebar-brand-status',
+            title: 'Service is running',
+            'aria-label': 'Service is running'
+        }));
         sidebar.appendChild(brand);
 
+        // Nav items: each with proper SVG icon
         const navItems = [
-            { hash: '#/dashboard', icon: '\u25A3', label: 'Dashboard' },
-            { hash: '#/groups', icon: '\u25CB', label: 'Pause Groups' },
-            { hash: '#/kiosks', icon: '\u25A4', label: 'Kiosks' },
-            { hash: '#/schedules', icon: '\u25F4', label: 'Schedules' },
-            { hash: '#/overrides', icon: '\u26A1', label: 'Overrides' },
-            { hash: '#/logs', icon: '\u2630', label: 'Action Log' },
-            { hash: '#/settings', icon: '\u2699', label: 'Settings' },
+            { hash: '#/dashboard', icon: 'dashboard', label: 'Dashboard' },
+            { hash: '#/groups',    icon: 'groups',    label: 'Pause Groups' },
+            { hash: '#/kiosks',    icon: 'kiosk',     label: 'Kiosks' },
+            { hash: '#/schedules', icon: 'clock',     label: 'Schedules' },
+            { hash: '#/overrides', icon: 'bolt',      label: 'Overrides' },
+            { hash: '#/logs',      icon: 'list',      label: 'Action Log' },
+            { hash: '#/settings',  icon: 'settings',  label: 'Settings' }
         ];
 
-        const nav = this.el('nav', { className: 'nav-section' });
-        const navLabel = this.el('div', { className: 'nav-section-label', textContent: 'Navigation' });
-        nav.appendChild(navLabel);
+        const nav = this.el('nav', { className: 'nav-section', 'aria-label': 'Primary navigation' });
+        nav.appendChild(this.el('div', { className: 'nav-section-label', textContent: 'Navigation' }));
 
         navItems.forEach(item => {
             const navItem = this.el('div', {
                 className: 'nav-item',
+                role: 'link',
+                tabindex: '0',
                 'data-hash': item.hash,
                 onClick: (e) => {
                     e.preventDefault();
                     window.location.hash = item.hash;
                     this.toggleMobileMenu(false);
+                },
+                onKeydown: (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        window.location.hash = item.hash;
+                        this.toggleMobileMenu(false);
+                    }
                 }
-            }, [
-                this.el('span', { className: 'nav-icon', textContent: item.icon }),
-                this.el('span', { textContent: item.label })
-            ]);
+            });
+            navItem.appendChild(this.iconEl(item.icon, 18, 'nav-icon'));
+            navItem.appendChild(this.el('span', { textContent: item.label }));
             nav.appendChild(navItem);
         });
         sidebar.appendChild(nav);
 
-        // Sidebar footer
+        // Sidebar footer: avatar + name/role + logout
+        const initials = this.initialsFor(this.currentUser);
         const footer = this.el('div', { className: 'sidebar-footer' }, [
-            this.el('span', { className: 'sidebar-user', textContent: this.currentUser.display_name }),
-            this.el('button', {
-                className: 'btn btn-ghost btn-sm',
-                textContent: 'Logout',
-                onClick: async () => {
-                    try {
-                        await API.post('auth/logout');
-                    } catch(e) {}
-                    this.currentUser = null;
-                    window.location.hash = '#/login';
-                }
-            })
+            this.el('div', { className: 'sidebar-user-avatar', textContent: initials, 'aria-hidden': 'true' }),
+            this.el('div', { className: 'sidebar-user' }, [
+                this.el('span', { className: 'sidebar-user-name', textContent: this.currentUser.display_name || this.currentUser.username }),
+                this.el('span', { className: 'sidebar-user-role', textContent: 'Administrator' })
+            ])
         ]);
+        const logoutBtn = this.el('button', {
+            className: 'btn btn-ghost btn-icon-only',
+            type: 'button',
+            title: 'Sign out',
+            'aria-label': 'Sign out',
+            onClick: async () => {
+                try { await API.post('auth/logout'); } catch (e) { /* ignore */ }
+                this.currentUser = null;
+                window.location.hash = '#/login';
+            }
+        });
+        logoutBtn.appendChild(this.iconEl('logout', 16));
+        footer.appendChild(logoutBtn);
         sidebar.appendChild(footer);
 
         layout.appendChild(sidebar);
@@ -276,28 +368,40 @@ const App = {
     toast(message, type, duration) {
         type = type || 'info';
         duration = duration || 4000;
-        const toast = this.el('div', { className: 'toast toast-' + type }, [
-            this.el('span', { textContent: message })
-        ]);
+        const iconName = type === 'success' ? 'check'
+            : type === 'error' ? 'cross'
+            : type === 'warning' ? 'warning'
+            : 'info';
+        const toast = this.el('div', { className: 'toast toast-' + type, role: 'status' });
+        toast.appendChild(this.iconEl(iconName, 18, 'toast-icon'));
+        toast.appendChild(this.el('span', { textContent: message }));
         this.toastContainer.appendChild(toast);
         setTimeout(() => {
             toast.classList.add('toast-exit');
-            setTimeout(() => toast.remove(), 200);
+            setTimeout(() => toast.remove(), 220);
         }, duration);
     },
 
     // ---- Modal ----
     showModal(titleText, contentEl, footerEl) {
         this.hideModal();
-        const overlay = this.el('div', { className: 'modal-overlay', id: 'modal-overlay' });
+        const overlay = this.el('div', { className: 'modal-overlay', id: 'modal-overlay', role: 'dialog', 'aria-modal': 'true' });
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) this.hideModal();
         });
 
         const modal = this.el('div', { className: 'modal' });
+        const closeBtn = this.el('button', {
+            className: 'modal-close',
+            type: 'button',
+            'aria-label': 'Close dialog',
+            onClick: () => this.hideModal()
+        });
+        closeBtn.appendChild(this.iconEl('cross', 16));
+
         const header = this.el('div', { className: 'modal-header' }, [
             this.el('div', { className: 'modal-title', textContent: titleText }),
-            this.el('button', { className: 'modal-close', textContent: '\u00D7', onClick: () => this.hideModal() })
+            closeBtn
         ]);
         modal.appendChild(header);
 
@@ -333,9 +437,8 @@ const App = {
         document.addEventListener('keydown', keyHandler);
         overlay._escHandler = keyHandler;
 
-        // Auto-focus first focusable element in the modal
         requestAnimationFrame(() => {
-            const first = modal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            const first = modal.querySelector('input, select, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
             if (first) first.focus();
         });
     },
@@ -350,22 +453,25 @@ const App = {
         }
     },
 
-    confirm(message) {
+    confirm(message, options) {
+        options = options || {};
         return new Promise((resolve) => {
-            const body = this.el('p', { textContent: message });
+            const body = this.el('p', { textContent: message, style: { fontSize: '0.92rem', lineHeight: '1.5' } });
             const footer = this.el('div', { className: 'flex gap-sm' }, [
                 this.el('button', {
                     className: 'btn btn-secondary',
-                    textContent: 'Cancel',
+                    type: 'button',
+                    textContent: options.cancelText || 'Cancel',
                     onClick: () => { this.hideModal(); resolve(false); }
                 }),
                 this.el('button', {
-                    className: 'btn btn-danger',
-                    textContent: 'Confirm',
+                    className: 'btn ' + (options.danger === false ? 'btn-primary' : 'btn-danger'),
+                    type: 'button',
+                    textContent: options.confirmText || 'Confirm',
                     onClick: () => { this.hideModal(); resolve(true); }
                 })
             ]);
-            this.showModal('Confirm Action', body, footer);
+            this.showModal(options.title || 'Confirm Action', body, footer);
         });
     },
 
@@ -385,7 +491,7 @@ const App = {
                     Object.assign(elem.style, value);
                 }
                 else if (key === 'value') {
-                    elem.value = value; // Set as property, not attribute (required for textarea)
+                    elem.value = value;
                 }
                 else if (key === 'disabled' || key === 'checked' || key === 'selected' || key === 'readonly') {
                     elem[key] = !!value;
@@ -396,6 +502,7 @@ const App = {
         if (children) {
             const arr = Array.isArray(children) ? children : [children];
             arr.forEach(child => {
+                if (child === null || child === undefined || child === false) return;
                 if (typeof child === 'string') elem.appendChild(document.createTextNode(child));
                 else if (child instanceof Node) elem.appendChild(child);
             });
@@ -416,25 +523,25 @@ const App = {
     },
 
     formatDate(dateStr) {
-        if (!dateStr) return '-';
+        if (!dateStr) return '—';
         const d = this.toUtcDate(dateStr);
-        if (!d) return '-';
+        if (!d) return '—';
         return new Intl.DateTimeFormat('en-US', {
             month: 'short', day: 'numeric', year: 'numeric', timeZone: this.appTimezone
         }).format(d);
     },
 
     formatDatetime(dateStr) {
-        if (!dateStr) return '-';
+        if (!dateStr) return '—';
         const d = this.toUtcDate(dateStr);
-        if (!d) return '-';
+        if (!d) return '—';
         return new Intl.DateTimeFormat('en-US', {
             month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: this.appTimezone
         }).format(d);
     },
 
     formatTime(timeStr) {
-        if (!timeStr) return '-';
+        if (!timeStr) return '—';
         const [h, m] = timeStr.split(':');
         const hour = parseInt(h);
         const ampm = hour >= 12 ? 'PM' : 'AM';
@@ -451,14 +558,11 @@ const App = {
         const absMin = Math.round(Math.abs(diffMs) / 60000);
         const isPast = diffMs < 0;
 
-        if (absMin < 60) {
-            return isPast ? absMin + 'm ago' : 'in ' + absMin + 'm';
-        }
+        if (absMin < 1) return isPast ? 'just now' : 'in <1m';
+        if (absMin < 60) return isPast ? absMin + 'm ago' : 'in ' + absMin + 'm';
 
         const absHr = Math.round(absMin / 60);
-        if (absHr < 24) {
-            return isPast ? absHr + 'h ago' : 'in ' + absHr + 'h';
-        }
+        if (absHr < 24) return isPast ? absHr + 'h ago' : 'in ' + absHr + 'h';
 
         const absDays = Math.round(absHr / 24);
         return isPast ? absDays + 'd ago' : 'in ' + absDays + 'd';
@@ -467,15 +571,21 @@ const App = {
     statusBadge(status) {
         const cls = status === 'enabled' ? 'badge-enabled' :
                     status === 'paused' ? 'badge-paused' :
-                    status === 'outOfService' ? 'badge-out-of-service' : '';
-        const label = status === 'outOfService' ? 'Out of Service' : status;
-        return this.el('span', { className: 'badge ' + cls, textContent: label, role: 'status', 'aria-label': 'Status: ' + label });
+                    status === 'outOfService' ? 'badge-out-of-service' : 'badge-inactive';
+        const label = status === 'enabled' ? 'Running'
+            : status === 'paused' ? 'Paused'
+            : status === 'outOfService' ? 'Out of Service'
+            : (status || 'Unknown');
+        const badge = this.el('span', { className: 'badge ' + cls, role: 'status', 'aria-label': 'Status: ' + label });
+        badge.appendChild(this.el('span', { className: 'badge-dot' }));
+        badge.appendChild(this.el('span', { textContent: label }));
+        return badge;
     },
 
     loading() {
         return this.el('div', { className: 'loading-overlay' }, [
             this.el('div', { className: 'spinner' }),
-            this.el('span', { textContent: 'Loading...' })
+            this.el('span', { textContent: 'Loading…' })
         ]);
     },
 
@@ -490,31 +600,24 @@ const App = {
 
     /**
      * Returns a debounced version of fn that delays execution by `delay` ms.
-     * Calling the returned function again before delay expires resets the timer.
      */
     debounce(fn, delay) {
         let timer = null;
-        return function() {
+        return function () {
             const ctx = this, args = arguments;
             if (timer) clearTimeout(timer);
-            timer = setTimeout(function() { fn.apply(ctx, args); }, delay);
+            timer = setTimeout(function () { fn.apply(ctx, args); }, delay);
         };
     },
 
     /**
      * Runs callback on an interval only while the page is visible.
-     * Reduces unnecessary polling load during long-running browser sessions.
      */
     createVisibilityAwareInterval(callback, intervalMs, options) {
         const config = Object.assign({ runImmediately: false, runOnVisible: true }, options || {});
         let timer = null;
 
-        const stop = () => {
-            if (timer) {
-                clearInterval(timer);
-                timer = null;
-            }
-        };
+        const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
 
         const start = () => {
             if (timer || document.hidden) return;
@@ -523,10 +626,7 @@ const App = {
         };
 
         const handleVisibilityChange = () => {
-            if (document.hidden) {
-                stop();
-                return;
-            }
+            if (document.hidden) { stop(); return; }
             if (config.runOnVisible) callback();
             start();
         };
@@ -540,24 +640,27 @@ const App = {
         };
     },
 
-    /**
-     * Navigation generation counter. Incremented on every route change.
-     * Async operations can capture this value before starting and check
-     * it after completing to avoid updating a page the user has left.
-     */
     _navGeneration: 0,
 
-    /**
-     * Returns the current navigation generation. Async code should capture
-     * this before an await and compare after: if it changed, bail out.
-     */
     navGeneration() {
         return this._navGeneration;
     },
 
+    /**
+     * Build an empty-state block. `icon` may be an SVG icon name (string)
+     * or any HTMLElement. Pass null/undefined for the default empty icon.
+     */
     emptyState(icon, text, actionBtn) {
+        const iconWrap = this.el('div', { className: 'empty-state-icon' });
+        if (icon instanceof Node) {
+            iconWrap.appendChild(icon);
+        } else if (typeof icon === 'string' && this.ICONS[icon]) {
+            iconWrap.appendChild(this.iconEl(icon, 22));
+        } else {
+            iconWrap.appendChild(this.iconEl('empty', 22));
+        }
         const children = [
-            this.el('div', { className: 'empty-state-icon', textContent: icon }),
+            iconWrap,
             this.el('div', { className: 'empty-state-text', textContent: text })
         ];
         if (actionBtn) {
