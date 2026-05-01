@@ -36,9 +36,24 @@ class DB {
             password_hash TEXT NOT NULL,
             display_name TEXT NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 1,
+            role TEXT NOT NULL DEFAULT \'admin\',
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
+
+        // Migration: add role column to existing databases. Pre-existing rows
+        // backfill to 'admin' so upgrades preserve full access for current users.
+        try {
+            $db->exec('ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT \'admin\'');
+        } catch (Exception $e) {
+            // Column already exists — ignore
+        }
+        // Backfill any NULL/empty role values defensively (no-op on fresh installs).
+        try {
+            $db->exec("UPDATE admin_users SET role = 'admin' WHERE role IS NULL OR role = ''");
+        } catch (Exception $e) {
+            // Ignore — column may not exist on extremely old DBs that already errored above
+        }
 
         $db->exec('CREATE TABLE IF NOT EXISTS api_config (
             key TEXT PRIMARY KEY,

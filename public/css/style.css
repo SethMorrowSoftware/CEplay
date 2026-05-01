@@ -941,6 +941,26 @@ input[type="checkbox"] {
     background: currentColor;
     display: inline-block;
 }
+.badge-role {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
+}
+.badge-role-admin {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent-border);
+}
+.badge-role-tech {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: var(--success-border);
+}
+.badge-role-manager {
+    background: var(--warning-subtle);
+    color: var(--warning);
+    border-color: var(--warning-border);
+}
 
 /* ============================================
    Toast Notifications

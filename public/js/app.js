@@ -13,6 +13,33 @@ const App = {
     DAYS: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
     DAYS_SHORT: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
 
+    ROLES: ['admin', 'tech', 'manager'],
+    ROLE_LABELS: {
+        admin: 'Administrator',
+        tech: 'Technician',
+        manager: 'Manager'
+    },
+
+    /** Map of route hash -> roles allowed to view it. Missing entry = all roles. */
+    ROUTE_ROLES: {
+        '#/settings': ['admin', 'tech']
+        // future: '#/sales': ['admin', 'manager']
+    },
+
+    userRole() {
+        const u = this.currentUser;
+        if (!u) return null;
+        const role = (u.role || 'admin').toLowerCase();
+        return this.ROLES.indexOf(role) === -1 ? 'admin' : role;
+    },
+
+    canAccess(routeHash) {
+        const allowed = this.ROUTE_ROLES[routeHash];
+        if (!allowed) return true;
+        const role = this.userRole();
+        return role !== null && allowed.indexOf(role) !== -1;
+    },
+
     // ---- SVG Icon Library ----
     // Inline SVG icons, designed at 24x24 viewBox, stroke-based.
     // Each entry is the inner SVG markup (paths/lines) — see iconEl().
@@ -165,6 +192,13 @@ const App = {
             return;
         }
 
+        // Role-based route guard. Bounce to dashboard if the user can't view this page.
+        if (this.currentUser && !this.canAccess(hash)) {
+            this.toast('You do not have permission to access that page.', 'warning');
+            window.location.hash = '#/dashboard';
+            return;
+        }
+
         this.setAppStateClass();
 
         // Find matching route
@@ -281,7 +315,7 @@ const App = {
         }));
         sidebar.appendChild(brand);
 
-        // Nav items: each with proper SVG icon
+        // Nav items: each with proper SVG icon. Filtered by role.
         const navItems = [
             { hash: '#/dashboard', icon: 'dashboard', label: 'Dashboard' },
             { hash: '#/groups',    icon: 'groups',    label: 'Pause Groups' },
@@ -290,7 +324,7 @@ const App = {
             { hash: '#/overrides', icon: 'bolt',      label: 'Overrides' },
             { hash: '#/logs',      icon: 'list',      label: 'Action Log' },
             { hash: '#/settings',  icon: 'settings',  label: 'Settings' }
-        ];
+        ].filter(item => this.canAccess(item.hash));
 
         const nav = this.el('nav', { className: 'nav-section', 'aria-label': 'Primary navigation' });
         nav.appendChild(this.el('div', { className: 'nav-section-label', textContent: 'Navigation' }));
@@ -322,11 +356,12 @@ const App = {
 
         // Sidebar footer: avatar + name/role + logout
         const initials = this.initialsFor(this.currentUser);
+        const roleLabel = this.ROLE_LABELS[this.userRole()] || 'User';
         const footer = this.el('div', { className: 'sidebar-footer' }, [
             this.el('div', { className: 'sidebar-user-avatar', textContent: initials, 'aria-hidden': 'true' }),
             this.el('div', { className: 'sidebar-user' }, [
                 this.el('span', { className: 'sidebar-user-name', textContent: this.currentUser.display_name || this.currentUser.username }),
-                this.el('span', { className: 'sidebar-user-role', textContent: 'Administrator' })
+                this.el('span', { className: 'sidebar-user-role', textContent: roleLabel })
             ])
         ]);
         const logoutBtn = this.el('button', {

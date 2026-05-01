@@ -114,6 +114,31 @@ To wipe and start over:
 php install.php --reset
 ```
 
+To upgrade an existing installation in place (idempotent — preserves all data):
+
+```bash
+php install.php --migrate
+```
+
+This runs schema migrations (e.g. adds the `role` column to `admin_users` on
+older installs and backfills existing users to `admin`), reports the current
+user-role distribution, and exits. Safe to re-run.
+
+#### User roles
+
+Three role tiers control access:
+
+| Role | Description |
+|------|-------------|
+| **admin**   | Full access to everything, including Settings and user management. |
+| **tech**    | All operational pages (groups, kiosks, schedules, overrides, logs, settings) — but no access to sales data and no user management. |
+| **manager** | All operational pages except Settings — used for staff who manage day-to-day pause groups and (future) sales reporting. |
+
+The first user created by `install.php` or `fresh_install.php` is always
+assigned the `admin` role. Additional users are created from
+**Settings → Admin Users** with a role selector. The system prevents demoting
+or deactivating the last active admin and blocks self-demotion from `admin`.
+
 ### Option 2: Fresh Install (automated)
 
 For a fully automated setup (useful for development or redeployment):
@@ -364,6 +389,12 @@ SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
 ## API Reference
 
 All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) require a valid `X-CSRF-Token` header (except `/api/auth/login`). Authentication is session-based via HttpOnly cookies.
+
+Role-gated endpoints return HTTP 403 when the authenticated user's role is not
+in the allow-list:
+
+- `/api/settings` — `admin`, `tech`
+- `/api/users`    — `admin` only
 
 ### Authentication
 
