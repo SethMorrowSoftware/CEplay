@@ -15,7 +15,10 @@
         currentPage = 1;
 
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('h1', { className: 'page-title', textContent: 'Action Log' })
+            App.el('div', {}, [
+                App.el('h1', { className: 'page-title', textContent: 'Action Log' }),
+                App.el('p', { className: 'page-subtitle', textContent: 'Audit trail of every pause, unpause, and scheduling action.' })
+            ])
         ]));
 
         // Filters bar
@@ -123,10 +126,7 @@
             content.innerHTML = '';
 
             if (!data.logs || data.logs.length === 0) {
-                content.appendChild(App.el('div', { className: 'empty-state' }, [
-                    App.el('div', { className: 'empty-state-icon', textContent: '\uD83D\uDCCB' }),
-                    App.el('div', { className: 'empty-state-text', textContent: 'No log entries found.' })
-                ]));
+                content.appendChild(App.emptyState('list', 'No log entries match the current filters.'));
                 return;
             }
 

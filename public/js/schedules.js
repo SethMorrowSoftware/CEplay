@@ -5,17 +5,27 @@
     App.registerRoute('#/schedules', { render: renderSchedules });
 
     async function renderSchedules(container) {
+        const newBtn = App.el('button', {
+            className: 'btn btn-primary',
+            onClick: showCreateForm
+        });
+        newBtn.appendChild(App.iconEl('plus', 14));
+        newBtn.appendChild(App.el('span', { textContent: 'New Schedule' }));
+
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('h1', { className: 'page-title', textContent: 'Schedules' }),
-            App.el('button', {
-                className: 'btn btn-primary', textContent: '+ New Schedule',
-                onClick: showCreateForm
-            })
+            App.el('div', {}, [
+                App.el('h1', { className: 'page-title', textContent: 'Schedules' }),
+                App.el('p', { className: 'page-subtitle', textContent: 'Recurring weekly windows during which a group is active (unpaused).' })
+            ]),
+            App.el('div', { className: 'page-header-actions' }, [newBtn])
         ]));
 
-        // Weekly grid
+        // Weekly grid card
         container.appendChild(App.el('div', { className: 'card', id: 'schedule-card' }, [
-            App.el('div', { className: 'card-title', textContent: 'Weekly Active Hours' }),
+            App.el('div', { className: 'card-header' }, [
+                App.el('div', { className: 'card-title', textContent: 'Weekly Active Hours' }),
+                App.el('p', { className: 'text-xs text-muted', textContent: 'Click a block to edit. Outside these windows, the group is paused.' })
+            ]),
             App.el('div', { className: 'schedule-week', id: 'schedule-grid' })
         ]));
 
@@ -80,7 +90,7 @@
         listEl.innerHTML = '';
 
         if (schedules.length === 0) {
-            listEl.appendChild(App.emptyState('\u25F4', 'No schedules configured yet.'));
+            listEl.appendChild(App.emptyState('clock', 'No schedules configured yet. Add weekly active windows to start automating your groups.'));
             return;
         }
 

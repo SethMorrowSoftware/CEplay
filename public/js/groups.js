@@ -8,13 +8,19 @@
     App.registerRoute('#/groups/:id', { render: renderGroupForm });
 
     async function renderGroupList(container) {
+        const newBtn = App.el('button', {
+            className: 'btn btn-primary',
+            onClick: () => { window.location.hash = '#/groups/new'; }
+        });
+        newBtn.appendChild(App.iconEl('plus', 14));
+        newBtn.appendChild(App.el('span', { textContent: 'New Group' }));
+
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('h1', { className: 'page-title', textContent: 'Pause Groups' }),
-            App.el('button', {
-                className: 'btn btn-primary',
-                textContent: '+ New Group',
-                onClick: () => { window.location.hash = '#/groups/new'; }
-            })
+            App.el('div', {}, [
+                App.el('h1', { className: 'page-title', textContent: 'Pause Groups' }),
+                App.el('p', { className: 'page-subtitle', textContent: 'Bundle games and kiosks into named groups so they pause and unpause together.' })
+            ]),
+            App.el('div', { className: 'page-header-actions' }, [newBtn])
         ]));
 
         const listEl = App.el('div', { id: 'groups-list' });
@@ -39,10 +45,13 @@
         listEl.innerHTML = '';
 
         if (groups.length === 0) {
-            listEl.appendChild(App.emptyState('\u25CB', 'No pause groups yet.', App.el('button', {
-                className: 'btn btn-primary', textContent: 'Create First Group',
+            const createBtn = App.el('button', {
+                className: 'btn btn-primary',
                 onClick: () => { window.location.hash = '#/groups/new'; }
-            })));
+            });
+            createBtn.appendChild(App.iconEl('plus', 14));
+            createBtn.appendChild(App.el('span', { textContent: 'Create your first group' }));
+            listEl.appendChild(App.emptyState('groups', 'No pause groups yet. Create one to start automating pause and unpause windows.', createBtn));
             return;
         }
 
@@ -65,24 +74,33 @@
                 textContent: state === 'enabled' ? 'Running' : state === 'paused' ? 'Paused' : 'Mixed'
             }) : null;
 
+        function makeQuickBtn(cls, iconName, label, action) {
+            const b = App.el('button', {
+                className: 'btn btn-sm ' + cls,
+                onClick: (e) => { e.stopPropagation(); quickAction(group.id, action, group.name, listEl); }
+            });
+            b.appendChild(App.iconEl(iconName, 12));
+            b.appendChild(App.el('span', { textContent: label }));
+            return b;
+        }
+
         const quickActions = isActive && state !== 'empty'
             ? App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } }, [
-                state !== 'enabled' ? App.el('button', {
-                    className: 'btn btn-sm btn-success',
-                    textContent: 'Unpause',
-                    onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'unpause', group.name, listEl); }
-                }) : null,
-                state !== 'paused' ? App.el('button', {
-                    className: 'btn btn-sm btn-warning',
-                    textContent: 'Pause',
-                    onClick: (e) => { e.stopPropagation(); quickAction(group.id, 'pause', group.name, listEl); }
-                }) : null
+                state !== 'enabled' ? makeQuickBtn('btn-success', 'play', 'Unpause', 'unpause') : null,
+                state !== 'paused' ? makeQuickBtn('btn-warning', 'pause', 'Pause', 'pause') : null
             ].filter(Boolean)) : null;
 
-        return App.el('div', { className: 'card', style: { marginBottom: '0.75rem', cursor: 'pointer' },
-            onClick: () => { window.location.hash = '#/groups/' + group.id; }
+        return App.el('div', {
+            className: 'card',
+            style: { marginBottom: '0.75rem', cursor: 'pointer' },
+            role: 'link',
+            tabindex: '0',
+            onClick: () => { window.location.hash = '#/groups/' + group.id; },
+            onKeydown: (e) => {
+                if (e.key === 'Enter') { window.location.hash = '#/groups/' + group.id; }
+            }
         }, [
-            App.el('div', { className: 'flex-between' }, [
+            App.el('div', { className: 'flex-between gap-md' }, [
                 App.el('div', { style: { flex: '1', minWidth: '0' } }, [
                     App.el('div', { className: 'flex-center gap-sm' }, [
                         App.el('span', { className: 'status-dot status-dot-' + (isActive ? state : 'empty') }),
@@ -93,10 +111,10 @@
                     ].filter(Boolean)),
                     group.description ? App.el('p', { className: 'text-sm text-secondary mt-1', textContent: group.description }) : null
                 ].filter(Boolean)),
-                App.el('div', { className: 'flex-center' }, [
-                    App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
+                App.el('div', { className: 'flex-center gap-md' }, [
+                    App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right', whiteSpace: 'nowrap' } }, [
                         App.el('div', { textContent: formatGroupMembers(group) }),
-                        App.el('div', { textContent: pluralize(group.schedule_count || 0, 'schedule') })
+                        App.el('div', { className: 'text-xs text-muted', textContent: pluralize(group.schedule_count || 0, 'schedule') })
                     ]),
                     quickActions
                 ].filter(Boolean))
@@ -132,15 +150,19 @@
         const isEdit = params.id && params.id !== 'new';
         const groupId = isEdit ? params.id : null;
 
+        const backBtn = App.el('button', {
+            className: 'btn btn-ghost',
+            onClick: () => { window.location.hash = '#/groups'; }
+        });
+        backBtn.appendChild(App.iconEl('chevronLeft', 14));
+        backBtn.appendChild(App.el('span', { textContent: 'Back' }));
+
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: isEdit ? 'Edit Group' : 'New Group' }),
-                App.el('p', { className: 'page-subtitle', textContent: isEdit ? 'Modify group configuration' : 'Create a new pause group' })
+                App.el('p', { className: 'page-subtitle', textContent: isEdit ? 'Modify group configuration, members, and schedule' : 'Create a new pause group' })
             ]),
-            App.el('button', {
-                className: 'btn btn-ghost', textContent: '\u2190 Back',
-                onClick: () => { window.location.hash = '#/groups'; }
-            })
+            App.el('div', { className: 'page-header-actions' }, [backBtn])
         ]));
 
         const formWrap = App.el('div', { className: 'card' });
