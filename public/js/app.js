@@ -73,7 +73,16 @@ const App = {
         pause: '<rect x="6" y="4" width="4" height="16" rx="0.5"/><rect x="14" y="4" width="4" height="16" rx="0.5"/>',
         empty: '<path d="M5 8h14l-1.5 11a2 2 0 0 1-2 1.7H8.5A2 2 0 0 1 6.5 19z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
         gamepad: '<rect x="3" y="6" width="18" height="12" rx="3"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="6" y1="12" x2="10" y2="12"/><circle cx="15.5" cy="10.5" r="0.8"/><circle cx="17.5" cy="13.5" r="0.8"/>',
-        calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/>'
+        calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/>',
+        ticket: '<path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><line x1="9" y1="7" x2="9" y2="17" stroke-dasharray="2 2"/>',
+        coin: '<circle cx="12" cy="12" r="9"/><path d="M14.5 9a2.5 2.5 0 0 0-5 0c0 1.5 1.2 2 2.5 2.4 1.4.5 2.7 1 2.7 2.6a2.7 2.7 0 0 1-5.4 0"/><line x1="12" y1="6" x2="12" y2="7.5"/><line x1="12" y1="16.5" x2="12" y2="18"/>',
+        chart: '<polyline points="3 17 9 11 13 15 21 6"/><polyline points="14 6 21 6 21 13"/>',
+        trophy: '<path d="M8 4h8v4a4 4 0 0 1-8 0z"/><path d="M16 4h3a1 1 0 0 1 1 1v2a4 4 0 0 1-4 4"/><path d="M8 4H5a1 1 0 0 0-1 1v2a4 4 0 0 0 4 4"/><line x1="12" y1="12" x2="12" y2="17"/><path d="M9 17h6l-1 4h-4z"/>',
+        users: '<circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9.5" r="2.6"/><path d="M14.8 19.4a4.7 4.7 0 0 1 6.2-3.5"/>',
+        flame: '<path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2.5 1.5-3.5 1.5-6 0 0 1.5 1 2 2 0-2.5 0-4 1.5-6z"/>',
+        spark: '<polyline points="3 17 8 12 12 14 16 8 21 11"/>',
+        rocket: '<path d="M14 4c4 0 6 2 6 6-2 0-4 1.5-6 4l-4-4c2.5-2 4-4 4-6z"/><path d="M10 10c-2.5 0-4 1.2-4.5 3.5L4 18l4.5-1.5C11 16 12 14.5 12 12z"/><circle cx="14.5" cy="9.5" r="1.3"/>',
+        timer: '<circle cx="12" cy="13" r="8"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="13" x2="15" y2="14.5"/><path d="M9 2h6"/><path d="M19 6l1.5-1.5"/>'
     },
 
     /**
@@ -601,6 +610,75 @@ const App = {
 
         const absDays = Math.round(absHr / 24);
         return isPast ? absDays + 'd ago' : 'in ' + absDays + 'd';
+    },
+
+    /** Compact number formatting — "1.2K", "8.4M", etc. */
+    formatCompact(n) {
+        if (n === null || n === undefined || isNaN(n)) return '0';
+        n = Number(n);
+        if (Math.abs(n) < 1000) return Number.isInteger(n) ? String(n) : n.toFixed(1);
+        try {
+            return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+        } catch (e) {
+            return String(Math.round(n));
+        }
+    },
+
+    /** Thousands-separated integer/number. */
+    formatNumber(n, decimals) {
+        if (n === null || n === undefined || isNaN(n)) return '0';
+        decimals = (decimals === undefined) ? 0 : decimals;
+        return Number(n).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    },
+
+    /** USD currency formatting. */
+    formatCurrency(n) {
+        if (n === null || n === undefined || isNaN(n)) return '$0';
+        n = Number(n);
+        try {
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency', currency: 'USD',
+                maximumFractionDigits: Math.abs(n) >= 1000 ? 0 : 2
+            }).format(n);
+        } catch (e) {
+            return '$' + n.toFixed(2);
+        }
+    },
+
+    /**
+     * Animate a numeric counter from its current value up to `target`.
+     * No-ops gracefully if reduced motion is preferred.
+     */
+    animateCounter(elem, target, options) {
+        if (!elem) return;
+        options = options || {};
+        var formatter = options.format || function(v) { return App.formatNumber(Math.round(v)); };
+        var duration = options.duration || 700;
+        var prefix = options.prefix || '';
+        var suffix = options.suffix || '';
+
+        var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (reduced) {
+            elem.textContent = prefix + formatter(target) + suffix;
+            return;
+        }
+
+        var start = parseFloat(elem.getAttribute('data-counter-current')) || 0;
+        var startTs = null;
+        function step(ts) {
+            if (!startTs) startTs = ts;
+            var p = Math.min(1, (ts - startTs) / duration);
+            // Ease-out cubic
+            var eased = 1 - Math.pow(1 - p, 3);
+            var v = start + (target - start) * eased;
+            elem.textContent = prefix + formatter(v) + suffix;
+            if (p < 1) {
+                requestAnimationFrame(step);
+            } else {
+                elem.setAttribute('data-counter-current', target);
+            }
+        }
+        requestAnimationFrame(step);
     },
 
     statusBadge(status) {

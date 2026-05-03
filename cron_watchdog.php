@@ -94,6 +94,15 @@ try {
         error_log("[" . date('c') . "] watchdog processRetries error: " . $e->getMessage());
     }
 
+    // Pull the latest game-play transactions (incremental). The throttle keeps
+    // the upstream call rate in check even when the watchdog runs every minute.
+    try {
+        Scheduler::syncGameTransactionsIfStale(60, 'default');
+    } catch (Exception $e) {
+        $errors[] = "syncGameTransactions: " . $e->getMessage();
+        error_log("[" . date('c') . "] watchdog syncGameTransactions error: " . $e->getMessage());
+    }
+
     // Write heartbeat even if individual steps had transient errors,
     // so long as the watchdog itself is running
     Scheduler::writeHeartbeat('watchdog');

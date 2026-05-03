@@ -212,6 +212,106 @@ class CenterEdgeClient {
     }
 
     // -----------------------------------------------
+    // Game Transactions (plays / tickets / revenue feed)
+    // -----------------------------------------------
+
+    /**
+     * Fetch a page of game-play transactions newer than $sinceId.
+     * Per the spec, returns transactions in ascending order by id.
+     * Returns the raw response array: ['transactions' => [...], 'sinceId' => N]
+     *
+     * The optional $feedName lets multi-feed systems target a specific feed.
+     * Default is 'default' (per the API spec).
+     */
+    public function getGameTransactions(int $sinceId = 0, int $take = 200, string $feedName = 'default'): array {
+        $query = ['sinceId' => max(0, $sinceId), 'take' => max(1, min(1000, $take))];
+        if ($feedName !== '' && $feedName !== 'default') {
+            $query['feedName'] = $feedName;
+        }
+        return $this->request('GET', '/games/transactions', null, $query);
+    }
+
+    /**
+     * Pull all NEW game-play transactions since the last sync and write them
+     * into the local game_transaction_cache table. Stores the high-water-mark
+     * transaction ID per feed in api_config so subsequent syncs are incremental.
+     *
+     * Returns the number of transactions inserted.
+     *
+     * Best-effort: returns 0 if the API doesn't expose /games/transactions
+     * (404) or if an upstream error makes a full page unavailable.
+     */
+    public function syncGameTransactionsToCache(string $feedName = 'default', int $maxPages = 25, int $pageSize = 200): int {
+        $cfgKey = 'last_txn_id_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $feedName);
+        $sinceId = (int)(DB::getConfig($cfgKey) ?? 0);
+        $inserted = 0;
+        $highest = $sinceId;
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            try {
+                $result = $this->getGameTransactions($sinceId, $pageSize, $feedName);
+            } catch (RuntimeException $e) {
+                $msg = $e->getMessage();
+                // 404 = endpoint unsupported on this card system. Quietly skip.
+                if (strpos($msg, 'HTTP 404') !== false) {
+                    return 0;
+                }
+                throw $e;
+            }
+
+            $txns = $result['transactions'] ?? [];
+            if (!is_array($txns) || count($txns) === 0) {
+                break;
+            }
+
+            foreach ($txns as $t) {
+                $tid = isset($t['id']) ? (int)$t['id'] : 0;
+                if ($tid <= 0) continue;
+                if ($tid > $highest) $highest = $tid;
+
+                $amount = is_array($t['amount'] ?? null) ? $t['amount'] : [];
+                $regularPoints = isset($amount['regularPoints']) ? (float)$amount['regularPoints'] : 0;
+                $bonusPoints   = isset($amount['bonusPoints'])   ? (float)$amount['bonusPoints']   : 0;
+                $tickets       = isset($amount['redemptionTickets']) ? (float)$amount['redemptionTickets'] : 0;
+                $cash          = isset($amount['cash'])           ? (float)$amount['cash']           : 0;
+                $creditCard    = isset($amount['creditCard'])     ? (float)$amount['creditCard']     : 0;
+
+                DB::execute(
+                    'INSERT OR IGNORE INTO game_transaction_cache
+                        (transaction_id, feed_name, game_id, game_description, card_number,
+                         transaction_time, regular_points, bonus_points, redemption_tickets,
+                         cash, credit_card, used_time_play, used_play_privilege)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, :p10, :p11, :p12)',
+                    [
+                        $tid,
+                        $feedName,
+                        (string)($t['gameId'] ?? ''),
+                        (string)($t['gameDescription'] ?? ''),
+                        (string)($t['cardNumber'] ?? ''),
+                        (string)($t['transactionTime'] ?? gmdate('c')),
+                        $regularPoints,
+                        $bonusPoints,
+                        $tickets,
+                        $cash,
+                        $creditCard,
+                        !empty($t['usedTimePlay']) ? 1 : 0,
+                        !empty($t['usedPlayPrivilege']) ? 1 : 0,
+                    ]
+                );
+                $inserted++;
+            }
+
+            $sinceId = $highest;
+            if (count($txns) < $pageSize) break; // last page
+        }
+
+        if ($highest > 0) {
+            DB::setConfig($cfgKey, (string)$highest, false);
+        }
+        return $inserted;
+    }
+
+    // -----------------------------------------------
     // Kiosk Endpoints
     // -----------------------------------------------
 

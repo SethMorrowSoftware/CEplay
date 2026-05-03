@@ -197,6 +197,31 @@ class DB {
             last_synced_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
 
+        // Cached game-play transactions pulled from the CenterEdge
+        // /games/transactions feed. Used to power the dashboard's plays /
+        // tickets / revenue analytics. Sync is incremental via api_config
+        // 'last_txn_id_<feed>' entries. Old rows are pruned by purgeOldData.
+        $db->exec('CREATE TABLE IF NOT EXISTS game_transaction_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL,
+            feed_name TEXT NOT NULL DEFAULT \'default\',
+            game_id TEXT NOT NULL DEFAULT \'\',
+            game_description TEXT NOT NULL DEFAULT \'\',
+            card_number TEXT NOT NULL DEFAULT \'\',
+            transaction_time TEXT NOT NULL,
+            regular_points REAL NOT NULL DEFAULT 0,
+            bonus_points REAL NOT NULL DEFAULT 0,
+            redemption_tickets REAL NOT NULL DEFAULT 0,
+            cash REAL NOT NULL DEFAULT 0,
+            credit_card REAL NOT NULL DEFAULT 0,
+            used_time_play INTEGER NOT NULL DEFAULT 0,
+            used_play_privilege INTEGER NOT NULL DEFAULT 0,
+            inserted_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            UNIQUE(feed_name, transaction_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gtc_time ON game_transaction_cache(transaction_time)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gtc_game ON game_transaction_cache(game_id, transaction_time)');
+
         // Pending retries for game/kiosk pause/unpause actions that failed
         // because the asset was in use (or any other transient per-asset
         // error). The watchdog re-attempts these once per cycle and gives up

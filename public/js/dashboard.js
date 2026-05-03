@@ -30,6 +30,11 @@
     var transitionTimers = [];
     var currentInterval = INTERVAL_DEFAULT;
 
+    // Stats polling (independent — runs on its own cadence)
+    var statsRefreshCleanup = null;
+    var lastStats = null;
+    var lastTickerIds = [];
+
     // View state
     var gameView = 'table'; // 'grid' or 'table'
     var gameStatusFilter = 'all'; // 'all', 'enabled', 'paused', 'outOfService'
@@ -212,6 +217,7 @@
 
     function renderDashboard(container) {
         currentInterval = INTERVAL_DEFAULT;
+        lastTickerIds = [];
 
         // Page header with sync button (icon)
         var syncBtn = App.el('button', {
@@ -221,19 +227,79 @@
         syncBtn.appendChild(App.iconEl('sync', 14));
         syncBtn.appendChild(App.el('span', { textContent: 'Sync Now' }));
 
-        container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('div', {}, [
-                App.el('h1', { className: 'page-title', textContent: 'Command Center' }),
-                App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Loading…' })
-            ]),
-            App.el('div', { className: 'page-header-actions' }, [syncBtn])
-        ]));
+        // Hero header: glassy gradient banner with the live status
+        var hero = App.el('div', { className: 'hero-banner' }, [
+            App.el('div', { className: 'hero-banner-inner' }, [
+                App.el('div', { className: 'hero-banner-text' }, [
+                    App.el('div', { className: 'hero-eyebrow' }, [
+                        App.el('span', { className: 'hero-live-dot' }),
+                        App.el('span', { textContent: 'LIVE · CASTLE FUN CENTER' })
+                    ]),
+                    App.el('h1', { className: 'page-title hero-title', textContent: 'Command Center' }),
+                    App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Loading…' })
+                ]),
+                App.el('div', { className: 'hero-banner-actions' }, [syncBtn])
+            ])
+        ]);
+        container.appendChild(hero);
 
         // Security warnings banner (populated by loadDashboard)
         container.appendChild(App.el('div', { id: 'security-warnings' }));
 
-        // Stats cards
-        var statsGrid = App.el('div', { className: 'stats-grid', id: 'stats-grid' });
+        // Hero stat tiles — plays / tickets / revenue / unique players
+        var heroStats = App.el('div', { className: 'hero-stats', id: 'hero-stats' });
+        container.appendChild(heroStats);
+
+        // Two-column analytics row: today's hourly chart + top games leaderboard
+        container.appendChild(App.el('div', { className: 'analytics-grid', id: 'analytics-grid' }, [
+            App.el('div', { className: 'card analytics-card', id: 'hourly-card' }, [
+                App.el('div', { className: 'card-header' }, [
+                    App.el('div', { className: 'flex-center gap-sm' }, [
+                        (function() {
+                            var iconWrap = App.el('span', { className: 'card-icon card-icon-accent' });
+                            iconWrap.appendChild(App.iconEl('chart', 16));
+                            return iconWrap;
+                        })(),
+                        App.el('div', { className: 'card-title', textContent: 'Today by Hour' })
+                    ]),
+                    App.el('span', { className: 'card-subnote', id: 'hourly-subnote', textContent: 'Plays per hour' })
+                ]),
+                App.el('div', { id: 'hourly-chart', className: 'hourly-chart' })
+            ]),
+            App.el('div', { className: 'card analytics-card', id: 'top-games-card' }, [
+                App.el('div', { className: 'card-header' }, [
+                    App.el('div', { className: 'flex-center gap-sm' }, [
+                        (function() {
+                            var iconWrap = App.el('span', { className: 'card-icon card-icon-warning' });
+                            iconWrap.appendChild(App.iconEl('trophy', 16));
+                            return iconWrap;
+                        })(),
+                        App.el('div', { className: 'card-title', textContent: 'Top Games Today' })
+                    ]),
+                    App.el('span', { className: 'card-subnote', textContent: 'By plays' })
+                ]),
+                App.el('div', { id: 'top-games-list', className: 'leaderboard' })
+            ])
+        ]));
+
+        // Live ticker — recent plays scrolling feed
+        container.appendChild(App.el('div', { className: 'card live-ticker-card mt-2' }, [
+            App.el('div', { className: 'card-header' }, [
+                App.el('div', { className: 'flex-center gap-sm' }, [
+                    (function() {
+                        var iconWrap = App.el('span', { className: 'card-icon card-icon-success' });
+                        iconWrap.appendChild(App.iconEl('flame', 16));
+                        return iconWrap;
+                    })(),
+                    App.el('div', { className: 'card-title', textContent: 'Live Activity' })
+                ]),
+                App.el('span', { className: 'card-subnote', id: 'ticker-subnote', textContent: 'Recent plays' })
+            ]),
+            App.el('div', { id: 'live-ticker', className: 'live-ticker' })
+        ]));
+
+        // Existing operational stats — kept for at-a-glance device counts
+        var statsGrid = App.el('div', { className: 'stats-grid mt-2', id: 'stats-grid' });
         container.appendChild(statsGrid);
 
         // Group controls (collapsible)
@@ -320,15 +386,380 @@
         loadDashboard();
         scheduleNextPoll();
 
+        // Independent stats poller — refreshes the hero/analytics every 20s
+        loadStats();
+        statsRefreshCleanup = App.createVisibilityAwareInterval(loadStats, 20000, {
+            runImmediately: false,
+            runOnVisible: true
+        });
+
         return function cleanup() {
             if (refreshIntervalCleanup) refreshIntervalCleanup();
             refreshIntervalCleanup = null;
             refreshInterval = null;
+            if (statsRefreshCleanup) statsRefreshCleanup();
+            statsRefreshCleanup = null;
             expiryTimers.forEach(function(t) { clearTimeout(t); });
             expiryTimers = [];
             transitionTimers.forEach(function(t) { clearTimeout(t); });
             transitionTimers = [];
         };
+    }
+
+    // -----------------------------------------------------------------
+    // Stats / Analytics — hero tiles, hourly chart, top games, ticker
+    // -----------------------------------------------------------------
+
+    async function loadStats() {
+        var gen = App.navGeneration();
+        try {
+            var data = await API.get('stats/dashboard');
+            if (App.navGeneration() !== gen) return;
+            lastStats = data || {};
+            renderHeroStats(lastStats);
+            renderHourlyChart(lastStats);
+            renderTopGames(lastStats);
+            renderLiveTicker(lastStats);
+        } catch (err) {
+            // Soft-fail: leave the panels in their last-known state
+            // and surface only on first failure to avoid toast spam.
+            if (!lastStats) {
+                renderHeroStats({});
+                renderHourlyChart({});
+                renderTopGames({});
+                renderLiveTicker({});
+            }
+        }
+    }
+
+    function renderHeroStats(stats) {
+        var el = document.getElementById('hero-stats');
+        if (!el) return;
+        var today = stats.today || { plays: 0, tickets: 0, revenue: 0, unique_cards: 0 };
+        var yest  = stats.yesterday_same_time || { plays: 0, tickets: 0, revenue: 0, unique_cards: 0 };
+
+        var tiles = [
+            {
+                key: 'plays',
+                label: 'Plays Today',
+                value: today.plays,
+                prev: yest.plays,
+                icon: 'gamepad',
+                accent: 'accent',
+                format: function(v) { return App.formatNumber(Math.round(v)); }
+            },
+            {
+                key: 'tickets',
+                label: 'Tickets Won',
+                value: today.tickets,
+                prev: yest.tickets,
+                icon: 'ticket',
+                accent: 'warning',
+                format: function(v) { return App.formatNumber(Math.round(v)); }
+            },
+            {
+                key: 'revenue',
+                label: 'Revenue Today',
+                value: today.revenue,
+                prev: yest.revenue,
+                icon: 'coin',
+                accent: 'success',
+                format: function(v) { return App.formatCurrency(v); }
+            },
+            {
+                key: 'players',
+                label: 'Unique Players',
+                value: today.unique_cards,
+                prev: yest.unique_cards,
+                icon: 'users',
+                accent: 'purple',
+                format: function(v) { return App.formatNumber(Math.round(v)); }
+            }
+        ];
+
+        // Build sparkline values from the daily series (latest 7 days)
+        var series = stats.daily_series || [];
+        var seriesByKey = {
+            plays:   series.map(function(d) { return d.plays; }),
+            tickets: series.map(function(d) { return d.tickets; }),
+            revenue: series.map(function(d) { return d.revenue; }),
+            players: series.map(function(d) { return d.plays; }) // best proxy
+        };
+
+        // Preserve existing tiles for animation if already rendered
+        var existing = el.children.length === tiles.length;
+        if (!existing) {
+            el.innerHTML = '';
+            tiles.forEach(function(t) {
+                var tile = App.el('div', { className: 'hero-stat hero-stat-' + t.accent, 'data-key': t.key });
+                var iconBadge = App.el('div', { className: 'hero-stat-icon' });
+                iconBadge.appendChild(App.iconEl(t.icon, 18));
+                tile.appendChild(iconBadge);
+                tile.appendChild(App.el('div', { className: 'hero-stat-label', textContent: t.label }));
+                tile.appendChild(App.el('div', { className: 'hero-stat-value', 'data-counter-current': '0', textContent: t.format(0) }));
+                tile.appendChild(App.el('div', { className: 'hero-stat-meta' }, [
+                    App.el('span', { className: 'hero-stat-delta', textContent: '—' }),
+                    App.el('span', { className: 'hero-stat-vs', textContent: ' vs yesterday' })
+                ]));
+                tile.appendChild(buildSparkline(seriesByKey[t.key] || [], t.accent));
+                el.appendChild(tile);
+            });
+        }
+
+        // Update values + animate counters + delta + sparklines
+        tiles.forEach(function(t, i) {
+            var tile = el.children[i];
+            if (!tile) return;
+            var valueEl = tile.querySelector('.hero-stat-value');
+            var deltaEl = tile.querySelector('.hero-stat-delta');
+            var sparkHost = tile.querySelector('.hero-sparkline');
+
+            if (valueEl) {
+                App.animateCounter(valueEl, Number(t.value || 0), { format: t.format });
+            }
+
+            if (deltaEl) {
+                var delta = renderDelta(t.value, t.prev);
+                deltaEl.innerHTML = '';
+                deltaEl.className = 'hero-stat-delta ' + delta.cls;
+                deltaEl.textContent = delta.text;
+            }
+
+            if (sparkHost && sparkHost.parentNode) {
+                var newSpark = buildSparkline(seriesByKey[t.key] || [], t.accent);
+                sparkHost.parentNode.replaceChild(newSpark, sparkHost);
+            }
+        });
+    }
+
+    function renderDelta(curr, prev) {
+        curr = Number(curr || 0);
+        prev = Number(prev || 0);
+        if (prev === 0 && curr === 0) return { text: 'No activity yet', cls: 'is-flat' };
+        if (prev === 0) return { text: '▲ new', cls: 'is-up' };
+        var diff = curr - prev;
+        var pct = Math.abs((diff / prev) * 100);
+        var pctStr = (pct >= 100 ? Math.round(pct) : pct.toFixed(1)) + '%';
+        if (diff > 0) return { text: '▲ ' + pctStr, cls: 'is-up' };
+        if (diff < 0) return { text: '▼ ' + pctStr, cls: 'is-down' };
+        return { text: '◆ same', cls: 'is-flat' };
+    }
+
+    /**
+     * Build an inline SVG sparkline. Returns a span wrapper so we can swap it
+     * cleanly on each re-render without disrupting the surrounding tile.
+     */
+    function buildSparkline(values, accent) {
+        var wrap = App.el('span', { className: 'hero-sparkline hero-sparkline-' + (accent || 'accent') });
+        if (!values || values.length === 0) {
+            wrap.innerHTML = '';
+            return wrap;
+        }
+
+        var w = 110, h = 30, pad = 2;
+        var max = Math.max.apply(null, values);
+        var min = Math.min.apply(null, values);
+        var range = max - min || 1;
+        var step = (w - pad * 2) / Math.max(1, values.length - 1);
+
+        var pts = values.map(function(v, i) {
+            var x = pad + i * step;
+            var y = h - pad - ((v - min) / range) * (h - pad * 2);
+            return [x, y];
+        });
+
+        var line = pts.map(function(p, i) { return (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+        var areaPath = line + ' L ' + pts[pts.length - 1][0].toFixed(1) + ',' + (h - pad) + ' L ' + pts[0][0].toFixed(1) + ',' + (h - pad) + ' Z';
+
+        var lastX = pts[pts.length - 1][0].toFixed(1);
+        var lastY = pts[pts.length - 1][1].toFixed(1);
+
+        wrap.innerHTML =
+            '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
+                '<defs>' +
+                    '<linearGradient id="spark-grad-' + accent + '" x1="0" x2="0" y1="0" y2="1">' +
+                        '<stop offset="0%" stop-color="currentColor" stop-opacity="0.45"/>' +
+                        '<stop offset="100%" stop-color="currentColor" stop-opacity="0"/>' +
+                    '</linearGradient>' +
+                '</defs>' +
+                '<path d="' + areaPath + '" fill="url(#spark-grad-' + accent + ')"/>' +
+                '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+                '<circle cx="' + lastX + '" cy="' + lastY + '" r="2.2" fill="currentColor"/>' +
+            '</svg>';
+        return wrap;
+    }
+
+    function renderHourlyChart(stats) {
+        var el = document.getElementById('hourly-chart');
+        if (!el) return;
+        var hourly = stats.hourly || [];
+
+        if (!hourly.length || hourly.every(function(h) { return (h.plays || 0) === 0; })) {
+            el.innerHTML = '';
+            el.appendChild(App.el('div', { className: 'analytics-empty', textContent: 'No plays recorded yet today.' }));
+            return;
+        }
+
+        // Determine current hour to highlight + max for scaling
+        var nowHour = (function() {
+            try {
+                var fmt = new Intl.DateTimeFormat('en-US', {
+                    timeZone: App.appTimezone, hour: 'numeric', hour12: false
+                });
+                var parts = fmt.formatToParts(new Date());
+                var h = parts.filter(function(p) { return p.type === 'hour'; })[0];
+                return h ? parseInt(h.value, 10) : (new Date()).getHours();
+            } catch (e) { return (new Date()).getHours(); }
+        })();
+
+        var max = Math.max(1, hourly.reduce(function(m, h) { return Math.max(m, h.plays || 0); }, 0));
+
+        el.innerHTML = '';
+        var bars = App.el('div', { className: 'hourly-bars' });
+        hourly.forEach(function(h, i) {
+            var pct = ((h.plays || 0) / max) * 100;
+            var displayHour = ((i % 12) || 12);
+            var ampm = i < 12 ? 'AM' : 'PM';
+            var isNow = i === nowHour;
+            var isFuture = i > nowHour;
+
+            var barWrap = App.el('div', {
+                className: 'hourly-bar' + (isNow ? ' is-now' : '') + (isFuture ? ' is-future' : ''),
+                title: displayHour + ' ' + ampm + ' — ' + (h.plays || 0) + ' plays · ' + Math.round(h.tickets || 0) + ' tickets'
+            });
+            barWrap.appendChild(App.el('div', { className: 'hourly-bar-fill', style: { height: Math.max(2, pct) + '%' } }));
+            var labelText = displayHour + (i === 0 || i === 12 ? ampm : '');
+            barWrap.appendChild(App.el('div', { className: 'hourly-bar-label', textContent: labelText }));
+            bars.appendChild(barWrap);
+        });
+        el.appendChild(bars);
+
+        var totals = stats.today || {};
+        var note = document.getElementById('hourly-subnote');
+        if (note) {
+            note.textContent = (totals.plays || 0).toLocaleString() + ' plays · ' +
+                Math.round(totals.tickets || 0).toLocaleString() + ' tickets';
+        }
+    }
+
+    function renderTopGames(stats) {
+        var el = document.getElementById('top-games-list');
+        if (!el) return;
+        var games = stats.top_games || [];
+
+        if (games.length === 0) {
+            el.innerHTML = '';
+            el.appendChild(App.el('div', { className: 'analytics-empty', textContent: 'Once games start logging plays, your top performers will appear here.' }));
+            return;
+        }
+
+        var max = Math.max(1, games.reduce(function(m, g) { return Math.max(m, Number(g.plays || 0)); }, 0));
+
+        el.innerHTML = '';
+        games.forEach(function(g, idx) {
+            var pct = (Number(g.plays || 0) / max) * 100;
+            var rankCls = idx === 0 ? 'rank-gold' : idx === 1 ? 'rank-silver' : idx === 2 ? 'rank-bronze' : '';
+
+            var row = App.el('div', { className: 'leaderboard-row' });
+            row.appendChild(App.el('div', { className: 'leaderboard-rank ' + rankCls, textContent: '#' + (idx + 1) }));
+            row.appendChild(App.el('div', { className: 'leaderboard-info' }, [
+                App.el('div', { className: 'leaderboard-name', textContent: g.game_description || g.game_id || 'Unknown' }),
+                App.el('div', { className: 'leaderboard-meta' }, [
+                    App.el('span', { textContent: App.formatNumber(g.plays) + ' plays' }),
+                    App.el('span', { className: 'text-muted', textContent: ' · ' }),
+                    App.el('span', { textContent: App.formatNumber(Math.round(g.tickets || 0)) + ' tickets' }),
+                    Number(g.revenue || 0) > 0 ? App.el('span', { className: 'text-muted', textContent: ' · ' }) : null,
+                    Number(g.revenue || 0) > 0 ? App.el('span', { textContent: App.formatCurrency(g.revenue) }) : null
+                ].filter(Boolean))
+            ]));
+            row.appendChild(App.el('div', { className: 'leaderboard-bar' }, [
+                App.el('div', { className: 'leaderboard-bar-fill', style: { width: Math.max(4, pct) + '%' } })
+            ]));
+            el.appendChild(row);
+        });
+    }
+
+    function renderLiveTicker(stats) {
+        var el = document.getElementById('live-ticker');
+        if (!el) return;
+        var items = stats.ticker || [];
+
+        if (items.length === 0) {
+            el.innerHTML = '';
+            el.appendChild(App.el('div', { className: 'analytics-empty', textContent: 'Waiting for the first play of the day…' }));
+            var subnote = document.getElementById('ticker-subnote');
+            if (subnote) subnote.textContent = 'Recent plays';
+            return;
+        }
+
+        // Detect new entries since last render so we can flash them
+        var newIds = {};
+        var prevSet = {};
+        lastTickerIds.forEach(function(id) { prevSet[id] = true; });
+        items.forEach(function(t) {
+            if (!prevSet[t.transaction_id]) newIds[t.transaction_id] = true;
+        });
+        lastTickerIds = items.map(function(t) { return t.transaction_id; });
+
+        el.innerHTML = '';
+        items.forEach(function(t) {
+            var ticketsNum = Number(t.redemption_tickets || 0);
+            var revenueNum = Number(t.revenue || 0);
+            var isHot = ticketsNum >= 50;
+            var card = (t.card_number && t.card_number !== '000000') ? t.card_number : 'Cash';
+
+            var item = App.el('div', {
+                className: 'ticker-item' + (newIds[t.transaction_id] ? ' is-new' : '') + (isHot ? ' is-hot' : '')
+            });
+            var iconWrap = App.el('div', { className: 'ticker-icon' });
+            iconWrap.appendChild(App.iconEl(isHot ? 'flame' : 'spark', 14));
+            item.appendChild(iconWrap);
+
+            item.appendChild(App.el('div', { className: 'ticker-body' }, [
+                App.el('div', { className: 'ticker-game', textContent: t.game_description || t.game_id || 'Game' }),
+                App.el('div', { className: 'ticker-meta' }, [
+                    App.el('span', { className: 'ticker-card', textContent: card }),
+                    App.el('span', { className: 'ticker-time', textContent: ' · ' + App.formatRelative(t.transaction_time) })
+                ])
+            ]));
+
+            var rightCol = App.el('div', { className: 'ticker-right' });
+            if (ticketsNum > 0) {
+                rightCol.appendChild(App.el('span', { className: 'ticker-pill ticker-pill-tickets' }, [
+                    App.iconEl('ticket', 11),
+                    App.el('span', { textContent: ' ' + App.formatNumber(Math.round(ticketsNum)) })
+                ]));
+            }
+            if (revenueNum > 0) {
+                rightCol.appendChild(App.el('span', { className: 'ticker-pill ticker-pill-revenue' }, [
+                    App.iconEl('coin', 11),
+                    App.el('span', { textContent: ' ' + App.formatCurrency(revenueNum) })
+                ]));
+            }
+            if (t.used_time_play) {
+                rightCol.appendChild(App.el('span', { className: 'ticker-pill ticker-pill-timeplay' }, [
+                    App.iconEl('timer', 11),
+                    App.el('span', { textContent: ' Time' })
+                ]));
+            } else if (t.used_play_privilege) {
+                rightCol.appendChild(App.el('span', { className: 'ticker-pill ticker-pill-priv' }, [
+                    App.iconEl('rocket', 11),
+                    App.el('span', { textContent: ' Privilege' })
+                ]));
+            }
+            if (rightCol.childNodes.length === 0) {
+                rightCol.appendChild(App.el('span', { className: 'ticker-pill ticker-pill-muted', textContent: 'Play' }));
+            }
+
+            item.appendChild(rightCol);
+            el.appendChild(item);
+        });
+
+        var subnote = document.getElementById('ticker-subnote');
+        if (subnote && stats.totals) {
+            var n = stats.totals.cached_transactions || 0;
+            subnote.textContent = App.formatNumber(n) + ' transactions cached';
+        }
     }
 
     function switchView(view) {
@@ -1216,8 +1647,11 @@
 
         try {
             await API.post('games/sync');
+            // Best-effort: also pull latest transactions so the hero tiles
+            // and live ticker refresh immediately. Don't block on failure.
+            try { await API.post('stats/sync'); } catch (e) { /* ignore */ }
             App.toast('Games synced successfully.', 'success');
-            await loadDashboard();
+            await Promise.all([loadDashboard(), loadStats()]);
         } catch (err) {
             App.toast('Sync failed: ' + err.message, 'error');
         } finally {

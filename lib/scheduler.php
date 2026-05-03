@@ -1227,6 +1227,200 @@ class Scheduler {
     }
 
     /**
+     * Pull new game-play transactions from CenterEdge (incremental).
+     * Best-effort: returns 0 if /games/transactions is unavailable.
+     */
+    public static function syncGameTransactions(string $feedName = 'default'): int {
+        try {
+            $client = new CenterEdgeClient();
+            if (!$client->isConfigured()) return 0;
+            return $client->syncGameTransactionsToCache($feedName);
+        } catch (Exception $e) {
+            error_log('syncGameTransactions: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Sync game transactions only if the last successful pull was older than
+     * $maxAgeSeconds. Throttles repeated calls so API calls/UI requests stay cheap.
+     */
+    public static function syncGameTransactionsIfStale(int $maxAgeSeconds = 60, string $feedName = 'default'): int {
+        $cfgKey = 'last_txn_sync_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $feedName);
+        $last = DB::getConfig($cfgKey);
+        if ($last) {
+            $ts = strtotime($last . ' UTC');
+            if ($ts !== false && (time() - $ts) < $maxAgeSeconds) {
+                return 0;
+            }
+        }
+        $count = self::syncGameTransactions($feedName);
+        DB::setConfig($cfgKey, gmdate('Y-m-d H:i:s'), false);
+        return $count;
+    }
+
+    /**
+     * Aggregate dashboard analytics from cached transactions.
+     *
+     * Returns a payload tuned for the dashboard hero strip and panels:
+     *   - today/yesterday rollups (plays, tickets, revenue, unique cards)
+     *   - hourly histogram for today (24 buckets)
+     *   - top games leaderboard for today
+     *   - rolling 7-day daily totals (for sparklines)
+     *   - latest N transactions for a "live ticker"
+     *
+     * Time bucketing is done in the configured app timezone so the day
+     * boundary matches what the operator sees on the wall clock.
+     */
+    public static function getDashboardStats(int $tickerLimit = 12, int $topGamesLimit = 8): array {
+        $__prevTz = self::setTimezone();
+        try {
+            $tz = date_default_timezone_get();
+            $now = new DateTime('now', new DateTimeZone($tz));
+            $todayStart = (clone $now)->setTime(0, 0, 0);
+            $yesterdayStart = (clone $todayStart)->modify('-1 day');
+            $weekStart = (clone $todayStart)->modify('-6 days');
+
+            // Convert local boundaries to UTC strings, since transaction_time
+            // is stored in whatever ISO format the upstream API returned (may
+            // include +HH:MM offsets) — comparing as ISO strings works for
+            // RFC3339 / ISO8601 inputs.
+            $toUtcIso = function(DateTime $dt) use ($tz) {
+                $u = clone $dt;
+                $u->setTimezone(new DateTimeZone('UTC'));
+                return $u->format('Y-m-d\TH:i:s\Z');
+            };
+            // For comparison robustness across whatever format the upstream API
+            // uses, compare directly against an ISO timestamp without offset by
+            // normalizing to UTC. We coerce stored values via SQLite's datetime().
+            $todayStartUtc = $toUtcIso($todayStart);
+            $yesterdayStartUtc = $toUtcIso($yesterdayStart);
+            $weekStartUtc = $toUtcIso($weekStart);
+
+            $rollup = function(string $sinceUtc, ?string $untilUtc = null) {
+                $sql = 'SELECT
+                            COUNT(*) AS plays,
+                            COALESCE(SUM(redemption_tickets), 0) AS tickets,
+                            COALESCE(SUM(cash + credit_card), 0) AS revenue,
+                            COALESCE(SUM(regular_points + bonus_points), 0) AS points_spent,
+                            COUNT(DISTINCT NULLIF(card_number, \'\')) AS unique_cards,
+                            COALESCE(SUM(used_time_play), 0) AS time_plays,
+                            COALESCE(SUM(used_play_privilege), 0) AS privilege_plays
+                        FROM game_transaction_cache
+                        WHERE datetime(transaction_time) >= datetime(:p0)';
+                $params = [$sinceUtc];
+                if ($untilUtc !== null) {
+                    $sql .= ' AND datetime(transaction_time) < datetime(:p1)';
+                    $params[] = $untilUtc;
+                }
+                $row = DB::queryOne($sql, $params);
+                return [
+                    'plays' => (int)($row['plays'] ?? 0),
+                    'tickets' => (float)($row['tickets'] ?? 0),
+                    'revenue' => (float)($row['revenue'] ?? 0),
+                    'points_spent' => (float)($row['points_spent'] ?? 0),
+                    'unique_cards' => (int)($row['unique_cards'] ?? 0),
+                    'time_plays' => (int)($row['time_plays'] ?? 0),
+                    'privilege_plays' => (int)($row['privilege_plays'] ?? 0),
+                ];
+            };
+
+            $today = $rollup($todayStartUtc);
+            $yesterdaySameTime = $rollup(
+                $yesterdayStartUtc,
+                $toUtcIso((clone $now)->modify('-1 day'))
+            );
+            $week = $rollup($weekStartUtc);
+
+            // Hourly histogram for today (24 buckets)
+            $hourly = array_fill(0, 24, ['plays' => 0, 'tickets' => 0, 'revenue' => 0]);
+            $rows = DB::query(
+                'SELECT transaction_time, redemption_tickets, cash, credit_card
+                 FROM game_transaction_cache
+                 WHERE datetime(transaction_time) >= datetime(:p0)',
+                [$todayStartUtc]
+            );
+            foreach ($rows as $r) {
+                $ts = strtotime($r['transaction_time']);
+                if ($ts === false) continue;
+                // Convert to local hour of day
+                $local = new DateTime('@' . $ts);
+                $local->setTimezone(new DateTimeZone($tz));
+                $h = (int)$local->format('G');
+                if ($h < 0 || $h > 23) continue;
+                $hourly[$h]['plays']++;
+                $hourly[$h]['tickets'] += (float)$r['redemption_tickets'];
+                $hourly[$h]['revenue'] += (float)$r['cash'] + (float)$r['credit_card'];
+            }
+
+            // Top games for today
+            $topGames = DB::query(
+                'SELECT game_id, game_description,
+                        COUNT(*) AS plays,
+                        COALESCE(SUM(redemption_tickets), 0) AS tickets,
+                        COALESCE(SUM(cash + credit_card), 0) AS revenue
+                 FROM game_transaction_cache
+                 WHERE datetime(transaction_time) >= datetime(:p0)
+                 GROUP BY game_id
+                 ORDER BY plays DESC
+                 LIMIT :p1',
+                [$todayStartUtc, $topGamesLimit]
+            );
+
+            // Daily totals over the trailing 7 days (sparkline data)
+            $dailySeries = [];
+            for ($i = 6; $i >= 0; $i--) {
+                $dayStart = (clone $todayStart)->modify("-$i days");
+                $dayEnd = (clone $dayStart)->modify('+1 day');
+                $r = $rollup($toUtcIso($dayStart), $toUtcIso($dayEnd));
+                $dailySeries[] = [
+                    'date' => $dayStart->format('Y-m-d'),
+                    'label' => $dayStart->format('D'),
+                    'plays' => $r['plays'],
+                    'tickets' => $r['tickets'],
+                    'revenue' => $r['revenue'],
+                ];
+            }
+
+            // Live ticker: latest N transactions (newest first)
+            $ticker = DB::query(
+                'SELECT transaction_id, game_id, game_description, card_number,
+                        transaction_time, redemption_tickets,
+                        (cash + credit_card) AS revenue,
+                        regular_points, bonus_points,
+                        used_time_play, used_play_privilege
+                 FROM game_transaction_cache
+                 ORDER BY datetime(transaction_time) DESC
+                 LIMIT :p0',
+                [max(1, min(50, $tickerLimit))]
+            );
+
+            // Total cached transactions (for empty-state messaging)
+            $totalsRow = DB::queryOne('SELECT COUNT(*) AS c, MAX(datetime(transaction_time)) AS latest FROM game_transaction_cache');
+            $totalCached = (int)($totalsRow['c'] ?? 0);
+            $latestTxn = $totalsRow['latest'] ?? null;
+
+            return [
+                'generated_at' => gmdate('Y-m-d H:i:s'),
+                'timezone' => $tz,
+                'today' => $today,
+                'yesterday_same_time' => $yesterdaySameTime,
+                'week' => $week,
+                'hourly' => $hourly,
+                'top_games' => $topGames,
+                'daily_series' => $dailySeries,
+                'ticker' => $ticker,
+                'totals' => [
+                    'cached_transactions' => $totalCached,
+                    'latest_transaction_at' => $latestTxn,
+                ],
+            ];
+        } finally {
+            self::restoreTimezone($__prevTz);
+        }
+    }
+
+    /**
      * Check for and execute missed actions (earlier today, not yet executed).
      *
      * Only the *latest* missed action per group is actually executed against
@@ -1466,7 +1660,7 @@ class Scheduler {
      * 30 days of executed scheduled_actions, and removes expired overrides
      * older than 90 days.
      */
-    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90): array {
+    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $transactionRetentionDays = 45): array {
         $summary = [];
 
         // Purge old action_log entries
@@ -1492,6 +1686,15 @@ class Scheduler {
             [$cutoff]
         );
         $summary['overrides_purged'] = $deleted;
+
+        // Purge old game-play transactions. The cache only powers dashboard
+        // analytics — a 30-45 day window is plenty for trends/sparklines.
+        $cutoff = date('Y-m-d H:i:s', strtotime("-$transactionRetentionDays days"));
+        $deleted = DB::execute(
+            'DELETE FROM game_transaction_cache WHERE datetime(transaction_time) < datetime(:p0)',
+            [$cutoff]
+        );
+        $summary['transactions_purged'] = $deleted;
 
         return $summary;
     }

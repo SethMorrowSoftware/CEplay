@@ -60,6 +60,16 @@ try {
         echo "  Note: kiosk sync skipped — " . $e->getMessage() . "\n";
     }
 
+    // Step 1c: Sync game-play transactions for the analytics dashboard.
+    // Best-effort: returns 0 silently if /games/transactions isn't supported.
+    echo "Syncing game transactions from CenterEdge...\n";
+    try {
+        $txnCount = Scheduler::syncGameTransactions('default');
+        echo "  Pulled $txnCount new transactions.\n";
+    } catch (Exception $e) {
+        echo "  Note: transactions sync skipped — " . $e->getMessage() . "\n";
+    }
+
     // Step 2: Execute any missed actions from earlier
     echo "Checking for missed actions...\n";
     Scheduler::executeMissedActions($today);
@@ -83,7 +93,8 @@ try {
         $purged = Scheduler::purgeOldData();
         echo "  Purged: {$purged['action_log_purged']} log entries, "
             . "{$purged['scheduled_actions_purged']} old actions, "
-            . "{$purged['overrides_purged']} expired overrides.\n";
+            . "{$purged['overrides_purged']} expired overrides, "
+            . (isset($purged['transactions_purged']) ? $purged['transactions_purged'] : 0) . " old transactions.\n";
     } catch (Exception $e) {
         echo "  WARNING: Data purge failed: " . $e->getMessage() . "\n";
     }

@@ -194,6 +194,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/capabilities.php';
                 handleCapabilities($method, $parts, $input);
                 break;
+            case 'stats':
+                require_once __DIR__ . '/api/stats.php';
+                handleStats($method, $parts, $input);
+                break;
             case 'health':
                 handleHealthCheck();
                 break;
