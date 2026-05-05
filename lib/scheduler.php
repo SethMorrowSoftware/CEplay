@@ -1026,7 +1026,19 @@ class Scheduler {
      *   - true (used by manual actions, override start/end, scheduled
      *     transitions firing): wipe gave-up state for this group's assets so
      *     a fresh intent gets a clean 10-attempt window.
+     *
+     * $syncCache controls cache freshening before the PATCH:
+     *   - true (default): freshen game + kiosk caches if they're older than
+     *     STATE_CHANGE_CACHE_FRESHNESS seconds. The watchdog and Tier 2 gate
+     *     keep caches < 2 minutes old already, so back-to-back operations
+     *     skip the API hit. The cache is still updated post-PATCH from the
+     *     upstream response, so the local snapshot stays authoritative.
+     *   - false: don't sync. Used by callers that just synced themselves
+     *     (enforceCurrentStates) or that explicitly want to skip the round
+     *     trip (manual button presses).
      */
+    const STATE_CHANGE_CACHE_FRESHNESS = 30;
+
     private static function executeStateChange(
         int $groupId,
         string $desiredStatus,
@@ -1039,16 +1051,12 @@ class Scheduler {
         try {
             $client = new CenterEdgeClient();
 
-            // Sync fresh states for both games and kiosks. Kiosk sync is
-            // non-fatal: if the card system doesn't expose /kiosks the call
-            // throws, but games should still be controllable.
+            // Freshen game + kiosk caches if they're stale. Kiosk sync is
+            // non-fatal — syncKioskStatesIfStale already swallows the
+            // upstream 404 you get on systems that don't expose /kiosks.
             if ($syncCache) {
-                $client->syncGamesToCache();
-                try {
-                    $client->syncKiosksToCache();
-                } catch (Exception $e) {
-                    error_log('Kiosk sync skipped during state change: ' . $e->getMessage());
-                }
+                self::syncGameStatesIfStale(self::STATE_CHANGE_CACHE_FRESHNESS);
+                self::syncKioskStatesIfStale(self::STATE_CHANGE_CACHE_FRESHNESS);
             }
 
             // Fresh-intent callers (manual button, schedule transition firing,

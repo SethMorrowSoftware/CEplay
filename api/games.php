@@ -107,14 +107,17 @@ function handleGames(string $method, array $parts, ?array $input): void {
     }
 
     if ($method === 'GET' && $action === 'categories') {
-        // Fetch categories from CenterEdge (always live)
+        // Categories rarely change. Serve from the 1-hour server-side cache
+        // (refreshed by the daily cron) unless the caller explicitly asks
+        // for a fresh fetch via ?refresh=1.
         $client = new CenterEdgeClient();
         if (!$client->isConfigured()) {
             http_response_code(400);
             echo json_encode(['error' => 'CenterEdge API is not configured.']);
             return;
         }
-        $categories = $client->getCategories();
+        $forceRefresh = !empty($_GET['refresh']);
+        $categories = $client->getCategoriesCached($forceRefresh);
         echo json_encode(['categories' => $categories]);
         return;
     }

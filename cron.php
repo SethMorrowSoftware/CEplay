@@ -67,6 +67,22 @@ try {
         echo "  Note: kiosk sync skipped — " . $e->getMessage() . "\n";
     }
 
+    // Step 1c: Refresh the cached categories list. The Groups editor reads
+    // this on every open, so keeping it warm here saves a paginated upstream
+    // call on each admin session.
+    echo "Refreshing game categories cache...\n";
+    try {
+        $client = new CenterEdgeClient();
+        if ($client->isConfigured()) {
+            $categories = $client->getCategoriesCached(/*forceRefresh*/ true);
+            echo "  Cached " . count($categories) . " categories.\n";
+        } else {
+            echo "  Skipped: CenterEdge API is not configured.\n";
+        }
+    } catch (Exception $e) {
+        echo "  WARNING: Categories refresh failed: " . $e->getMessage() . "\n";
+    }
+
     // Step 2: Execute any missed actions from earlier
     echo "Checking for missed actions...\n";
     Scheduler::executeMissedActions($today);

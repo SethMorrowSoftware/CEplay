@@ -555,9 +555,12 @@ function deleteGroup(int $groupId): void {
 }
 
 /**
- * Look up a category name from CenterEdge or return a default.
- * Uses a static cache so repeated calls during group create/update
- * only hit the API once.
+ * Look up a category name from the cached categories list.
+ *
+ * Uses CenterEdgeClient::getCategoriesCached() which serves from the 1-hour
+ * server-side cache (refreshed by the daily cron). The static $categoryMap
+ * memoises within a single request so repeated lookups during a multi-
+ * category group create/update don't re-decode the JSON blob each time.
  */
 function getCategoryName(int $categoryId): string {
     static $categoryMap = null;
@@ -565,9 +568,10 @@ function getCategoryName(int $categoryId): string {
     if ($categoryMap === null) {
         $categoryMap = [];
         try {
+            require_once __DIR__ . '/../lib/centeredge_client.php';
             $client = new CenterEdgeClient();
             if ($client->isConfigured()) {
-                $categories = $client->getCategories();
+                $categories = $client->getCategoriesCached();
                 foreach ($categories as $cat) {
                     $cid = (int)($cat['id'] ?? 0);
                     $categoryMap[$cid] = $cat['name'] ?? "Category $cid";
