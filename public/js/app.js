@@ -68,7 +68,16 @@ const App = {
     applyTheme() {
         document.documentElement.setAttribute('data-theme', this.theme);
         if (this.themeToggleBtn) {
-            this.themeToggleBtn.textContent = this.theme === 'dark' ? '\u263D Light mode' : '\u2600 Dark mode';
+            // Icon-only toggle: show the icon of the *target* mode so the
+            // affordance reads "click to switch to <mode>".
+            this.themeToggleBtn.innerHTML = '';
+            const isDark = this.theme === 'dark';
+            const icon = this.el('span', { className: 'theme-toggle-icon', 'aria-hidden': 'true', textContent: isDark ? '\u263C' : '\u263D' });
+            const label = this.el('span', { className: 'theme-toggle-label', textContent: isDark ? 'Light' : 'Dark' });
+            this.themeToggleBtn.appendChild(icon);
+            this.themeToggleBtn.appendChild(label);
+            this.themeToggleBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+            this.themeToggleBtn.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
         }
     },
 
@@ -230,9 +239,10 @@ const App = {
             'aria-label': 'Open navigation menu',
             'aria-expanded': 'false',
             'aria-controls': 'app-sidebar',
-            textContent: '\u2630',
             onClick: () => this.toggleMobileMenu()
-        });
+        }, [
+            this.el('span', { className: 'mobile-menu-bars', 'aria-hidden': 'true' })
+        ]);
         overlay.addEventListener('click', () => this.toggleMobileMenu(false));
         layout.appendChild(overlay);
         layout.appendChild(menuBtn);
@@ -241,8 +251,18 @@ const App = {
         const sidebar = this.el('aside', { className: 'sidebar', id: 'app-sidebar' });
 
         const brand = this.el('div', { className: 'sidebar-brand' }, [
-            this.el('h1', { textContent: 'Castle Fun Center' }),
-            this.el('p', { textContent: 'Management System' })
+            this.el('div', { className: 'sidebar-brand-row' }, [
+                this.el('div', { className: 'sidebar-brand-mark', 'aria-hidden': 'true', textContent: 'CF' }),
+                this.el('div', { className: 'sidebar-brand-text' }, [
+                    this.el('h1', { textContent: 'Castle Fun Center' }),
+                    this.el('p', { textContent: 'Management System' })
+                ]),
+                this.el('span', {
+                    className: 'sidebar-brand-status',
+                    title: 'System operational',
+                    'aria-label': 'System operational'
+                })
+            ])
         ]);
         sidebar.appendChild(brand);
 
@@ -282,10 +302,27 @@ const App = {
         sidebar.appendChild(nav);
 
         // Sidebar footer
+        const displayName = this.currentUser.display_name || 'User';
+        const initials = displayName
+            .split(/\s+/)
+            .map(s => s.charAt(0))
+            .filter(Boolean)
+            .slice(0, 2)
+            .join('')
+            .toUpperCase() || 'U';
         const footer = this.el('div', { className: 'sidebar-footer' }, [
-            this.el('span', { className: 'sidebar-user', textContent: this.currentUser.display_name }),
+            this.el('div', { className: 'sidebar-user' }, [
+                this.el('div', {
+                    className: 'sidebar-user-avatar',
+                    textContent: initials,
+                    'aria-hidden': 'true'
+                }),
+                this.el('span', { className: 'sidebar-user-name', textContent: displayName, title: displayName })
+            ]),
             this.el('button', {
                 className: 'btn btn-ghost btn-sm',
+                title: 'Sign out',
+                'aria-label': 'Sign out',
                 textContent: 'Logout',
                 onClick: async () => {
                     try {
