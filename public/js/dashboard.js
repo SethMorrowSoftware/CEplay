@@ -24,6 +24,7 @@
     // Module-level state
     var allGames = [];
     var allGroups = [];
+    var categoryWindow = 'today'; // selected window for the category breakdown widget
     var refreshInterval = null;
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
@@ -247,6 +248,9 @@
             ])
         ]));
 
+        // Swipe activity by category
+        container.appendChild(buildCategoryCard());
+
         // Top games today (live cache)
         container.appendChild(App.el('div', { className: 'card mt-2', id: 'top-games-card' }, [
             App.el('div', { className: 'card-header flex-between' }, [
@@ -433,12 +437,92 @@
                     : 'Not yet synced';
             }
 
-            // Swipe activity widget and top-games widget — fire-and-forget;
-            // failures here should not break the rest of the dashboard.
+            // Swipe activity widgets — fire-and-forget; failures here should
+            // not break the rest of the dashboard.
             loadSwipeSummary();
+            loadCategoryBreakdown(categoryWindow);
             loadTopGames();
         } catch (err) {
             App.toast(err.message, 'error');
+        }
+    }
+
+    var CATEGORY_WINDOWS = [
+        { key: 'hour',  label: 'Last Hour'   },
+        { key: 'today', label: 'Today'        },
+        { key: 'week',  label: 'Last 7 Days'  },
+    ];
+
+    function buildCategoryCard() {
+        var header = App.el('div', { className: 'card-header' }, [
+            App.el('div', { className: 'card-title', textContent: 'Swipe by Category' }),
+            App.el('div', { className: 'swipe-window-tabs', id: 'category-window-tabs' })
+        ]);
+
+        renderCategoryTabs(header.querySelector('#category-window-tabs'));
+
+        return App.el('div', { className: 'card mt-2', id: 'category-breakdown-card' }, [
+            header,
+            App.el('div', { id: 'category-breakdown-body', className: 'card-body' }, [
+                App.el('p', { className: 'text-sm text-secondary', textContent: 'Loading…' })
+            ])
+        ]);
+    }
+
+    function renderCategoryTabs(container) {
+        if (!container) return;
+        container.innerHTML = '';
+        CATEGORY_WINDOWS.forEach(function(w) {
+            container.appendChild(App.el('button', {
+                className: 'swipe-tab-btn' + (categoryWindow === w.key ? ' active' : ''),
+                textContent: w.label,
+                onClick: function() {
+                    categoryWindow = w.key;
+                    renderCategoryTabs(document.getElementById('category-window-tabs'));
+                    loadCategoryBreakdown(categoryWindow);
+                }
+            }));
+        });
+    }
+
+    async function loadCategoryBreakdown(win) {
+        var body = document.getElementById('category-breakdown-body');
+        if (!body) return;
+        try {
+            var data = await API.get('games/transactions/by-category?window=' + encodeURIComponent(win));
+            body.innerHTML = '';
+            var rows = data.categories || [];
+
+            if (rows.length === 0) {
+                body.appendChild(App.el('p', {
+                    className: 'text-sm text-secondary',
+                    textContent: 'No category data yet for this window. Play data accumulates as the watchdog cron polls each minute.'
+                }));
+                return;
+            }
+
+            var table = App.el('table', { className: 'swipe-summary-table' });
+            var thead = App.el('thead');
+            thead.appendChild(App.el('tr', {}, [
+                App.el('th', { textContent: 'Category' }),
+                App.el('th', { textContent: 'Total Swipes' }),
+                App.el('th', { textContent: 'Unique Cards' }),
+            ]));
+            table.appendChild(thead);
+
+            var tbody = App.el('tbody');
+            rows.forEach(function(r) {
+                tbody.appendChild(App.el('tr', {}, [
+                    App.el('td', { className: 'swipe-window-label', textContent: r.category_name || '—' }),
+                    App.el('td', { className: 'swipe-value', textContent: Number(r.total_swipes).toLocaleString() }),
+                    App.el('td', { className: 'swipe-value', textContent: Number(r.unique_cards).toLocaleString() }),
+                ]));
+            });
+            table.appendChild(tbody);
+            body.appendChild(table);
+        } catch (err) {
+            body.innerHTML = '';
+            body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Category breakdown unavailable.' }));
         }
     }
 
