@@ -909,6 +909,32 @@
 
     // ---------- Game detail modal ----------
 
+    /**
+     * Build a Game-shaped object from a cached row so the modal can render
+     * even when the upstream `/games/{id}` endpoint is unavailable. The
+     * CenterEdge API treats `getSingleGame` as an optional capability that
+     * defaults to false — if a card system doesn't support it, the live
+     * lookup 404s. The cached row (loaded by GET /api/games) carries every
+     * field the modal actually needs except `supportedActions`.
+     */
+    function gameFromCache(gameId) {
+        var key = String(gameId);
+        for (var i = 0; i < allGames.length; i++) {
+            var g = allGames[i];
+            if (String(g.game_id) === key) {
+                return {
+                    id: g.game_id,
+                    name: g.game_name,
+                    operationStatus: g.operation_status,
+                    categories: g.categories || [],
+                    supportedActions: [],
+                    _fromCache: true
+                };
+            }
+        }
+        return null;
+    }
+
     async function showGameDetail(gameId) {
         var body = App.el('div', { id: 'game-detail-body' }, [App.loading()]);
         var footer = App.el('div', { className: 'flex gap-sm' }, [
@@ -924,12 +950,18 @@
             var game = await API.get('games/' + encodeURIComponent(gameId));
             renderGameDetailModal(game);
         } catch (err) {
-            body.innerHTML = '';
-            if (err.status === 404) {
-                body.appendChild(App.el('p', { className: 'text-secondary', textContent: 'Game not found.' }));
-            } else {
-                body.appendChild(App.el('p', { className: 'text-secondary', textContent: 'Failed to load: ' + err.message }));
+            // Fallback to the cached row when the upstream doesn't support
+            // single-game lookup or the game momentarily can't be reached.
+            var cached = gameFromCache(gameId);
+            if (cached) {
+                renderGameDetailModal(cached);
+                return;
             }
+            body.innerHTML = '';
+            var msg = err.status === 404
+                ? 'Game not found in cache. Try Sync games to refresh the catalog.'
+                : 'Failed to load: ' + err.message;
+            body.appendChild(App.el('p', { className: 'text-secondary', textContent: msg }));
         }
     }
 
@@ -948,6 +980,11 @@
             App.statusBadge(status)
         ]));
 
+        if (game._fromCache) {
+            body.appendChild(App.el('p', { className: 'text-xs text-muted',
+                style: { marginTop: '0.4rem' },
+                textContent: 'Showing cached details — this card system doesn’t expose live single-game data.' }));
+        }
         if (game.virtualPlayEnabled) {
             body.appendChild(App.el('p', { className: 'text-sm text-secondary',
                 style: { marginTop: '0.4rem' }, textContent: 'Virtual play enabled.' }));
@@ -1115,7 +1152,12 @@
                     var fresh = await API.get('games/' + encodeURIComponent(game.game_id));
                     if (myGen !== pageGen) return;
                     renderGameDetailModal(fresh);
-                } catch (e) { /* keep modal as-is */ }
+                } catch (e) {
+                    // Fall back to the freshly-reloaded cache row so the
+                    // modal at least reflects the new status.
+                    var cached = gameFromCache(game.game_id);
+                    if (cached) renderGameDetailModal(cached);
+                }
             }
         } catch (err) {
             if (myGen !== pageGen) return;
