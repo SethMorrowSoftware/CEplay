@@ -15,13 +15,15 @@
 (function() {
     App.registerRoute('#/dashboard', { render: renderDashboard });
 
-    // Polling constants — populated from App.config (operator-configurable via
-    // Settings page); App.config is guaranteed to be set before any route
-    // renders because APP_CONFIG is embedded synchronously in the SPA shell.
-    var INTERVAL_DEFAULT            = App.config.pollDefaultMs;
-    var INTERVAL_OVERRIDE_ACTIVE    = App.config.pollOverrideActiveMs;
-    var INTERVAL_TRANSITION_IMMINENT = App.config.pollImminentMs;
-    var INTERVAL_OVERRIDE_EXPIRING  = App.config.pollImminentMs;
+    // Polling constants — read from App.config at render time, not at IIFE
+    // load time. App.init() runs on DOMContentLoaded and copies the
+    // operator-configured values from window.APP_CONFIG into App.config —
+    // that callback runs AFTER this IIFE evaluates, so reading App.config
+    // here would capture the hard-coded defaults instead of the operator's
+    // saved Settings values. Helpers below pull current values on demand.
+    function _intervalDefault()       { return App.config.pollDefaultMs;        }
+    function _intervalOverrideActive() { return App.config.pollOverrideActiveMs; }
+    function _intervalImminent()      { return App.config.pollImminentMs;       }
 
     // Module-level state
     var allGames = [];
@@ -31,7 +33,7 @@
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
-    var currentInterval = INTERVAL_DEFAULT;
+    var currentInterval = 30000; // initialised from App.config in renderDashboard
 
     // View state
     var gameView = 'table'; // 'grid' or 'table'
@@ -53,7 +55,7 @@
     }
 
     function adjustPollingRate(activeOverrides, groups) {
-        var newInterval = INTERVAL_DEFAULT;
+        var newInterval = _intervalDefault();
         var now = Date.now();
 
         // Check override expiry proximity
@@ -67,9 +69,9 @@
             });
 
             if (soonestMs <= 120000) {
-                newInterval = INTERVAL_OVERRIDE_EXPIRING;
+                newInterval = _intervalImminent();
             } else {
-                newInterval = INTERVAL_OVERRIDE_ACTIVE;
+                newInterval = _intervalOverrideActive();
             }
         }
 
@@ -81,7 +83,7 @@
                 if (transMs === null) return;
                 var remaining = transMs - now;
                 if (remaining > 0 && remaining <= 120000) {
-                    newInterval = Math.min(newInterval, INTERVAL_TRANSITION_IMMINENT);
+                    newInterval = Math.min(newInterval, _intervalImminent());
                 }
             });
         }
@@ -214,7 +216,7 @@
     }
 
     function renderDashboard(container) {
-        currentInterval = INTERVAL_DEFAULT;
+        currentInterval = _intervalDefault();
 
         // Page header
         container.appendChild(App.el('div', { className: 'page-header' }, [

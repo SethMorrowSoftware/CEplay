@@ -364,10 +364,14 @@ function kioskPerformAction(string $kioskId, ?array $input): void {
 
     $operator = $input['operator'] ?? null;
     if (!is_array($operator) || empty($operator)) {
+        // Match the Operator schema CenterEdge expects (employeeName /
+        // employeeNumber / stationName) — same shape as gamesPerformAction.
+        // The earlier {id, name} shape was rejected as a 400 by the API.
         $user = Auth::check();
         $operator = [
-            'id' => (string)($user['id'] ?? 'web'),
-            'name' => $user['display_name'] ?? ($user['username'] ?? 'web'),
+            'employeeName'   => $user['display_name'] ?? ($user['username'] ?? 'web'),
+            'employeeNumber' => (int)($user['id'] ?? 0),
+            'stationName'    => 'CEplay Web',
         ];
     }
 
