@@ -10,6 +10,18 @@ const App = {
     themeToggleBtn: null,
     appTimezone: 'UTC',
 
+    // Runtime configuration — populated in init() from window.APP_CONFIG.
+    // JS modules should read these instead of hardcoding poll intervals etc.
+    config: {
+        pollDefaultMs:        30000,
+        pollOverrideActiveMs: 10000,
+        pollImminentMs:        5000,
+        pollGamesAnalyticsMs: 30000,
+        pollGamesFeedMs:      15000,
+        pollOverridesMs:      15000,
+        topGamesLimit:            5,
+    },
+
     DAYS: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
     DAYS_SHORT: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
 
@@ -17,6 +29,18 @@ const App = {
         API.init(window.APP_CONFIG);
         this.currentUser = window.APP_CONFIG.user;
         this.appTimezone = window.APP_CONFIG.timezone || 'UTC';
+
+        // Load operator-configured UI intervals from APP_CONFIG (embedded by
+        // index.php from the DB). Fall back to the hardcoded defaults above.
+        var c = window.APP_CONFIG || {};
+        if (c.uiPollDefaultMs)        this.config.pollDefaultMs        = c.uiPollDefaultMs;
+        if (c.uiPollOverrideActiveMs) this.config.pollOverrideActiveMs = c.uiPollOverrideActiveMs;
+        if (c.uiPollImminentMs)       this.config.pollImminentMs       = c.uiPollImminentMs;
+        if (c.uiPollGamesAnalyticsMs) this.config.pollGamesAnalyticsMs = c.uiPollGamesAnalyticsMs;
+        if (c.uiPollGamesFeedMs)      this.config.pollGamesFeedMs      = c.uiPollGamesFeedMs;
+        if (c.uiPollOverridesMs)      this.config.pollOverridesMs      = c.uiPollOverridesMs;
+        if (c.dashboardTopGamesLimit) this.config.topGamesLimit        = c.dashboardTopGamesLimit;
+
         this.initTheme();
 
         window.addEventListener('hashchange', () => this.route());

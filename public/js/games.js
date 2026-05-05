@@ -21,8 +21,8 @@
 (function() {
     App.registerRoute('#/games', { render: renderGamesPage });
 
-    var ANALYTICS_REFRESH_MS = 30000;
-    var FEED_REFRESH_MS = 15000;
+    var ANALYTICS_REFRESH_MS = App.config.pollGamesAnalyticsMs;
+    var FEED_REFRESH_MS      = App.config.pollGamesFeedMs;
     var FEED_LIMIT = 30;
 
     // Module-level state (persists across re-renders within the page).

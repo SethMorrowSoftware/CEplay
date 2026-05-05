@@ -371,18 +371,18 @@ class Scheduler {
         $nowStr = $now->format('Y-m-d H:i');
         $nowTime = $now->format('H:i');
 
-        // Sync game states only if the cache is stale (older than 5 minutes).
-        // State-change actions use the tighter STATE_CHANGE_CACHE_FRESHNESS
-        // constant (30 s); this looser threshold is fine for the watchdog's
-        // background enforcement where being a few minutes behind CenterEdge
-        // is acceptable and avoids unnecessary upstream calls.
+        // Sync game states only if the cache is stale. The staleness threshold
+        // is configurable via Settings → Safety Nets (default 300 s / 5 min).
+        // State-change actions (pause/unpause buttons) use the tighter
+        // STATE_CHANGE_CACHE_FRESHNESS constant (30 s) so correctness is kept.
+        $staleSecs = (int)(DB::getConfig('state_sync_stale_seconds') ?? 300);
+        $staleSecs = max(30, min(3600, $staleSecs));
         try {
-            self::syncGameStatesIfStale(300);
+            self::syncGameStatesIfStale($staleSecs);
         } catch (Exception $e) {
             error_log('Watchdog sync failed: ' . $e->getMessage());
         }
-        // Same throttled freshness check for kiosks.
-        self::syncKioskStatesIfStale(300);
+        self::syncKioskStatesIfStale($staleSecs);
 
         $summary = ['groups_checked' => 0, 'groups_enforced' => 0, 'results' => []];
         $groups = DB::query('SELECT id FROM pause_groups WHERE is_active = 1');
@@ -688,7 +688,9 @@ class Scheduler {
 
         // New row, or desired_status changed — reset attempts AND clear any
         // gave_up_at marker. The intent is fresh, so the asset gets a full
-        // new 10-attempt window.
+        // new attempt window (configurable via Settings → Scheduler Behaviour).
+        $maxAttempts = (int)(DB::getConfig('retry_max_attempts') ?? self::RETRY_MAX_ATTEMPTS);
+        $maxAttempts = max(1, min(50, $maxAttempts));
         DB::execute(
             'INSERT INTO action_retries
                  (asset_type, asset_id, desired_status, source, pause_group_id,
@@ -699,11 +701,12 @@ class Scheduler {
                  source = :p3,
                  pause_group_id = :p4,
                  attempts = 0,
+                 max_attempts = :p5,
                  gave_up_at = NULL,
                  last_error = :p6,
                  updated_at = datetime(\'now\')',
             [$assetType, $assetId, $desiredStatus, $source, $pauseGroupId,
-             self::RETRY_MAX_ATTEMPTS, $errorMessage]
+             $maxAttempts, $errorMessage]
         );
     }
 
