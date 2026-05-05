@@ -9,6 +9,7 @@ require_once __DIR__ . '/crypto.php';
 
 class CenterEdgeClient {
     private const MAX_PAGINATION_LOOPS = 1000;
+    private const CATEGORIES_CACHE_TTL = 3600; // 1 hour
     private ?string $baseUrl = null;
     private ?string $username = null;
     private ?string $password = null;
@@ -165,6 +166,61 @@ class CenterEdgeClient {
         } while (true);
 
         return $allGames;
+    }
+
+    /**
+     * Return the game categories list, served from the local cache when fresh.
+     *
+     * Categories are stored as a JSON blob in api_config under
+     * "categories_cache" / "categories_cache_at" with a 1-hour TTL. Pass
+     * $forceRefresh=true to bypass the cache (used by the daily cron and
+     * the manual refresh button). On upstream failure with a stale cached
+     * copy present, the stale copy is returned so the Groups editor and
+     * /api/games/categories endpoint don't break during transient outages.
+     */
+    public function getCategoriesCached(bool $forceRefresh = false): array {
+        if (!$forceRefresh) {
+            $cached = self::readCategoriesCache();
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+        try {
+            $categories = $this->getCategories();
+        } catch (Exception $e) {
+            $stale = self::readCategoriesCache(true);
+            if ($stale !== null) {
+                error_log('getCategoriesCached: upstream failed, serving stale cache: ' . $e->getMessage());
+                return $stale;
+            }
+            throw $e;
+        }
+        self::writeCategoriesCache($categories);
+        return $categories;
+    }
+
+    private static function readCategoriesCache(bool $allowStale = false): ?array {
+        $raw = DB::getConfig('categories_cache');
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        if (!$allowStale) {
+            $fetchedAt = DB::getConfig('categories_cache_at');
+            if ($fetchedAt === null) {
+                return null;
+            }
+            $ts = strtotime($fetchedAt . ' UTC');
+            if ($ts === false || (time() - $ts) >= self::CATEGORIES_CACHE_TTL) {
+                return null;
+            }
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private static function writeCategoriesCache(array $categories): void {
+        DB::setConfig('categories_cache', json_encode($categories), false);
+        DB::setConfig('categories_cache_at', gmdate('Y-m-d H:i:s'), false);
     }
 
     /**

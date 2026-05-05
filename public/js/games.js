@@ -1082,12 +1082,14 @@
         var confirmed = await App.confirm('Run "' + (action.name || action.id) + '" on "' + (game.name || game.id) + '"?');
         if (!confirmed) return;
         try {
-            await API.post('games/' + encodeURIComponent(game.id) + '/action', { actionId: action.id });
+            // performAction returns the updated Game object per spec, so we
+            // can refresh the modal directly from the response without an
+            // extra GET round-trip to CenterEdge.
+            var fresh = await API.post('games/' + encodeURIComponent(game.id) + '/action', { actionId: action.id });
             App.toast('Action "' + (action.name || action.id) + '" sent.', 'success');
-            try {
-                var fresh = await API.get('games/' + encodeURIComponent(game.id));
+            if (fresh && fresh.id) {
                 renderGameDetailModal(fresh);
-            } catch (e) { /* swallow — modal still shows pre-action state */ }
+            }
         } catch (err) {
             App.toast('Action failed: ' + err.message, 'error');
         }
@@ -1148,13 +1150,22 @@
             await loadGames(myGen, /*silent*/ true);
             if (myGen !== pageGen) return;
             if (fromModal) {
-                try {
-                    var fresh = await API.get('games/' + encodeURIComponent(game.game_id));
-                    if (myGen !== pageGen) return;
-                    renderGameDetailModal(fresh);
-                } catch (e) {
-                    // Fall back to the freshly-reloaded cache row so the
-                    // modal at least reflects the new status.
+                // The PATCH response already contains the updated Game
+                // object — use it directly to avoid an extra live GET to
+                // CenterEdge. Fall back to the cache row only if the
+                // upstream response shape is unexpected.
+                var updated = null;
+                if (result.games && Array.isArray(result.games)) {
+                    for (var gi = 0; gi < result.games.length; gi++) {
+                        if (String(result.games[gi].id) === String(game.game_id)) {
+                            updated = result.games[gi];
+                            break;
+                        }
+                    }
+                }
+                if (updated) {
+                    renderGameDetailModal(updated);
+                } else {
                     var cached = gameFromCache(game.game_id);
                     if (cached) renderGameDetailModal(cached);
                 }
