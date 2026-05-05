@@ -157,12 +157,21 @@ function handleGames(string $method, array $parts, ?array $input): void {
             return;
         }
 
+        // Manual click is a fresh intent. Wipe any prior retry rows (including
+        // gave-up markers) for the games we're about to patch so a failure
+        // here starts a clean 10-attempt window instead of inheriting the
+        // earlier give-up state.
+        foreach ($changes as $gameId => $_status) {
+            Scheduler::clearRetry('game', (string)$gameId);
+        }
+
         $result = $client->patchGames($changes);
 
         // Update cache only for games that actually succeeded, and reconcile
-        // the retry queue: clear retries on success, queue/refresh on failure.
-        // Older code wrote optimistically for every requested change, which
-        // meant the cache would lie if the upstream API rejected the patch.
+        // the retry queue: nothing to do on success (we already cleared above),
+        // queue a fresh retry on failure. Older code wrote optimistically for
+        // every requested change, which meant the cache would lie if the
+        // upstream API rejected the patch.
         $errors = $result['errors'] ?? [];
         foreach ($changes as $gameId => $status) {
             $gid = (string)$gameId;
@@ -171,7 +180,6 @@ function handleGames(string $method, array $parts, ?array $input): void {
                     'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
                     [$status, $gid]
                 );
-                Scheduler::clearRetry('game', $gid);
             } else {
                 $err = $errors[$gameId] ?? $errors[$gid];
                 $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;

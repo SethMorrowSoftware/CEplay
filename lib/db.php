@@ -211,12 +211,22 @@ class DB {
             max_attempts INTEGER NOT NULL DEFAULT 10,
             last_attempted_at TEXT,
             last_error TEXT,
+            gave_up_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             UNIQUE(asset_type, asset_id),
             FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE SET NULL
         )');
+        // Migration: gave_up_at column added so the watchdog can stop
+        // re-queueing retries after the cap is hit. Older installs created
+        // the table without this column.
+        try {
+            $db->exec('ALTER TABLE action_retries ADD COLUMN gave_up_at TEXT');
+        } catch (Exception $e) {
+            // Column already exists — ignore
+        }
         $db->exec('CREATE INDEX IF NOT EXISTS idx_ar_asset ON action_retries(asset_type, asset_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_ar_gaveup ON action_retries(gave_up_at)');
 
         $db->exec('CREATE TABLE IF NOT EXISTS login_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

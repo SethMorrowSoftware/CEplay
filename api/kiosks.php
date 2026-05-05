@@ -149,6 +149,10 @@ function kioskSetStatus(string $kioskId, string $status, string $actionLabel): v
         return;
     }
 
+    // Manual click is a fresh intent — wipe any prior retry/give-up state
+    // so a failure here starts a clean 10-attempt window.
+    Scheduler::clearRetry('kiosk', $kioskId);
+
     try {
         $result = $client->patchKiosks([$kioskId => $status]);
     } catch (RuntimeException $e) {
@@ -266,6 +270,13 @@ function kioskPatchBulk(?array $input): void {
         }
     }
 
+    // Manual bulk patch is a fresh intent — clear any prior retry/give-up
+    // state for these kiosks before issuing the patch so a failure starts
+    // a clean 10-attempt window instead of inheriting earlier give-up state.
+    foreach ($changes as $kioskId => $_status) {
+        Scheduler::clearRetry('kiosk', (string)$kioskId);
+    }
+
     try {
         $result = $client->patchKiosks($changes);
     } catch (RuntimeException $e) {
@@ -274,16 +285,14 @@ function kioskPatchBulk(?array $input): void {
         return;
     }
 
-    // Reflect successful changes in the local cache, and update the retry
-    // queue: clear retries for kiosks that succeeded, queue/refresh for those
-    // that failed (the watchdog will re-attempt).
+    // Reflect successful changes in the local cache; on failure, queue a
+    // fresh retry (the watchdog will re-attempt up to max_attempts).
     foreach ($changes as $kioskId => $status) {
         if (!isset($result['errors'][$kioskId])) {
             DB::execute(
                 'UPDATE kiosk_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE kiosk_id = :p1',
                 [$status, $kioskId]
             );
-            Scheduler::clearRetry('kiosk', (string)$kioskId);
         } else {
             $err = $result['errors'][$kioskId];
             $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;

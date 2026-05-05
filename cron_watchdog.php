@@ -83,7 +83,9 @@ try {
 
     // Re-attempt any pause/unpause actions that previously failed at the
     // source (e.g. kiosk in use). Cap is enforced inside processRetries —
-    // assets that hit max_attempts are dropped with a give-up audit entry.
+    // assets that hit max_attempts are marked gave_up_at and skipped on
+    // subsequent ticks until a fresh intent (manual click, schedule
+    // transition, override boundary) clears the flag.
     try {
         $retrySummary = Scheduler::processRetries();
         if (!empty($retrySummary['attempted'])) {
