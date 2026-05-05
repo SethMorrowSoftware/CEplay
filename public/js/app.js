@@ -494,7 +494,11 @@ const App = {
         const cls = status === 'enabled' ? 'badge-enabled' :
                     status === 'paused' ? 'badge-paused' :
                     status === 'outOfService' ? 'badge-out-of-service' : '';
-        const label = status === 'outOfService' ? 'Out of Service' : status;
+        const label = status === 'enabled' ? 'Running' :
+                      status === 'paused' ? 'Paused' :
+                      status === 'outOfService' ? 'Out of Service' :
+                      status === 'unknown' || !status ? 'Unknown' :
+                      status;
         return this.el('span', { className: 'badge ' + cls, textContent: label, role: 'status', 'aria-label': 'Status: ' + label });
     },
 
