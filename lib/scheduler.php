@@ -1476,34 +1476,44 @@ class Scheduler {
     public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $playFeedRetentionDays = 395): array {
         $summary = [];
 
-        // Purge old action_log entries
-        $cutoff = date('Y-m-d H:i:s', strtotime("-$logRetentionDays days"));
+        // All cutoffs use UTC because the columns we compare against are
+        // populated by SQLite's datetime('now') (which is UTC) or by ISO-8601
+        // 'c' formatting (which carries timezone info). Using local-time
+        // cutoffs would shift the deletion window by the host TZ offset and
+        // either purge too much (after midnight in negative offsets) or too
+        // little (before midnight) depending on the column.
+        $now = time();
+
+        // Purge old action_log entries (timestamp column = UTC datetime('now'))
+        $cutoff = gmdate('Y-m-d H:i:s', $now - ($logRetentionDays * 86400));
         $deleted = DB::execute(
             'DELETE FROM action_log WHERE timestamp < :p0',
             [$cutoff]
         );
         $summary['action_log_purged'] = $deleted;
 
-        // Purge old executed scheduled_actions (keep pending ones regardless of age)
-        $cutoff = date('Y-m-d', strtotime("-$actionRetentionDays days"));
+        // Purge old executed scheduled_actions. scheduled_date is the local
+        // calendar date the action was planned for, so use local time here.
+        $cutoff = date('Y-m-d', $now - ($actionRetentionDays * 86400));
         $deleted = DB::execute(
             'DELETE FROM scheduled_actions WHERE scheduled_date < :p0 AND executed != 0',
             [$cutoff]
         );
         $summary['scheduled_actions_purged'] = $deleted;
 
-        // Purge very old expired overrides
-        $cutoff = date('Y-m-d H:i', strtotime("-$overrideRetentionDays days"));
+        // Purge very old expired overrides. end_datetime is stored as the
+        // local-time string the operator entered (no TZ suffix), so we
+        // compare against a local-time cutoff.
+        $cutoff = date('Y-m-d H:i', $now - ($overrideRetentionDays * 86400));
         $deleted = DB::execute(
             'DELETE FROM schedule_overrides WHERE end_datetime < :p0',
             [$cutoff]
         );
         $summary['overrides_purged'] = $deleted;
 
-        // Purge old game-play transactions. We only need a recent rolling
-        // window for the live feed and top-games widget; longer-term reporting
-        // is owned by CenterEdge itself.
-        $cutoff = date('c', strtotime("-$playFeedRetentionDays days"));
+        // Purge old game-play transactions. transaction_time is ISO-8601 with
+        // timezone (date('c')), so a UTC ISO cutoff compares correctly.
+        $cutoff = gmdate('Y-m-d\TH:i:sP', $now - ($playFeedRetentionDays * 86400));
         $deleted = DB::execute(
             'DELETE FROM game_play_transactions WHERE transaction_time < :p0',
             [$cutoff]

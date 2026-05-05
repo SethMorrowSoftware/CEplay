@@ -530,7 +530,7 @@
         var filtered = games;
         if (gameSearchTerm) {
             filtered = filtered.filter(function(g) {
-                return g.game_name.toLowerCase().includes(gameSearchTerm);
+                return (g.game_name || '').toLowerCase().includes(gameSearchTerm);
             });
         }
         // Filter by status

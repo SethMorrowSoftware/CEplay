@@ -107,9 +107,15 @@
                 testResult.textContent = '';
                 testResult.className = '';
                 try {
-                    // Save first, then test
-                    await saveApiConfig(baseUrlInput, usernameInput, passwordInput, apiKeyInput);
-                    const result = await API.post('settings/test', {}) || {};
+                    // Send the live form values to the test endpoint so we
+                    // verify what the operator just typed without persisting
+                    // a (potentially broken) config to the database.
+                    const result = await API.post('settings/test', {
+                        base_url: baseUrlInput.value.trim(),
+                        username: usernameInput.value.trim(),
+                        password: passwordInput.value,
+                        api_key: apiKeyInput.value.trim()
+                    }) || {};
                     if (result.success) {
                         testResult.textContent = '\u2713 Connected to ' + (result.system_name || 'CenterEdge') +
                             '. Found ' + (result.game_count || 0) + ' games, ' + (result.category_count || 0) + ' categories.' +

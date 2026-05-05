@@ -129,22 +129,38 @@ const App = {
 
         const appEl = document.getElementById('app');
 
+        // Async page renderers return a Promise; we need to await the resolved
+        // cleanup function and only install it if the user hasn't already
+        // navigated to a different page in the meantime. Without the gen guard
+        // a stale cleanup could clobber the next page's cleanup.
+        const gen = this._navGeneration;
+        const installCleanup = (cleanup) => {
+            if (this._navGeneration !== gen) return;
+            if (typeof cleanup === 'function') {
+                this.currentCleanup = cleanup;
+            }
+        };
+
         if (this.currentUser) {
             this.ensureLayout(appEl);
             this.updateActiveNav(hash);
             const content = document.getElementById('main-content');
             if (content) {
                 content.innerHTML = '';
-                const cleanup = handler.render(content, params);
-                if (typeof cleanup === 'function') {
-                    this.currentCleanup = cleanup;
+                const result = handler.render(content, params);
+                if (result && typeof result.then === 'function') {
+                    result.then(installCleanup).catch(err => console.warn('Page render error:', err));
+                } else {
+                    installCleanup(result);
                 }
             }
         } else {
             appEl.innerHTML = '';
-            const cleanup = handler.render(appEl, params);
-            if (typeof cleanup === 'function') {
-                this.currentCleanup = cleanup;
+            const result = handler.render(appEl, params);
+            if (result && typeof result.then === 'function') {
+                result.then(installCleanup).catch(err => console.warn('Page render error:', err));
+            } else {
+                installCleanup(result);
             }
         }
 
