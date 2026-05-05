@@ -497,6 +497,12 @@ function gamesPollTransactions(): void {
  * aggregating, so a card that plays two games in the same category is only
  * counted once for that category.
  *
+ * `game_state_cache.categories` stores the array exactly as the CenterEdge
+ * API delivers it: per the OpenAPI spec, `Game.categories` is an array of
+ * integer GameCategoryId values (not objects). We extract the integer ID
+ * with json_each() and resolve names from the cached `/games/categories`
+ * blob in PHP after the query.
+ *
  * Uses SQLite's json_each() (available since SQLite 3.9, released 2015-10-14).
  *
  * GET /api/games/transactions/by-category?window=hour|today|week
@@ -523,15 +529,18 @@ function gamesTransactionsByCategory(): void {
 
     try {
         // Use json_each() to unnest the categories JSON array stored per game.
-        // The DISTINCT on the outer card-number COUNT gives correct unique-card
-        // counts per category (avoids double-counting a card that played
-        // multiple games in the same category).
+        // cat.value is the integer category ID (per OpenAPI spec). The outer
+        // COUNT(DISTINCT card_key) gives correct unique-card counts per
+        // category — a card that played two games in the same category is
+        // only counted once for that category, because the inner subquery
+        // pairs each (transaction_id, category, card_number) tuple before
+        // aggregation strips duplicates.
         $rows = DB::query(
-            'SELECT cat_name                        AS category_name,
+            'SELECT category_id,
                     COUNT(*)                        AS total_swipes,
                     COUNT(DISTINCT card_key)        AS unique_cards
              FROM (
-                 SELECT json_extract(cat.value, \'$.name\') AS cat_name,
+                 SELECT CAST(cat.value AS INTEGER) AS category_id,
                         t.transaction_id,
                         CASE WHEN t.card_number != \'000000\' AND t.card_number != \'\'
                              THEN t.card_number END  AS card_key
@@ -541,7 +550,7 @@ function gamesTransactionsByCategory(): void {
                  WHERE t.transaction_time >= :p0
                    AND json_array_length(c.categories) > 0
              )
-             GROUP BY category_name
+             GROUP BY category_id
              ORDER BY total_swipes DESC
              LIMIT 50',
             [$cutoff]
@@ -550,10 +559,33 @@ function gamesTransactionsByCategory(): void {
         $rows = [];
     }
 
-    $categories = array_map(function ($r) {
-        $r['total_swipes'] = (int)$r['total_swipes'];
-        $r['unique_cards'] = (int)$r['unique_cards'];
-        return $r;
+    // Resolve category names from the cached /games/categories blob.
+    // Falls back to "Category <id>" when the cache is empty or stale so the
+    // widget still shows something useful while the daily cron warms it.
+    $categoryNames = [];
+    $rawCats = DB::getConfig('categories_cache');
+    if (is_string($rawCats) && $rawCats !== '') {
+        $catList = json_decode($rawCats, true);
+        if (is_array($catList)) {
+            foreach ($catList as $cat) {
+                if (!is_array($cat)) continue;
+                $cid = isset($cat['id']) ? (int)$cat['id'] : null;
+                if ($cid === null) continue;
+                $categoryNames[$cid] = isset($cat['name']) && $cat['name'] !== ''
+                    ? (string)$cat['name']
+                    : 'Category ' . $cid;
+            }
+        }
+    }
+
+    $categories = array_map(function ($r) use ($categoryNames) {
+        $cid = (int)($r['category_id'] ?? 0);
+        return [
+            'category_id'   => $cid,
+            'category_name' => $categoryNames[$cid] ?? ('Category ' . $cid),
+            'total_swipes'  => (int)($r['total_swipes'] ?? 0),
+            'unique_cards'  => (int)($r['unique_cards'] ?? 0),
+        ];
     }, $rows);
 
     echo json_encode(['window' => $window, 'categories' => $categories]);

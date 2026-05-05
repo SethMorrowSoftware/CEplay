@@ -21,8 +21,11 @@
 (function() {
     App.registerRoute('#/games', { render: renderGamesPage });
 
-    var ANALYTICS_REFRESH_MS = App.config.pollGamesAnalyticsMs;
-    var FEED_REFRESH_MS      = App.config.pollGamesFeedMs;
+    // Refresh intervals are read from App.config at render time. App.init()
+    // copies operator-configured values from window.APP_CONFIG into
+    // App.config on DOMContentLoaded — that fires AFTER this IIFE evaluates,
+    // so capturing module-level constants here would freeze the hardcoded
+    // defaults instead of the operator's saved Settings values.
     var FEED_LIMIT = 30;
 
     // Module-level state (persists across re-renders within the page).
@@ -145,10 +148,10 @@
         // Periodic refresh of analytics + feed (game directory is refreshed manually).
         var analyticsTimer = App.createVisibilityAwareInterval(function() {
             loadAnalytics(myGen);
-        }, ANALYTICS_REFRESH_MS, { runImmediately: false, runOnVisible: true });
+        }, App.config.pollGamesAnalyticsMs, { runImmediately: false, runOnVisible: true });
         var feedTimer = App.createVisibilityAwareInterval(function() {
             loadFeed(myGen);
-        }, FEED_REFRESH_MS, { runImmediately: false, runOnVisible: true });
+        }, App.config.pollGamesFeedMs, { runImmediately: false, runOnVisible: true });
 
         refreshCleanups.push(analyticsTimer, feedTimer);
 
