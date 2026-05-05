@@ -13,7 +13,7 @@
 #    Step 6      Fix file ownership for the PHP-FPM container user
 #    Step 7      Create & start the PHP-FPM systemd service
 #    Step 8      Create systemd timers (watchdog every minute, daily planner)
-#    Step 9      Remove fresh_install.php (security)
+#    Step 9      Remove installer scripts (install.php, fresh_install.php)
 #    Step 10     Generate the Nginx server block and save it to a file
 #    Step 11     Verify services are running
 #    Step 12     Print a final checklist of remaining manual steps
@@ -574,11 +574,15 @@ done
 # =============================================================================
 #  STEP 9 — SECURITY CLEANUP
 # =============================================================================
-hdr "9 of 12 — Remove fresh_install.php"
+hdr "9 of 12 — Remove installer scripts"
 echo ""
 note "fresh_install.php wipes the database and creates a default admin"
 note "account with a known password (admin / admin123!). It must be"
 note "deleted from production systems to prevent unauthorized access."
+note ""
+note "install.php is the first-run setup script. It self-locks once an"
+note "admin user exists, but the dashboard still flags it as a warning"
+note "and the audit guidance is to remove it after first-run setup."
 echo ""
 
 FRESH="${INSTALL_DIR}/fresh_install.php"
@@ -587,6 +591,14 @@ if [[ -f "$FRESH" ]]; then
     ok "fresh_install.php deleted."
 else
     ok "fresh_install.php already absent — nothing to do."
+fi
+
+INSTALLER="${INSTALL_DIR}/install.php"
+if [[ -f "$INSTALLER" ]]; then
+    rm -f "$INSTALLER"
+    ok "install.php deleted."
+else
+    ok "install.php already absent — nothing to do."
 fi
 
 # =============================================================================
@@ -640,7 +652,7 @@ server {
     # ── Security: block direct access to server-side files ──────────────────
     # These files contain credentials, database, or sensitive logic.
     # They must NEVER be served directly by Nginx.
-    location ~ ^/(data|lib|\.env|config\.php|cron.*\.php|run_action\.php|fresh_install\.php|AUDIT\.md|README\.md) {
+    location ~ ^/(data|lib|\.env|config\.php|cron.*\.php|run_action\.php|install\.php|fresh_install\.php|AUDIT\.md|README\.md) {
         deny all;
         return 404;
     }
