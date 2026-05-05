@@ -1755,6 +1755,39 @@ textarea.form-input {
     transition: width var(--transition-base);
 }
 
+/* Swipe Activity summary widget */
+.swipe-summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+.swipe-summary-table th {
+    text-align: right;
+    padding: 0.35rem 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+}
+.swipe-summary-table th:first-child { text-align: left; }
+.swipe-summary-table td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+.swipe-summary-table tbody tr:last-child td { border-bottom: none; }
+.swipe-window-label {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+.swipe-value {
+    text-align: right;
+    font-weight: 500;
+    font-size: 1rem;
+}
+
 /* Smooth scrolling */
 html { scroll-behavior: smooth; }
 

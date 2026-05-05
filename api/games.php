@@ -37,6 +37,10 @@ function handleGames(string $method, array $parts, ?array $input): void {
         gamesPollTransactions();
         return;
     }
+    if ($method === 'GET' && $action === 'transactions' && $sub === 'summary') {
+        gamesTransactionSummary();
+        return;
+    }
 
     if ($method === 'GET' && $action === 'analytics') {
         gamesAnalytics();
@@ -479,6 +483,40 @@ function gamesPollTransactions(): void {
         http_response_code(500);
         echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
     }
+}
+
+/**
+ * Lightweight swipe counts for the dashboard summary widget.
+ * Returns total plays and unique card counts for the last hour, today, and
+ * the last 7 days in a single round-trip.
+ *
+ * GET /api/games/transactions/summary
+ */
+function gamesTransactionSummary(): void {
+    $tz = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try { $tzObj = new DateTimeZone($tz); } catch (Exception $e) { $tzObj = new DateTimeZone('UTC'); }
+
+    $cutoffs = [
+        'hour'  => (new DateTime('-1 hour',        $tzObj))->format('c'),
+        'today' => (new DateTime('today 00:00:00', $tzObj))->format('c'),
+        'week'  => (new DateTime('-7 days',        $tzObj))->format('c'),
+    ];
+
+    $sql = 'SELECT COUNT(*) AS total,
+                   COUNT(DISTINCT CASE WHEN card_number != \'000000\' AND card_number != \'\' THEN card_number END) AS unique_cards
+            FROM game_play_transactions
+            WHERE transaction_time >= :p0';
+
+    $windows = [];
+    foreach ($cutoffs as $key => $cutoff) {
+        $row = DB::queryOne($sql, [$cutoff]);
+        $windows[$key] = [
+            'total_swipes' => (int)($row['total'] ?? 0),
+            'unique_cards' => (int)($row['unique_cards'] ?? 0),
+        ];
+    }
+
+    echo json_encode(['windows' => $windows]);
 }
 
 /**
