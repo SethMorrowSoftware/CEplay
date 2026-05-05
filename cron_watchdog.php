@@ -100,12 +100,29 @@ try {
     // unreachable or the card system doesn't expose the feed yet, swallow the
     // error so the rest of the watchdog cycle still runs. Capped at 20 pages
     // per cycle (4000 plays) to keep watchdog runtime bounded.
+    //
+    // The interval is configurable via Settings → Polling Intervals. The
+    // watchdog runs every minute but will skip the CE fetch when the last
+    // poll was more recent than the configured interval. This lets venues
+    // trade data freshness for fewer upstream API calls.
     try {
         $client = new CenterEdgeClient();
         if ($client->isConfigured()) {
-            $txSummary = $client->pollGameTransactions('default');
-            if (!empty($txSummary['fetched'])) {
-                echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
+            $txPollInterval = (int)(DB::getConfig('tx_poll_interval_seconds') ?? 60);
+            $txPollInterval = max(60, min(900, $txPollInterval));
+
+            // Derive last-poll time from MAX(fetched_at) so we don't need a
+            // separate config key. Falls back to 0 (epoch) when no rows exist.
+            $lastPollRow = DB::queryOne('SELECT MAX(fetched_at) AS last_at FROM game_play_transactions');
+            $lastPollTs  = $lastPollRow && $lastPollRow['last_at']
+                ? strtotime($lastPollRow['last_at'] . ' UTC')
+                : 0;
+
+            if ((time() - $lastPollTs) >= $txPollInterval) {
+                $txSummary = $client->pollGameTransactions('default');
+                if (!empty($txSummary['fetched'])) {
+                    echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
+                }
             }
         }
     } catch (Exception $e) {

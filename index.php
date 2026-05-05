@@ -111,11 +111,16 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
         // executeMissedActions() / enforceCurrentStates() back to back. A
         // bare filemtime() check is a TOCTOU race; the lock turns it into an
         // atomic "first one wins, the rest skip this cycle" gate.
+        //
+        // 60s throttle: the watchdog already runs every minute, so the Tier 2
+        // is a supplementary safety net rather than the primary enforcement
+        // mechanism. 60s reduces per-request overhead while still catching
+        // missed actions promptly (at most 1 min behind the watchdog).
         $missedCheckFile = __DIR__ . '/data/.last_missed_check';
         $throttleFh = @fopen($missedCheckFile, 'c');
         if ($throttleFh && flock($throttleFh, LOCK_EX | LOCK_NB)) {
             $mtime = @filemtime($missedCheckFile) ?: 0;
-            if ((time() - $mtime) >= 15) {
+            if ((time() - $mtime) >= 60) {
                 @touch($missedCheckFile);
                 try {
                     Scheduler::executeMissedActions();

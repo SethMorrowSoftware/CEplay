@@ -21,15 +21,17 @@ function handleSettings(string $method, array $parts, ?array $input): void {
         $password = DB::getConfig('password');
         $apiKey   = DB::getConfig('api_key');
         $timezone = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
-        $tokenFetchedAt = DB::getConfig('token_fetched_at');
+        $tokenFetchedAt   = DB::getConfig('token_fetched_at');
+        $txPollInterval   = (int)(DB::getConfig('tx_poll_interval_seconds') ?? 60);
 
         echo json_encode([
-            'base_url'          => $baseUrl,
-            'username'          => $username,
-            'password'          => $password ? '********' : '',
-            'api_key'           => $apiKey ? '********' : '',
-            'timezone'          => $timezone,
-            'token_fetched_at'  => $tokenFetchedAt,
+            'base_url'                  => $baseUrl,
+            'username'                  => $username,
+            'password'                  => $password ? '********' : '',
+            'api_key'                   => $apiKey ? '********' : '',
+            'timezone'                  => $timezone,
+            'token_fetched_at'          => $tokenFetchedAt,
+            'tx_poll_interval_seconds'  => $txPollInterval,
         ]);
         return;
     }
@@ -67,6 +69,16 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             }
         }
 
+        // Update transaction poll interval if provided
+        if (isset($input['tx_poll_interval_seconds'])) {
+            $allowed = [60, 120, 300, 600, 900];
+            $interval = (int)$input['tx_poll_interval_seconds'];
+            if (!in_array($interval, $allowed, true)) {
+                throw new RuntimeException('Invalid tx_poll_interval_seconds. Allowed: ' . implode(', ', $allowed));
+            }
+            DB::setConfig('tx_poll_interval_seconds', (string)$interval, false);
+        }
+
         // Update timezone if provided
         if (isset($input['timezone'])) {
             $timezone = Validator::requireString($input, 'timezone', 100);
@@ -79,8 +91,9 @@ function handleSettings(string $method, array $parts, ?array $input): void {
         }
 
         DB::auditLog('admin', 'settings_updated', null, [
-            'api_config_changed' => $hasApiFields,
-            'timezone_changed' => isset($input['timezone']),
+            'api_config_changed'      => $hasApiFields,
+            'timezone_changed'        => isset($input['timezone']),
+            'tx_poll_interval_changed'=> isset($input['tx_poll_interval_seconds']),
         ]);
 
         echo json_encode(['success' => true]);

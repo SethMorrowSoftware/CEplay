@@ -37,6 +37,9 @@
             // Timezone section
             content.appendChild(buildTimezoneSection(settings));
 
+            // Polling intervals section
+            content.appendChild(buildPollingSection(settings));
+
             // Admin Users section
             content.appendChild(buildUsersSection(users.users || []));
 
@@ -223,6 +226,60 @@
                     App.setTimezone(tzSelect.value);
                     App.toast('Timezone updated to ' + tzSelect.value + '.', 'success');
                 } catch (err) { App.toast(err.message, 'error'); }
+            }
+        }));
+
+        section.appendChild(body);
+        return section;
+    }
+
+    function buildPollingSection(data) {
+        const section = App.el('div', { className: 'card', style: { marginBottom: '1.5rem' } });
+        section.appendChild(App.el('div', { className: 'card-header' }, [
+            App.el('h3', { className: 'card-title', textContent: 'Polling Intervals' })
+        ]));
+
+        const body = App.el('div', { className: 'card-body' });
+
+        const options = [
+            { value: 60,  label: '1 minute — most responsive'  },
+            { value: 120, label: '2 minutes'                    },
+            { value: 300, label: '5 minutes — recommended'      },
+            { value: 600, label: '10 minutes'                   },
+            { value: 900, label: '15 minutes — fewest API calls' },
+        ];
+
+        const currentInterval = data.tx_poll_interval_seconds || 60;
+        const txSelect = App.el('select', { className: 'form-select' });
+        options.forEach(function(o) {
+            const opt = App.el('option', { value: String(o.value), textContent: o.label });
+            if (o.value === currentInterval) opt.selected = true;
+            txSelect.appendChild(opt);
+        });
+
+        body.appendChild(App.el('div', { className: 'form-group' }, [
+            App.el('label', { className: 'form-label', textContent: 'Transaction Feed Poll Interval' }),
+            txSelect,
+            App.el('span', {
+                className: 'text-muted text-sm',
+                textContent: 'How often the watchdog cron fetches new play data from CenterEdge. ' +
+                             'The browser dashboard always reads from the local cache — ' +
+                             'only this background feed fetch contacts CenterEdge.'
+            })
+        ]));
+
+        body.appendChild(App.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Save Polling Settings',
+            onClick: async function() {
+                try {
+                    await API.put('settings', {
+                        tx_poll_interval_seconds: parseInt(txSelect.value, 10)
+                    });
+                    App.toast('Polling interval saved.', 'success');
+                } catch (err) {
+                    App.toast(err.message, 'error');
+                }
             }
         }));
 

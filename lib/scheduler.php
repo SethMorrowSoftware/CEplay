@@ -371,17 +371,18 @@ class Scheduler {
         $nowStr = $now->format('Y-m-d H:i');
         $nowTime = $now->format('H:i');
 
-        // Sync game states only if the cache is stale (older than 2 minutes).
-        // This avoids hammering the CenterEdge API every single minute while
-        // still keeping cache reasonably fresh for state comparisons.
+        // Sync game states only if the cache is stale (older than 5 minutes).
+        // State-change actions use the tighter STATE_CHANGE_CACHE_FRESHNESS
+        // constant (30 s); this looser threshold is fine for the watchdog's
+        // background enforcement where being a few minutes behind CenterEdge
+        // is acceptable and avoids unnecessary upstream calls.
         try {
-            self::syncGameStatesIfStale(120);
+            self::syncGameStatesIfStale(300);
         } catch (Exception $e) {
             error_log('Watchdog sync failed: ' . $e->getMessage());
         }
-        // Same throttled freshness check for kiosks. Non-fatal if /kiosks
-        // isn't supported (helper handles the exception internally).
-        self::syncKioskStatesIfStale(120);
+        // Same throttled freshness check for kiosks.
+        self::syncKioskStatesIfStale(300);
 
         $summary = ['groups_checked' => 0, 'groups_enforced' => 0, 'results' => []];
         $groups = DB::query('SELECT id FROM pause_groups WHERE is_active = 1');
