@@ -106,16 +106,14 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
         }
 
         // Tier 2: full enforcement (throttled to avoid hammering CenterEdge).
-        // Use an exclusive flock+touch as the throttle gate so two concurrent
-        // API requests can't both pass the freshness check and end up running
-        // executeMissedActions() / enforceCurrentStates() back to back. A
-        // bare filemtime() check is a TOCTOU race; the lock turns it into an
-        // atomic "first one wins, the rest skip this cycle" gate.
+        // The throttle period is configurable via Settings → Safety Nets.
+        $tier2Throttle = (int)(DB::getConfig('tier2_throttle_seconds') ?? 60);
+        $tier2Throttle = max(15, min(3600, $tier2Throttle));
         $missedCheckFile = __DIR__ . '/data/.last_missed_check';
         $throttleFh = @fopen($missedCheckFile, 'c');
         if ($throttleFh && flock($throttleFh, LOCK_EX | LOCK_NB)) {
             $mtime = @filemtime($missedCheckFile) ?: 0;
-            if ((time() - $mtime) >= 15) {
+            if ((time() - $mtime) >= $tier2Throttle) {
                 @touch($missedCheckFile);
                 try {
                     Scheduler::executeMissedActions();
@@ -363,6 +361,38 @@ try {
 }
 $appTimezoneJson = json_encode($appTimezone);
 
+// UI polling intervals — read from DB with safe defaults so the JS modules
+// get the operator-configured values without an extra round-trip.
+$uiConfig = [
+    'uiPollDefaultMs'         => 30000,
+    'uiPollOverrideActiveMs'  => 10000,
+    'uiPollImminentMs'        => 5000,
+    'uiPollGamesAnalyticsMs'  => 30000,
+    'uiPollGamesFeedMs'       => 15000,
+    'uiPollOverridesMs'       => 15000,
+    'dashboardTopGamesLimit'  => 5,
+];
+try {
+    $uiMap = [
+        'uiPollDefaultMs'        => 'ui_poll_default_ms',
+        'uiPollOverrideActiveMs' => 'ui_poll_override_active_ms',
+        'uiPollImminentMs'       => 'ui_poll_imminent_ms',
+        'uiPollGamesAnalyticsMs' => 'ui_poll_games_analytics_ms',
+        'uiPollGamesFeedMs'      => 'ui_poll_games_feed_ms',
+        'uiPollOverridesMs'      => 'ui_poll_overrides_ms',
+        'dashboardTopGamesLimit' => 'dashboard_top_games_limit',
+    ];
+    foreach ($uiMap as $jsKey => $dbKey) {
+        $val = DB::getConfig($dbKey);
+        if ($val !== null) {
+            $uiConfig[$jsKey] = (int)$val;
+        }
+    }
+} catch (Exception $e) {
+    // Keep defaults on any DB error
+}
+$uiConfigJson = json_encode($uiConfig);
+
 
 ?><!DOCTYPE html>
 <html lang="en">
@@ -396,12 +426,12 @@ $appTimezoneJson = json_encode($appTimezone);
     </noscript>
 
     <script>
-        window.APP_CONFIG = {
+        window.APP_CONFIG = Object.assign({
             basePath: <?= $basePathJson ?>,
             csrfToken: <?= $csrfJson ?>,
             user: <?= $userJson ?>,
             timezone: <?= $appTimezoneJson ?>
-        };
+        }, <?= $uiConfigJson ?>);
     </script>
     <!-- Chart.js (used by the Games analytics dashboard). Pinned to a specific
          minor version so a future CDN release can't silently break the page. -->

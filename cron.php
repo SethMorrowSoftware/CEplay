@@ -103,11 +103,19 @@ try {
     // Step 5: Purge old data to prevent unbounded growth
     echo "Purging old data...\n";
     try {
-        $purged = Scheduler::purgeOldData();
+        // Read retention periods from settings (configurable via Settings page).
+        $retActionLog    = max(7,   min(3650, (int)(DB::getConfig('retention_action_log_days')          ?? 90)));
+        $retActions      = max(1,   min(365,  (int)(DB::getConfig('retention_scheduled_actions_days')   ?? 30)));
+        $retOverrides    = max(7,   min(3650, (int)(DB::getConfig('retention_overrides_days')           ?? 90)));
+        $retTransactions = max(30,  min(3650, (int)(DB::getConfig('retention_transactions_days')        ?? 395)));
+
+        $purged = Scheduler::purgeOldData($retActionLog, $retActions, $retOverrides, $retTransactions);
         echo "  Purged: {$purged['action_log_purged']} log entries, "
             . "{$purged['scheduled_actions_purged']} old actions, "
             . "{$purged['overrides_purged']} expired overrides, "
             . "{$purged['game_plays_purged']} old game plays.\n";
+        echo "  Retention: action_log={$retActionLog}d, actions={$retActions}d, "
+            . "overrides={$retOverrides}d, transactions={$retTransactions}d.\n";
     } catch (Exception $e) {
         echo "  WARNING: Data purge failed: " . $e->getMessage() . "\n";
     }

@@ -15,11 +15,13 @@
 (function() {
     App.registerRoute('#/dashboard', { render: renderDashboard });
 
-    // Polling constants
-    var INTERVAL_DEFAULT = 30000;
-    var INTERVAL_OVERRIDE_ACTIVE = 10000;
-    var INTERVAL_TRANSITION_IMMINENT = 5000;
-    var INTERVAL_OVERRIDE_EXPIRING = 5000;
+    // Polling constants — populated from App.config (operator-configurable via
+    // Settings page); App.config is guaranteed to be set before any route
+    // renders because APP_CONFIG is embedded synchronously in the SPA shell.
+    var INTERVAL_DEFAULT            = App.config.pollDefaultMs;
+    var INTERVAL_OVERRIDE_ACTIVE    = App.config.pollOverrideActiveMs;
+    var INTERVAL_TRANSITION_IMMINENT = App.config.pollImminentMs;
+    var INTERVAL_OVERRIDE_EXPIRING  = App.config.pollImminentMs;
 
     // Module-level state
     var allGames = [];
@@ -570,7 +572,7 @@
         var meta = document.getElementById('top-games-meta');
         if (!body) return;
         try {
-            var data = await API.get('games/transactions/top?window=today&limit=5');
+            var data = await API.get('games/transactions/top?window=today&limit=' + App.config.topGamesLimit);
             body.innerHTML = '';
             var rows = data.top || [];
             if (meta) meta.textContent = rows.length ? (rows.length + ' game' + (rows.length === 1 ? '' : 's') + ' active today') : '';

@@ -67,7 +67,7 @@
 
         if (activeOverrides.length > 0) {
             // Poll every 15s while overrides are active
-            refreshIntervalCleanup = App.createVisibilityAwareInterval(loadOverrides, 15000, {
+            refreshIntervalCleanup = App.createVisibilityAwareInterval(loadOverrides, App.config.pollOverridesMs, {
                 runImmediately: false,
                 runOnVisible: true
             });
