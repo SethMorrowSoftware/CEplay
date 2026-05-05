@@ -295,9 +295,9 @@
         const pickerPageSize = 50;
 
         function getVisibleGames(games, filter, showMode, selected) {
-            let sorted = [...games].sort((a, b) => a.game_name.localeCompare(b.game_name));
+            let sorted = [...games].sort((a, b) => (a.game_name || '').localeCompare(b.game_name || ''));
             if (filter) {
-                sorted = sorted.filter(g => g.game_name.toLowerCase().includes(filter));
+                sorted = sorted.filter(g => (g.game_name || '').toLowerCase().includes(filter));
             }
             if (showMode === 'selected') {
                 sorted = sorted.filter(g => selected.has(g.game_id));

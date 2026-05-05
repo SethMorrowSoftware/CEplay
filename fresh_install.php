@@ -16,26 +16,38 @@
 $isCli = (php_sapi_name() === 'cli');
 
 // ─── Web safety guard ────────────────────────────────────────────────────
-// This script should be DELETED after first use. Block web access if an
-// admin user already exists — prevents remote database wipe.
+// This script wipes the database and rotates the encryption key. The web
+// surface is FAIL-CLOSED: if the DB file exists at all, we refuse to run
+// from the browser. Operators who legitimately need to reset must either
+// delete /data/pause_groups.db first or run from the CLI. The previous
+// behaviour caught any SQLite open error and proceeded — meaning a
+// transient lock or partial schema would silently wipe a working install.
 if (!$isCli) {
     $guardDbPath = __DIR__ . '/data/pause_groups.db';
     if (file_exists($guardDbPath)) {
+        $denyMessage = 'Setup already completed (data/pause_groups.db exists).';
+        $adminCount = null;
         try {
             $guardDb = new SQLite3($guardDbPath, SQLITE3_OPEN_READONLY);
-            $guardResult = $guardDb->querySingle('SELECT COUNT(*) FROM admin_users');
+            $adminCount = $guardDb->querySingle('SELECT COUNT(*) FROM admin_users');
             $guardDb->close();
-            if ($guardResult > 0) {
-                http_response_code(403);
-                header('Content-Type: text/html; charset=utf-8');
-                echo '<!DOCTYPE html><html><head><title>Forbidden</title></head><body style="font-family:sans-serif;background:#0b0e14;color:#e5534b;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">';
-                echo '<div style="text-align:center"><h1>Access Denied</h1><p style="color:#7a8194">This install script is blocked because setup has already been completed.<br>Delete <code>fresh_install.php</code> from the server for security.</p></div>';
-                echo '</body></html>';
-                exit(1);
+            if (is_numeric($adminCount) && (int)$adminCount > 0) {
+                $denyMessage = 'Setup already completed (' . (int)$adminCount . ' admin user' . ((int)$adminCount === 1 ? '' : 's') . ' present).';
             }
         } catch (Exception $e) {
-            // DB can't be opened — proceed with fresh install
+            // Fall through and deny anyway — we will NOT proceed to wipe a
+            // database we couldn't read. Log the underlying error for the
+            // operator's benefit.
+            error_log('fresh_install.php: DB exists but could not be opened — refusing to wipe: ' . $e->getMessage());
+            $denyMessage = 'Setup database exists but could not be read. Refusing to wipe. Check the server error log and run this from the CLI if a reset is intentional.';
         }
+
+        http_response_code(403);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html><head><title>Forbidden</title></head><body style="font-family:sans-serif;background:#0b0e14;color:#e5534b;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">';
+        echo '<div style="text-align:center;max-width:520px;padding:1rem"><h1>Access Denied</h1><p style="color:#7a8194">' . htmlspecialchars($denyMessage, ENT_QUOTES, 'UTF-8') . '<br><br>Delete <code>fresh_install.php</code> from the server for security, or run it from the CLI if you really intend to wipe and reinitialise.</p></div>';
+        echo '</body></html>';
+        exit(1);
     }
 }
 

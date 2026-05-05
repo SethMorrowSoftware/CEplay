@@ -33,6 +33,30 @@ class CenterEdgeClient {
     }
 
     /**
+     * Apply ad-hoc credentials without persisting them to the DB.
+     * Used by the Settings "Test Connection" flow so an operator can verify
+     * a candidate set of credentials before committing them. Clears any
+     * cached bearer token so authentication runs fresh against the override.
+     * Pass null to keep the corresponding stored value.
+     */
+    public function applyCredentialsOverride(?string $baseUrl, ?string $username, ?string $password, ?string $apiKey): void {
+        if ($baseUrl !== null && $baseUrl !== '') {
+            $this->baseUrl = $baseUrl;
+        }
+        if ($username !== null && $username !== '') {
+            $this->username = $username;
+        }
+        if ($password !== null && $password !== '') {
+            $this->password = $password;
+        }
+        if ($apiKey !== null) {
+            $this->apiKey = $apiKey === '' ? null : $apiKey;
+        }
+        $this->bearerToken = null;
+        $this->tokenFetchedAt = null;
+    }
+
+    /**
      * Check if the client is configured with API credentials.
      */
     public function isConfigured(): bool {
@@ -459,16 +483,9 @@ class CenterEdgeClient {
         if (empty($seenIds)) {
             DB::execute('DELETE FROM kiosk_state_cache');
         } else {
-            $placeholders = [];
-            $params = [];
-            foreach ($seenIds as $i => $kid) {
-                $placeholders[] = ':p' . $i;
-                $params[] = $kid;
-            }
-            DB::execute(
-                'DELETE FROM kiosk_state_cache WHERE kiosk_id NOT IN (' . implode(',', $placeholders) . ')',
-                $params
-            );
+            // See pruneCacheViaStaging() — avoids SQLite's bound-variable cap
+            // (default 999 in some builds) when a venue has many kiosks.
+            self::pruneCacheViaStaging('kiosk_state_cache', 'kiosk_id', $seenIds);
         }
 
         return count($kiosks);
@@ -570,19 +587,45 @@ class CenterEdgeClient {
         if (empty($seenGameIds)) {
             DB::execute('DELETE FROM game_state_cache');
         } else {
-            $params = [];
-            $placeholders = [];
-            foreach ($seenGameIds as $i => $gameId) {
-                $placeholders[] = ':p' . $i;
-                $params[] = $gameId;
-            }
-            DB::execute(
-                'DELETE FROM game_state_cache WHERE game_id NOT IN (' . implode(',', $placeholders) . ')',
-                $params
-            );
+            // Stage seen IDs in a TEMP table so the DELETE doesn't have to
+            // bind one placeholder per id. Some SQLite builds cap bound
+            // variables at 999, which would crash this query at >999 games.
+            self::pruneCacheViaStaging('game_state_cache', 'game_id', $seenGameIds);
         }
 
         return count($games);
+    }
+
+    /**
+     * Helper: delete rows from $table whose $idColumn is not in $keepIds,
+     * staging the keep-set in a TEMP table to avoid SQLite's bound-variable
+     * limit (default 999 on some builds, 32766 on newer ones).
+     */
+    private static function pruneCacheViaStaging(string $table, string $idColumn, array $keepIds): void {
+        $db = DB::getInstance();
+        // Unique temp table name so concurrent syncs in the same connection
+        // (rare, but possible) don't collide.
+        $tempName = '_pg_seen_' . bin2hex(random_bytes(4));
+        $db->exec("CREATE TEMP TABLE {$tempName} ({$idColumn} TEXT PRIMARY KEY)");
+        try {
+            $db->exec('BEGIN');
+            foreach (array_chunk($keepIds, 200) as $chunk) {
+                $placeholders = [];
+                $params = [];
+                foreach ($chunk as $i => $id) {
+                    $placeholders[] = ':p' . $i;
+                    $params[] = $id;
+                }
+                DB::execute(
+                    "INSERT OR IGNORE INTO {$tempName} ({$idColumn}) VALUES (" . implode('),(', $placeholders) . ')',
+                    $params
+                );
+            }
+            $db->exec('COMMIT');
+            DB::execute("DELETE FROM {$table} WHERE {$idColumn} NOT IN (SELECT {$idColumn} FROM {$tempName})");
+        } finally {
+            $db->exec("DROP TABLE IF EXISTS {$tempName}");
+        }
     }
 
     // -----------------------------------------------

@@ -88,8 +88,22 @@ function handleSettings(string $method, array $parts, ?array $input): void {
     }
 
     if ($method === 'POST' && $action === 'test') {
-        // Test connection
+        // Test connection. Operators can pass ad-hoc credentials in the body
+        // to verify them without committing to the DB; if any field is omitted
+        // or sent as the masked placeholder the stored value is used instead.
         $client = new CenterEdgeClient();
+        $overrideBase = isset($input['base_url']) ? trim((string)$input['base_url']) : null;
+        $overrideUser = isset($input['username']) ? trim((string)$input['username']) : null;
+        $overridePass = $input['password'] ?? null;
+        $overrideKey  = $input['api_key'] ?? null;
+
+        if ($overridePass === '********') { $overridePass = null; }
+        if ($overrideKey === '********')  { $overrideKey  = null; }
+
+        if ($overrideBase !== null || $overrideUser !== null || $overridePass !== null || $overrideKey !== null) {
+            $client->applyCredentialsOverride($overrideBase, $overrideUser, $overridePass, $overrideKey);
+        }
+
         $result = $client->testConnection();
         DB::auditLog('admin', 'settings_test_connection', null, [
             'system_name' => $result['system_name'] ?? null,

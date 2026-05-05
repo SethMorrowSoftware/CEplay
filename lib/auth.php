@@ -58,9 +58,10 @@ class Auth {
         );
 
         if (!$user || !$user['is_active']) {
-            // Run password_verify against a dummy hash to equalize timing
-            // and prevent username-existence enumeration via response time.
-            password_verify($password, '$2y$12$dummyhashfortimingequaliz000000000000000000000000000');
+            // Run password_verify against a real bcrypt hash with the same cost
+            // as production hashes. A malformed dummy makes password_verify
+            // short-circuit and leaks user existence via response timing.
+            password_verify($password, '$2y$12$W/uc4Pj9r9jAqKKPehZRXeAt/66SpSblKXpOvQ1iAuaF.KbanQE/i');
             self::progressiveDelay($clientIp);
             return null;
         }
