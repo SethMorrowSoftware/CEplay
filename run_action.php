@@ -50,6 +50,7 @@ for ($i = 0; $i < 12; $i++) { // Try for up to 60 seconds
 
 if (!$lockAcquired) {
     echo "[" . date('c') . "] Could not acquire lock after 60 seconds. Exiting.\n";
+    fclose($lockFile);
     exit(1);
 }
 

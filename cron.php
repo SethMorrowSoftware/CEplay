@@ -25,10 +25,17 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire exclusive file lock (non-blocking — skip if another instance is running)
+// Acquire exclusive file lock (non-blocking — skip if another instance is running).
+// Close the handle on the early-exit path so we don't leak a descriptor when
+// flock contended with a parallel run_action.php / cron_watchdog.php invocation.
 $lockFile = fopen(LOCK_FILE, 'c');
-if (!$lockFile || !flock($lockFile, LOCK_EX | LOCK_NB)) {
+if (!$lockFile) {
+    echo "[" . date('c') . "] Could not open lock file. Exiting.\n";
+    exit(1);
+}
+if (!flock($lockFile, LOCK_EX | LOCK_NB)) {
     echo "[" . date('c') . "] Another instance is already running. Exiting.\n";
+    fclose($lockFile);
     exit(0);
 }
 
@@ -83,7 +90,8 @@ try {
         $purged = Scheduler::purgeOldData();
         echo "  Purged: {$purged['action_log_purged']} log entries, "
             . "{$purged['scheduled_actions_purged']} old actions, "
-            . "{$purged['overrides_purged']} expired overrides.\n";
+            . "{$purged['overrides_purged']} expired overrides, "
+            . "{$purged['game_plays_purged']} old game plays.\n";
     } catch (Exception $e) {
         echo "  WARNING: Data purge failed: " . $e->getMessage() . "\n";
     }

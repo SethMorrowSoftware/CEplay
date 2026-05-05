@@ -36,24 +36,9 @@ class DB {
             password_hash TEXT NOT NULL,
             display_name TEXT NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 1,
-            role TEXT NOT NULL DEFAULT \'admin\',
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
-
-        // Migration: add role column to existing databases. Pre-existing rows
-        // backfill to 'admin' so upgrades preserve full access for current users.
-        try {
-            $db->exec('ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT \'admin\'');
-        } catch (Exception $e) {
-            // Column already exists — ignore
-        }
-        // Backfill any NULL/empty role values defensively (no-op on fresh installs).
-        try {
-            $db->exec("UPDATE admin_users SET role = 'admin' WHERE role IS NULL OR role = ''");
-        } catch (Exception $e) {
-            // Ignore — column may not exist on extremely old DBs that already errored above
-        }
 
         $db->exec('CREATE TABLE IF NOT EXISTS api_config (
             key TEXT PRIMARY KEY,
@@ -153,11 +138,24 @@ class DB {
             details TEXT,
             success INTEGER NOT NULL DEFAULT 1,
             error_message TEXT,
+            actor_user_id INTEGER,
+            actor_username TEXT,
+            ip_address TEXT,
             FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE SET NULL
         )');
+        // Migration: actor + IP columns added so user-driven audit entries
+        // can be filtered without parsing the details JSON.
+        foreach (['actor_user_id INTEGER', 'actor_username TEXT', 'ip_address TEXT'] as $colDef) {
+            try {
+                $db->exec('ALTER TABLE action_log ADD COLUMN ' . $colDef);
+            } catch (Exception $e) {
+                // Column already exists — ignore
+            }
+        }
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_timestamp ON action_log(timestamp)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_source ON action_log(source)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_group ON action_log(pause_group_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_log_actor ON action_log(actor_user_id)');
 
         $db->exec('CREATE TABLE IF NOT EXISTS scheduled_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +225,35 @@ class DB {
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_ip ON login_attempts(ip_address)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_attempts_time ON login_attempts(attempted_at)');
+
+        // Local cache of the CenterEdge game-play transaction stream. We poll
+        // /games/transactions on the watchdog cron and append into this table
+        // using INSERT OR IGNORE on transaction_id so duplicate fetches are
+        // safe. This powers the live activity feed and top-games widget.
+        // The checkpoint (last processed transaction ID per feed) is stored
+        // in api_config under "game_tx_last_id_<feedName>".
+        $db->exec('CREATE TABLE IF NOT EXISTS game_play_transactions (
+            transaction_id INTEGER NOT NULL,
+            feed_name TEXT NOT NULL DEFAULT \'default\',
+            card_number TEXT NOT NULL DEFAULT \'\',
+            type TEXT NOT NULL DEFAULT \'\',
+            game_id TEXT NOT NULL DEFAULT \'\',
+            game_description TEXT DEFAULT \'\',
+            transaction_time TEXT NOT NULL DEFAULT \'\',
+            regular_points REAL NOT NULL DEFAULT 0,
+            bonus_points REAL NOT NULL DEFAULT 0,
+            redemption_tickets REAL NOT NULL DEFAULT 0,
+            cash_amount REAL NOT NULL DEFAULT 0,
+            used_time_play INTEGER NOT NULL DEFAULT 0,
+            used_play_privilege INTEGER NOT NULL DEFAULT 0,
+            raw_payload TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (feed_name, transaction_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_time ON game_play_transactions(transaction_time DESC)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_game ON game_play_transactions(game_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
 
         // One-time cleanup of tables from removed feature modules.
         // The card/parties/maintenance/etc. modules were dropped to scope this
@@ -358,23 +385,92 @@ class DB {
     }
 
     /**
-     * Write an audit log entry for administrative actions.
-     * Lightweight wrapper around action_log for tracking non-game actions.
+     * Write an audit log entry for administrative or user-driven actions.
+     *
+     * If $userId is null, the helper auto-detects the active session user
+     * (when called inside an HTTP request) so callers don't have to
+     * thread Auth::check() through every endpoint. Use $success=false +
+     * $errorMessage to record failed attempts so failures are queryable
+     * alongside successes from the same /logs view.
      */
-    public static function auditLog(string $source, string $action, ?int $userId = null, ?array $details = null): void {
+    public static function auditLog(
+        string $source,
+        string $action,
+        ?int $userId = null,
+        ?array $details = null,
+        bool $success = true,
+        ?string $errorMessage = null
+    ): void {
         try {
+            // Auto-resolve actor info when running inside an authenticated
+            // HTTP request and the caller didn't pass anything explicit.
+            $username = null;
+            if ($userId === null && class_exists('Auth') && session_status() === PHP_SESSION_ACTIVE) {
+                $sessionUser = $_SESSION['auth_user'] ?? null;
+                if (is_array($sessionUser)) {
+                    $userId = isset($sessionUser['id']) ? (int)$sessionUser['id'] : null;
+                    $username = $sessionUser['username'] ?? null;
+                }
+            } elseif ($userId !== null) {
+                $row = self::queryOne('SELECT username FROM admin_users WHERE id = :p0', [$userId]);
+                if ($row) {
+                    $username = $row['username'];
+                }
+            }
+
+            $ip = self::resolveClientIp();
+
             $payload = $details ?? [];
+            // Preserve the original actor_user_id key in details for old logs
+            // that scripts/tools may have parsed; the new dedicated columns
+            // are the queryable source of truth going forward.
             if ($userId !== null) {
                 $payload['actor_user_id'] = $userId;
             }
+            if ($username !== null) {
+                $payload['actor_username'] = $username;
+            }
+            if ($ip !== '') {
+                $payload['ip_address'] = $ip;
+            }
+
             self::execute(
-                'INSERT INTO action_log (source, action, success, details)
-                 VALUES (:p0, :p1, 1, :p2)',
-                [$source, $action, !empty($payload) ? json_encode($payload) : null]
+                'INSERT INTO action_log
+                    (source, action, success, error_message, details,
+                     actor_user_id, actor_username, ip_address)
+                 VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7)',
+                [
+                    $source,
+                    $action,
+                    $success ? 1 : 0,
+                    $errorMessage,
+                    !empty($payload) ? json_encode($payload) : null,
+                    $userId,
+                    $username,
+                    $ip !== '' ? $ip : null,
+                ]
             );
         } catch (Exception $e) {
             error_log("Audit log failed: $source/$action — " . $e->getMessage());
         }
+    }
+
+    /**
+     * Resolve the request's client IP, mirroring api/auth.php::getClientIp().
+     * Trusts X-Forwarded-For only when the immediate REMOTE_ADDR is loopback
+     * (i.e. behind a local reverse proxy). Returns '' when not running in
+     * an HTTP context (e.g. cron scripts).
+     */
+    private static function resolveClientIp(): string {
+        if (!isset($_SERVER['REMOTE_ADDR'])) {
+            return '';
+        }
+        if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])
+            && in_array($_SERVER['REMOTE_ADDR'], ['127.0.0.1', '::1'], true)) {
+            $ips = array_map('trim', explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']));
+            return $ips[0] ?: $_SERVER['REMOTE_ADDR'];
+        }
+        return $_SERVER['REMOTE_ADDR'];
     }
 
     /**

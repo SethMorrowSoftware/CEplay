@@ -8,12 +8,9 @@
  * What it does:
  *   1. Removes old database files
  *   2. Generates a new encryption key and writes it into config.php
- *   3. Initializes a fresh database with all tables (including the role column)
- *   4. Creates a default admin user (admin / admin123!) with role 'admin'
+ *   3. Initializes a fresh database with all tables
+ *   4. Creates a default admin user (admin / random password printed once)
  *   5. Sets default timezone
- *
- * Roles available after install: admin (full access), tech (no sales),
- * manager (no settings). Create tech/manager users from the Settings page.
  */
 
 $isCli = (php_sapi_name() === 'cli');
@@ -197,17 +194,24 @@ try {
 }
 
 // ─── Step 5: Create default admin user ───────────────────────────────────
+// Generate a random initial password instead of hard-coding one.  The previous
+// fixed default ("admin123!") meant any operator who forgot to delete this
+// script — or to change the password on first login — was exposing a known
+// credential to the world.  Random + printed once = the operator must record
+// it before continuing.
 $adminUser = 'admin';
-$adminPass = 'admin123!';
 $adminDisplay = 'Administrator';
+$randomPart = bin2hex(random_bytes(8)); // 16 hex chars
+$adminPass = 'cfc!' . $randomPart;       // e.g. cfc!9f3a8b1c2d4e5f60
 
 $hash = password_hash($adminPass, PASSWORD_BCRYPT, ['cost' => 12]);
 try {
     DB::execute(
-        'INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, :p3)',
-        [$adminUser, $hash, $adminDisplay, 'admin']
+        'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
+        [$adminUser, $hash, $adminDisplay]
     );
-    out("Admin user created — username: $adminUser / password: $adminPass (role: admin)", 'ok');
+    out("Admin user created — username: $adminUser", 'ok');
+    out("INITIAL PASSWORD (record this NOW; it will not be shown again): $adminPass", 'warn');
 } catch (Exception $e) {
     out('Could not create admin user: ' . $e->getMessage(), 'error');
     if (!$isCli) { renderWeb($webOutput); }
@@ -237,8 +241,8 @@ out('');
 out('=== Setup complete! ===', 'ok');
 out('');
 out('Next steps:');
-out('  1. Log in with username: admin / password: admin123!');
-out('  2. Change your password in Settings > Admin Users');
+out("  1. Log in with username: admin / password: $adminPass");
+out('  2. CHANGE your password in Settings > Admin Users immediately');
 out('  3. Configure your CenterEdge API connection in Settings');
 out('  4. DELETE this file (fresh_install.php) — it is a security risk!');
 

@@ -55,7 +55,17 @@ function handleAuth(string $method, array $parts, ?array $input): void {
                 echo json_encode(['error' => 'Method not allowed']);
                 return;
             }
+            // Snapshot the actor before destroying the session so the audit
+            // entry has a user attached. Auth::check() reads $_SESSION which
+            // logout() blanks immediately after.
+            $sessionUser = Auth::check();
+            $actorId = $sessionUser['id'] ?? null;
+            $actorName = $sessionUser['username'] ?? null;
             Auth::logout();
+            DB::auditLog('auth', 'logout', $actorId, [
+                'username' => $actorName,
+                'ip' => getClientIp(),
+            ]);
             echo json_encode(['success' => true]);
             break;
 

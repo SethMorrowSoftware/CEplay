@@ -1,42 +1,9 @@
-# Castle Fun Center — Pause Group Automation
+# Castle Fun Center - Pause Group Automation
 
-A self-hosted automation console for the CenterEdge Card System: pause groups,
-recurring active-hours schedules, one-off overrides, and standalone kiosk
-controls — all in a polished, framework-free SPA. Built with PHP and vanilla
-JavaScript: no Composer, no npm, no external dependencies.
-
-## Interface Overview
-
-The console is a single-page web app served from `index.php`. It ships with a
-polished design system featuring:
-
-- **Dark and light themes** — toggled from the sidebar, persisted to
-  `localStorage`. Theme-aware brand mark, gradients, and glow effects.
-- **SVG icon set** — all navigation, action, and status icons are inline SVGs
-  rendered through a shared `App.iconEl()` helper. No icon font dependencies.
-- **Command Center dashboard** — live stats, group control cards with state
-  pills (Running / Paused / Mixed), animated status dots, contextual override
-  and scheduled-transition banners, and a paginated/filterable game grid.
-- **Adaptive polling** — 30s default, 10s when overrides are active, 5s when a
-  transition or expiry is imminent. Polls pause when the tab is hidden.
-- **Accessible by default** — keyboard-navigable nav rail, focus-visible
-  outlines, focus-trapped modals, ARIA roles on status badges and toasts, and
-  a full `prefers-reduced-motion` opt-out.
-- **Responsive** — collapsible sidebar, mobile menu trigger, and stat-grid
-  reflow at narrow widths.
-
-### Pages
-
-| Route | Purpose |
-|-------|---------|
-| `#/login` | Branded login card with logo mark, security eyebrow, and inline form errors. |
-| `#/dashboard` | Command Center: stats, master controls, per-group cards, game status table/grid. |
-| `#/groups` | Group list with quick pause/unpause, plus full CRUD form with paginated game picker. |
-| `#/kiosks` | Standalone kiosk controls with capability detection and RPC actions. |
-| `#/schedules` | Weekly grid view + table list. Click a block to edit; bulk-create across days. |
-| `#/overrides` | Active / Upcoming / Expired sections with countdown timers. |
-| `#/logs` | Filterable, paginated audit trail with date range, source, action, and status filters. |
-| `#/settings` | CenterEdge API config (with connection tester), timezone, and admin user management. |
+A self-hosted automation tool for the CenterEdge Card System: pause groups,
+schedule recurring active-hours, run one-off overrides, and now also pause
+kiosks alongside games. Built with PHP and vanilla JavaScript — no frameworks,
+no external dependencies.
 
 ## Requirements
 
@@ -113,31 +80,6 @@ To wipe and start over:
 ```bash
 php install.php --reset
 ```
-
-To upgrade an existing installation in place (idempotent — preserves all data):
-
-```bash
-php install.php --migrate
-```
-
-This runs schema migrations (e.g. adds the `role` column to `admin_users` on
-older installs and backfills existing users to `admin`), reports the current
-user-role distribution, and exits. Safe to re-run.
-
-#### User roles
-
-Three role tiers control access:
-
-| Role | Description |
-|------|-------------|
-| **admin**   | Full access to everything, including Settings and user management. |
-| **tech**    | All operational pages (groups, kiosks, schedules, overrides, logs, settings) — but no access to sales data and no user management. |
-| **manager** | All operational pages except Settings — used for staff who manage day-to-day pause groups and (future) sales reporting. |
-
-The first user created by `install.php` or `fresh_install.php` is always
-assigned the `admin` role. Additional users are created from
-**Settings → Admin Users** with a role selector. The system prevents demoting
-or deactivating the last active admin and blocks self-demotion from `admin`.
 
 ### Option 2: Fresh Install (automated)
 
@@ -390,12 +332,6 @@ SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
 
 All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) require a valid `X-CSRF-Token` header (except `/api/auth/login`). Authentication is session-based via HttpOnly cookies.
 
-Role-gated endpoints return HTTP 403 when the authenticated user's role is not
-in the allow-list:
-
-- `/api/settings` — `admin`, `tech`
-- `/api/users`    — `admin` only
-
 ### Authentication
 
 | Endpoint | Method | Auth | Description |
@@ -589,22 +525,7 @@ php -S localhost:8000
 
 Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing (`#/dashboard`, `#/groups`, `#/schedules`, `#/overrides`, `#/logs`, `#/settings`).
 
-The frontend is a SPA with dark and light themes (toggled via a button in the
-sidebar, persisted to `localStorage`) using the Inter font family with tabular
-numerals for stat readouts. All JavaScript modules are loaded as plain
-`<script>` tags (no bundler). The `api.js` module handles all HTTP communication
-and automatically injects the CSRF token header. Inline SVG icons are managed
-through the `App.ICONS` map and rendered with `App.iconEl(name, size)`.
-
-### Design System
-
-| Token group | Defined in | Notes |
-|-------------|-----------|-------|
-| Color (surface, brand, semantic) | `:root` and `[data-theme="light"]` in `public/css/style.css` | Dark and light palettes share token names; semantic tokens (success/warning/danger) include `*-subtle` and `*-border` variants. |
-| Radii | `--radius-xs` … `--radius-2xl`, `--radius-full` | 3px, 5px, 8px, 12px, 16px, 22px scale. |
-| Shadows | `--shadow-xs` … `--shadow-xl`, `--shadow-glow-accent`, `--shadow-inset` | Layered shadows for elevation; theme-aware. |
-| Motion | `--ease-standard`, `--ease-emphasized`, `--ease-spring` + `--duration-fast/base/slow` | Cubic-bezier easings with a spring for toast/modal entry. |
-| Typography | `--font-sans` (Inter), `--font-mono` (JetBrains Mono fallback to system mono) | OpenType features `cv11`, `ss01`, `ss03` enabled for Inter. |
+The frontend is a SPA with dark and light themes (toggled via a button in the navigation bar, persisted to localStorage) using the Inter font family. All JavaScript modules are loaded as plain `<script>` tags (no bundler). The `api.js` module handles all HTTP communication and automatically injects the CSRF token header.
 
 Manual pause/unpause actions use optimistic UI updates for instant visual feedback, skipping redundant API syncs.
 

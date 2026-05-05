@@ -12,19 +12,12 @@
     var expiryTimers = [];
 
     function renderOverrides(container) {
-        var newBtn = App.el('button', {
-            className: 'btn btn-primary',
-            onClick: showCreateForm
-        });
-        newBtn.appendChild(App.iconEl('plus', 14));
-        newBtn.appendChild(App.el('span', { textContent: 'New Override' }));
-
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('div', {}, [
-                App.el('h1', { className: 'page-title', textContent: 'Overrides' }),
-                App.el('p', { className: 'page-subtitle', textContent: 'One-off pause or unpause windows that take priority over recurring schedules.' })
-            ]),
-            App.el('div', { className: 'page-header-actions' }, [newBtn])
+            App.el('h1', { className: 'page-title', textContent: 'Schedule Overrides' }),
+            App.el('button', {
+                className: 'btn btn-primary', textContent: '+ New Override',
+                onClick: showCreateForm
+            })
         ]));
 
         var content = App.el('div', { id: 'overrides-content' });
@@ -111,38 +104,27 @@
         ]));
 
         if (overrides.length === 0) {
-            var emptyMsg = title === 'Active Now' ? 'Nothing active right now.'
-                : title === 'Upcoming' ? 'No upcoming overrides scheduled.'
-                : 'No recently expired overrides.';
-            section.appendChild(App.el('p', { className: 'text-muted text-sm', style: { padding: '0.5rem 0' }, textContent: emptyMsg }));
+            section.appendChild(App.el('p', { className: 'text-muted text-sm', style: { padding: '0.5rem 0' }, textContent: 'None.' }));
         } else {
             overrides.forEach(function(o) {
-                var actionBadge = App.el('span', {
-                    className: 'badge ' + (o.action === 'pause' ? 'badge-paused' : 'badge-enabled'),
-                    textContent: o.action === 'pause' ? 'Pause' : 'Unpause'
-                });
-
                 var card = App.el('div', { className: 'override-card' }, [
                     App.el('div', { className: 'override-info' }, [
-                        App.el('div', { className: 'flex-center gap-sm', style: { marginBottom: '0.2rem' } }, [
+                        App.el('div', { className: 'flex-center gap-sm' }, [
                             App.el('span', { className: 'override-name', textContent: o.name }),
-                            actionBadge
+                            App.el('span', { className: 'badge ' + (o.action === 'pause' ? 'badge-paused' : 'badge-enabled'), textContent: o.action })
                         ]),
                         App.el('div', { className: 'override-meta' }, [
                             App.el('span', { textContent: (o.group_name || 'Group') + ' \u2022 ' }),
-                            App.el('span', { textContent: App.formatDatetime(o.start_datetime) + ' \u2192 ' + App.formatDatetime(o.end_datetime) }),
+                            App.el('span', { textContent: App.formatDatetime(o.start_datetime) + ' \u2014 ' + App.formatDatetime(o.end_datetime) }),
                             o.created_by_name ? App.el('span', { textContent: ' \u2022 by ' + o.created_by_name }) : null
                         ].filter(Boolean))
                     ]),
-                    App.el('div', { className: 'flex-center gap-sm' }, [
+                    App.el('div', { className: 'flex gap-sm' }, [
                         title === 'Active Now' ? App.el('span', { className: 'override-countdown', textContent: 'ends ' + App.formatRelative(o.end_datetime) }) : null,
                         title !== 'Expired' ? App.el('button', {
-                            className: 'btn btn-ghost btn-sm text-danger',
-                            type: 'button',
-                            title: 'Delete this override',
-                            'aria-label': 'Delete override',
+                            className: 'btn btn-ghost btn-sm text-danger', textContent: 'Delete',
                             onClick: function() { deleteOverride(o.id, title === 'Active Now'); }
-                        }, [App.iconEl('cross', 13)]) : null
+                        }) : null
                     ].filter(Boolean))
                 ]);
                 section.appendChild(card);

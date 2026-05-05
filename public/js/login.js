@@ -1,64 +1,45 @@
 /**
  * Login page module.
  */
-(function () {
+(function() {
     App.registerRoute('#/login', { render: renderLogin });
 
     function renderLogin(container) {
         const wrap = App.el('div', { className: 'login-container' });
         const card = App.el('div', { className: 'login-card' });
 
-        // Header: logo mark + eyebrow + title + subtitle
-        const header = App.el('div', { className: 'login-header' });
-        header.appendChild(App.el('div', { className: 'login-mark', textContent: 'CE' }));
+        card.appendChild(App.el('div', { className: 'login-title', textContent: 'Pause Groups' }));
+        card.appendChild(App.el('div', { className: 'login-subtitle', textContent: 'Sign in to manage game schedules' }));
 
-        const eyebrow = App.el('span', { className: 'login-eyebrow' });
-        eyebrow.appendChild(App.iconEl('lock', 11));
-        eyebrow.appendChild(App.el('span', { textContent: 'Secure access' }));
-        header.appendChild(eyebrow);
-
-        header.appendChild(App.el('div', { className: 'login-title', textContent: 'Castle Fun Center' }));
-        header.appendChild(App.el('div', { className: 'login-subtitle', textContent: 'Sign in to manage games, kiosks, and schedules' }));
-        card.appendChild(header);
-
-        const errorBox = App.el('div', { className: 'login-error hidden', id: 'login-error', role: 'alert' });
+        const errorBox = App.el('div', { className: 'login-error hidden', id: 'login-error' });
         card.appendChild(errorBox);
 
-        const form = App.el('form', { id: 'login-form', autocomplete: 'on' });
+        const form = App.el('form', { id: 'login-form' });
 
         const userGroup = App.el('div', { className: 'form-group' });
-        userGroup.appendChild(App.el('label', { className: 'form-label', for: 'login-username', textContent: 'Username' }));
+        userGroup.appendChild(App.el('label', { className: 'form-label', textContent: 'Username' }));
         const userInput = App.el('input', {
             className: 'form-input', type: 'text', id: 'login-username',
-            placeholder: 'Enter your username', autocomplete: 'username', autofocus: 'true'
+            placeholder: 'Enter username', autocomplete: 'username', autofocus: 'true'
         });
         userGroup.appendChild(userInput);
         form.appendChild(userGroup);
 
         const passGroup = App.el('div', { className: 'form-group' });
-        passGroup.appendChild(App.el('label', { className: 'form-label', for: 'login-password', textContent: 'Password' }));
+        passGroup.appendChild(App.el('label', { className: 'form-label', textContent: 'Password' }));
         const passInput = App.el('input', {
             className: 'form-input', type: 'password', id: 'login-password',
-            placeholder: '••••••••', autocomplete: 'current-password'
+            placeholder: 'Enter password', autocomplete: 'current-password'
         });
         passGroup.appendChild(passInput);
         form.appendChild(passGroup);
 
         const submitBtn = App.el('button', {
-            className: 'btn btn-primary btn-block', type: 'submit',
+            className: 'btn btn-primary', type: 'submit',
             textContent: 'Sign In',
-            style: { marginTop: '0.85rem' }
+            style: { width: '100%', marginTop: '0.5rem', justifyContent: 'center' }
         });
         form.appendChild(submitBtn);
-
-        // Footer hint
-        const footHint = App.el('p', {
-            className: 'text-xs text-muted',
-            style: { textAlign: 'center', marginTop: '1.5rem' },
-            textContent: 'Sessions expire after 2 hours of inactivity.'
-        });
-        card.appendChild(form);
-        card.appendChild(footHint);
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -71,10 +52,11 @@
             }
 
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Signing in…';
+            submitBtn.textContent = 'Signing in...';
             errorBox.classList.add('hidden');
 
-            const loginTimeout = setTimeout(function () {
+            // Timeout protection: if login takes more than 15s, re-enable the button
+            const loginTimeout = setTimeout(function() {
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Sign In';
                 showError('Login is taking too long. Please try again.');
@@ -96,13 +78,12 @@
             }
         });
 
+        card.appendChild(form);
         wrap.appendChild(card);
         container.appendChild(wrap);
 
         function showError(msg) {
-            errorBox.innerHTML = '';
-            errorBox.appendChild(App.iconEl('warning', 16));
-            errorBox.appendChild(App.el('span', { textContent: msg }));
+            errorBox.textContent = msg;
             errorBox.classList.remove('hidden');
         }
     }

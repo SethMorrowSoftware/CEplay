@@ -6,10 +6,7 @@
 
     async function renderSettings(container) {
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('div', {}, [
-                App.el('h1', { className: 'page-title', textContent: 'Settings' }),
-                App.el('p', { className: 'page-subtitle', textContent: 'CenterEdge API connection, application timezone, and admin user accounts.' })
-            ])
+            App.el('h1', { className: 'page-title', textContent: 'Settings' })
         ]));
 
         const content = App.el('div', { id: 'settings-content' });
@@ -23,18 +20,16 @@
         const content = document.getElementById('settings-content');
         if (!content) return;
 
-        const isAdmin = App.userRole() === 'admin';
-
         try {
-            // Only admins can list/manage users — fetch lazily based on role.
-            const requests = [API.get('settings')];
-            if (isAdmin) requests.push(API.get('users'));
-            const responses = await Promise.all(requests);
+            const [settingsData, usersData] = await Promise.all([
+                API.get('settings'),
+                API.get('users')
+            ]);
 
             content.innerHTML = '';
 
-            var settings = responses[0] || {};
-            var users = isAdmin ? (responses[1] || {}) : { users: [] };
+            var settings = settingsData || {};
+            var users = usersData || {};
 
             // API Configuration section
             content.appendChild(buildApiConfigSection(settings));
@@ -42,10 +37,8 @@
             // Timezone section
             content.appendChild(buildTimezoneSection(settings));
 
-            // Admin Users section — admin-only
-            if (isAdmin) {
-                content.appendChild(buildUsersSection(users.users || []));
-            }
+            // Admin Users section
+            content.appendChild(buildUsersSection(users.users || []));
 
         } catch (err) {
             content.innerHTML = '';
@@ -233,15 +226,12 @@
 
     function buildUsersSection(users) {
         const section = App.el('div', { className: 'card' });
-        const addBtn = App.el('button', {
-            className: 'btn btn-primary btn-sm',
-            onClick: showCreateUserForm
-        });
-        addBtn.appendChild(App.iconEl('plus', 12));
-        addBtn.appendChild(App.el('span', { textContent: 'Add User' }));
         section.appendChild(App.el('div', { className: 'card-header' }, [
             App.el('h3', { className: 'card-title', textContent: 'Admin Users' }),
-            addBtn
+            App.el('button', {
+                className: 'btn btn-primary btn-sm', textContent: '+ Add User',
+                onClick: showCreateUserForm
+            })
         ]));
 
         const body = App.el('div', { className: 'card-body', id: 'users-list' });
@@ -254,7 +244,6 @@
             thead.appendChild(App.el('tr', {}, [
                 App.el('th', { textContent: 'Username' }),
                 App.el('th', { textContent: 'Display Name' }),
-                App.el('th', { textContent: 'Role' }),
                 App.el('th', { textContent: 'Status' }),
                 App.el('th', { textContent: 'Created' }),
                 App.el('th', { textContent: 'Actions' })
@@ -263,20 +252,12 @@
 
             const tbody = App.el('tbody');
             users.forEach(u => {
-                const currentUser = App.currentUser || window.APP_CONFIG.user;
+                const currentUser = window.APP_CONFIG.user;
                 const isSelf = currentUser && currentUser.id === u.id;
-                const role = (u.role || 'admin').toLowerCase();
-                const roleLabel = App.ROLE_LABELS[role] || role;
 
                 tbody.appendChild(App.el('tr', {}, [
                     App.el('td', { textContent: u.username }),
                     App.el('td', { textContent: u.display_name || '\u2014' }),
-                    App.el('td', {}, [
-                        App.el('span', {
-                            className: 'badge badge-role badge-role-' + role,
-                            textContent: roleLabel
-                        })
-                    ]),
                     App.el('td', {}, [
                         App.el('span', {
                             className: 'badge ' + (u.is_active ? 'badge-active' : 'badge-inactive'),
@@ -311,26 +292,6 @@
         return section;
     }
 
-    function buildRoleSelect(currentRole) {
-        const select = App.el('select', { className: 'form-select' });
-        App.ROLES.forEach(r => {
-            const opt = App.el('option', {
-                value: r,
-                textContent: App.ROLE_LABELS[r] + ' — ' + roleHint(r)
-            });
-            if (r === currentRole) opt.selected = true;
-            select.appendChild(opt);
-        });
-        return select;
-    }
-
-    function roleHint(role) {
-        if (role === 'admin')   return 'full access';
-        if (role === 'tech')    return 'all areas except sales';
-        if (role === 'manager') return 'all areas except settings';
-        return '';
-    }
-
     function showCreateUserForm() {
         const form = App.el('div');
 
@@ -344,12 +305,6 @@
         form.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('label', { className: 'form-label', textContent: 'Display Name' }),
             displayInput
-        ]));
-
-        const roleSelect = buildRoleSelect('admin');
-        form.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Role' }),
-            roleSelect
         ]));
 
         const passwordInput = App.el('input', { className: 'form-input', type: 'password', placeholder: 'Password' });
@@ -379,8 +334,7 @@
                     await API.post('users', {
                         username: username,
                         display_name: displayInput.value.trim(),
-                        password: password,
-                        role: roleSelect.value
+                        password: password
                     });
                     App.hideModal();
                     App.toast('User created.', 'success');
@@ -401,28 +355,6 @@
             displayInput
         ]));
 
-        const currentRole = (user.role || 'admin').toLowerCase();
-        const currentUser = App.currentUser || window.APP_CONFIG.user;
-        const isSelf = currentUser && currentUser.id === user.id;
-
-        const roleSelect = buildRoleSelect(currentRole);
-        // Self-edit guard: an admin editing themselves cannot drop their own admin role.
-        // The server enforces this too — the disabled state is just a UI hint.
-        if (isSelf && currentRole === 'admin') {
-            roleSelect.disabled = true;
-        }
-        const roleGroup = App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Role' }),
-            roleSelect
-        ]);
-        if (isSelf && currentRole === 'admin') {
-            roleGroup.appendChild(App.el('span', {
-                className: 'text-muted text-sm',
-                textContent: 'You cannot change your own admin role. Ask another admin.'
-            }));
-        }
-        form.appendChild(roleGroup);
-
         const passwordInput = App.el('input', { className: 'form-input', type: 'password', placeholder: 'Leave blank to keep current' });
         form.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('label', { className: 'form-label', textContent: 'New Password' }),
@@ -438,10 +370,7 @@
         const footer = App.el('div', { className: 'flex gap-sm' }, [
             App.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: () => App.hideModal() }),
             App.el('button', { className: 'btn btn-primary', textContent: 'Save Changes', onClick: async () => {
-                const payload = {
-                    display_name: displayInput.value.trim(),
-                    role: roleSelect.value
-                };
+                const payload = { display_name: displayInput.value.trim() };
                 const password = passwordInput.value;
 
                 if (password) {

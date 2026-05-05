@@ -1465,8 +1465,15 @@ class Scheduler {
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides
      * older than 90 days.
+     *
+     * Game-play transactions are kept for ~13 months by default so the
+     * Games dashboard's 12-month and All-time windows have real data to
+     * render. At a busy FEC (~5–10k plays/day) the cache will hold roughly
+     * 2–4M rows ≈ a few hundred MB — well within SQLite's comfort zone.
+     * Operators who don't need long-term play history can pass a smaller
+     * value (e.g. 30) when calling purgeOldData() from a custom cron.
      */
-    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90): array {
+    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $playFeedRetentionDays = 395): array {
         $summary = [];
 
         // Purge old action_log entries
@@ -1493,18 +1500,37 @@ class Scheduler {
         );
         $summary['overrides_purged'] = $deleted;
 
+        // Purge old game-play transactions. We only need a recent rolling
+        // window for the live feed and top-games widget; longer-term reporting
+        // is owned by CenterEdge itself.
+        $cutoff = date('c', strtotime("-$playFeedRetentionDays days"));
+        $deleted = DB::execute(
+            'DELETE FROM game_play_transactions WHERE transaction_time < :p0',
+            [$cutoff]
+        );
+        $summary['game_plays_purged'] = $deleted;
+
         return $summary;
     }
 
     /**
      * Write a heartbeat file so external monitoring can detect if cron is alive.
      * The file contains the last successful run timestamp in ISO 8601.
+     *
+     * Atomic via tmp+rename so a concurrent reader (the /api/health endpoint
+     * or external monitor) can't observe a half-written / truncated file.
      */
     public static function writeHeartbeat(string $type = 'cron'): void {
         $heartbeatFile = dirname(LOCK_FILE) . "/.heartbeat_$type";
-        $result = @file_put_contents($heartbeatFile, date('c'));
-        if ($result === false) {
-            error_log("Failed to write heartbeat file: $heartbeatFile");
+        $tmpFile = $heartbeatFile . '.tmp.' . getmypid();
+        $bytes = @file_put_contents($tmpFile, date('c'));
+        if ($bytes === false) {
+            error_log("Failed to write heartbeat tmp file: $tmpFile");
+            return;
+        }
+        if (!@rename($tmpFile, $heartbeatFile)) {
+            error_log("Failed to rename heartbeat file into place: $heartbeatFile");
+            @unlink($tmpFile);
         }
     }
 

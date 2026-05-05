@@ -198,7 +198,7 @@ function kioskSetStatus(string $kioskId, string $status, string $actionLabel): v
 
     $updated = null;
     foreach (($result['kiosks'] ?? []) as $k) {
-        if (($k['id'] ?? null) == $kioskId) {
+        if (isset($k['id']) && (string)$k['id'] === (string)$kioskId) {
             $updated = $k;
             break;
         }
@@ -306,18 +306,25 @@ function kioskPatchBulk(?array $input): void {
 function kioskSync(): void {
     $client = new CenterEdgeClient();
     if (!$client->isConfigured()) {
+        DB::auditLog('kiosk-sync', 'kiosks_sync_triggered', null,
+            [], false, 'CenterEdge API is not configured');
         http_response_code(400);
         echo json_encode(['error' => 'CenterEdge API is not configured.']);
         return;
     }
     try {
         $count = $client->syncKiosksToCache();
+        DB::auditLog('kiosk-sync', 'kiosks_sync_triggered', null, [
+            'kiosk_count' => $count,
+        ]);
         echo json_encode([
             'success' => true,
             'kiosk_count' => $count,
             'synced_at' => gmdate('Y-m-d H:i:s'),
         ]);
     } catch (RuntimeException $e) {
+        DB::auditLog('kiosk-sync', 'kiosks_sync_triggered', null,
+            [], false, $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
     }
@@ -358,13 +365,16 @@ function kioskPerformAction(string $kioskId, ?array $input): void {
     try {
         $result = $client->performKioskAction($kioskId, $actionId, $operator);
     } catch (RuntimeException $e) {
+        DB::auditLog('kiosk-action', 'kiosk_action_performed', null, [
+            'kiosk_id' => $kioskId,
+            'action_id' => $actionId,
+        ], false, $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
         return;
     }
 
-    $userId = Auth::check()['id'] ?? null;
-    DB::auditLog('kiosk-action', 'kiosk_action_performed', $userId, [
+    DB::auditLog('kiosk-action', 'kiosk_action_performed', null, [
         'kiosk_id' => $kioskId,
         'action_id' => $actionId,
     ]);

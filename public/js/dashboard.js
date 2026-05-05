@@ -213,20 +213,16 @@
     function renderDashboard(container) {
         currentInterval = INTERVAL_DEFAULT;
 
-        // Page header with sync button (icon)
-        var syncBtn = App.el('button', {
-            className: 'btn btn-secondary', id: 'sync-btn',
-            onClick: syncGames
-        });
-        syncBtn.appendChild(App.iconEl('sync', 14));
-        syncBtn.appendChild(App.el('span', { textContent: 'Sync Now' }));
-
+        // Page header
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Command Center' }),
-                App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Loading…' })
+                App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Loading...' })
             ]),
-            App.el('div', { className: 'page-header-actions' }, [syncBtn])
+            App.el('button', {
+                className: 'btn btn-secondary', id: 'sync-btn', textContent: 'Sync Now',
+                onClick: syncGames
+            })
         ]));
 
         // Security warnings banner (populated by loadDashboard)
@@ -235,6 +231,24 @@
         // Stats cards
         var statsGrid = App.el('div', { className: 'stats-grid', id: 'stats-grid' });
         container.appendChild(statsGrid);
+
+        // Top games today (live cache)
+        container.appendChild(App.el('div', { className: 'card mt-2', id: 'top-games-card' }, [
+            App.el('div', { className: 'card-header flex-between' }, [
+                App.el('div', { className: 'flex-center gap-sm' }, [
+                    App.el('div', { className: 'card-title', textContent: 'Top games today' }),
+                    App.el('span', { id: 'top-games-meta', className: 'text-sm text-secondary' })
+                ]),
+                App.el('a', {
+                    className: 'btn btn-ghost btn-sm',
+                    href: '#/games',
+                    textContent: 'Open games page'
+                })
+            ]),
+            App.el('div', { id: 'top-games-body', className: 'card-body' }, [
+                App.el('p', { className: 'text-sm text-secondary', textContent: 'Loading…' })
+            ])
+        ]));
 
         // Group controls (collapsible)
         container.appendChild(App.el('div', { className: 'card mt-2', id: 'group-controls-card' }, [
@@ -311,10 +325,8 @@
 
         // Active overrides section
         container.appendChild(App.el('div', { className: 'card mt-2', id: 'active-overrides-card' }, [
-            App.el('div', { className: 'card-header' }, [
-                App.el('div', { className: 'card-title', textContent: 'Active Overrides' })
-            ]),
-            App.el('div', { id: 'active-overrides' })
+            App.el('div', { className: 'card-title', textContent: 'Active Overrides' }),
+            App.el('div', { id: 'active-overrides', className: 'mt-1' })
         ]));
 
         loadDashboard();
@@ -365,13 +377,11 @@
                 warningsEl.innerHTML = '';
                 if (healthData.warnings && healthData.warnings.length > 0) {
                     healthData.warnings.forEach(function(msg) {
-                        var alert = App.el('div', {
-                            className: 'alert-warning',
-                            style: { marginBottom: '0.75rem' }
-                        });
-                        alert.appendChild(App.iconEl('warning', 16, 'alert-icon'));
-                        alert.appendChild(App.el('span', { textContent: msg }));
-                        warningsEl.appendChild(alert);
+                        warningsEl.appendChild(App.el('div', {
+                            className: 'alert alert-warning',
+                            style: { marginBottom: '0.75rem' },
+                            textContent: msg
+                        }));
                     });
                 }
             }
@@ -404,11 +414,55 @@
             var syncEl = document.getElementById('last-sync');
             if (syncEl) {
                 syncEl.textContent = gamesData.last_synced
-                    ? 'Last synced ' + App.formatDatetime(gamesData.last_synced) + ' • ' + App.appTimezone
-                    : 'Not yet synced — open Settings to configure CenterEdge';
+                    ? 'Last synced: ' + App.formatDatetime(gamesData.last_synced) + ' (' + App.appTimezone + ')'
+                    : 'Not yet synced';
             }
+
+            // Top-games widget — fire-and-forget; failure shouldn't break the
+            // rest of the dashboard.
+            loadTopGames();
         } catch (err) {
             App.toast(err.message, 'error');
+        }
+    }
+
+    async function loadTopGames() {
+        var body = document.getElementById('top-games-body');
+        var meta = document.getElementById('top-games-meta');
+        if (!body) return;
+        try {
+            var data = await API.get('games/transactions/top?window=today&limit=5');
+            body.innerHTML = '';
+            var rows = data.top || [];
+            if (meta) meta.textContent = rows.length ? (rows.length + ' game' + (rows.length === 1 ? '' : 's') + ' active today') : '';
+            if (rows.length === 0) {
+                body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                    textContent: 'No plays cached yet today. The watchdog cron polls every minute once the card system has play data.' }));
+                return;
+            }
+            var maxPlays = rows.reduce(function(m, r) { return Math.max(m, r.plays || 0); }, 0) || 1;
+            var list = App.el('ol', { className: 'top-games-list' });
+            rows.forEach(function(r, i) {
+                var pct = Math.max(4, Math.round((r.plays / maxPlays) * 100));
+                var name = r.game_name || ('Game ' + r.game_id);
+                var meta2 = r.plays + (r.plays === 1 ? ' play' : ' plays');
+                if (r.sum_tickets > 0) meta2 += '  •  ' + Math.round(r.sum_tickets) + ' tickets';
+                list.appendChild(App.el('li', { className: 'top-games-item' }, [
+                    App.el('div', { className: 'top-games-rank', textContent: '#' + (i + 1) }),
+                    App.el('div', { className: 'top-games-body' }, [
+                        App.el('div', { className: 'plain-list-title', textContent: name }),
+                        App.el('div', { className: 'top-games-bar' }, [
+                            App.el('div', { className: 'top-games-bar-fill', style: { width: pct + '%' } })
+                        ]),
+                        App.el('div', { className: 'text-sm text-secondary', textContent: meta2 })
+                    ])
+                ]));
+            });
+            body.appendChild(list);
+        } catch (err) {
+            // Non-fatal — show a quiet hint rather than a toast.
+            body.innerHTML = '';
+            body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Top games unavailable.' }));
         }
     }
 
@@ -517,7 +571,7 @@
         el.innerHTML = '';
 
         if (games.length === 0) {
-            el.appendChild(App.emptyState('gamepad', 'No games found yet. Configure the CenterEdge API in Settings, then run Sync Now.'));
+            el.appendChild(App.emptyState('\uD83C\uDFAE', 'No games found. Configure CenterEdge API in Settings.'));
             return;
         }
 
@@ -749,13 +803,17 @@
         if (countBadge) countBadge.textContent = activeGroups.length + ' active group' + (activeGroups.length !== 1 ? 's' : '');
 
         if (activeGroups.length === 0) {
-            var createBtn = App.el('button', {
-                className: 'btn btn-primary btn-sm',
-                onClick: function () { window.location.hash = '#/groups/new'; }
-            });
-            createBtn.appendChild(App.iconEl('plus', 14));
-            createBtn.appendChild(App.el('span', { textContent: 'Create your first group' }));
-            el.appendChild(App.emptyState('groups', 'No active pause groups yet. Groups bundle games and kiosks so they pause and unpause together.', createBtn));
+            el.appendChild(App.el('div', { className: 'empty-state', style: { padding: '2rem' } }, [
+                App.el('div', { className: 'empty-state-icon', textContent: '\u25CB' }),
+                App.el('div', { className: 'empty-state-text', textContent: 'No active groups configured.' }),
+                App.el('div', { className: 'empty-state-action' }, [
+                    App.el('button', {
+                        className: 'btn btn-primary btn-sm',
+                        textContent: 'Create Group',
+                        onClick: function() { window.location.hash = '#/groups/new'; }
+                    })
+                ])
+            ]));
             return;
         }
 
@@ -765,22 +823,18 @@
             var hasAnyEnabled = activeGroups.some(function(g) { return g.effective_state === 'enabled' || g.effective_state === 'mixed'; });
 
             if (hasAnyPaused) {
-                var unpauseAllBtn = App.el('button', {
+                masterEl.appendChild(App.el('button', {
                     className: 'btn btn-sm btn-success',
+                    textContent: 'Unpause All',
                     onClick: function() { doBulkAction('unpause', activeGroups); }
-                });
-                unpauseAllBtn.appendChild(App.iconEl('play', 12));
-                unpauseAllBtn.appendChild(App.el('span', { textContent: 'Unpause All' }));
-                masterEl.appendChild(unpauseAllBtn);
+                }));
             }
             if (hasAnyEnabled) {
-                var pauseAllBtn = App.el('button', {
+                masterEl.appendChild(App.el('button', {
                     className: 'btn btn-sm btn-warning',
+                    textContent: 'Pause All',
                     onClick: function() { doBulkAction('pause', activeGroups); }
-                });
-                pauseAllBtn.appendChild(App.iconEl('pause', 12));
-                pauseAllBtn.appendChild(App.el('span', { textContent: 'Pause All' }));
-                masterEl.appendChild(pauseAllBtn);
+                }));
             }
         }
 
@@ -863,58 +917,58 @@
             var manualOvr = group.manual_override;
             if (manualOvr) {
                 var manualLabel = manualOvr.action === 'pause' ? 'Manually Paused' : 'Manually Unpaused';
-                var ctx = App.el('div', { className: 'group-control-context group-control-context-manual' });
-                ctx.appendChild(App.iconEl('hand', 14, 'context-icon'));
-                ctx.appendChild(App.el('span', { style: { fontWeight: '600' }, textContent: manualLabel }));
-                ctx.appendChild(App.el('span', { style: { opacity: '0.75' }, textContent: ' \u2022 since ' + App.formatDatetime(manualOvr.at) }));
-                ctx.appendChild(App.el('button', {
-                    className: 'btn btn-ghost btn-xs',
-                    textContent: 'Resume',
-                    style: { marginLeft: 'auto' },
-                    title: 'Clear manual override and resume the schedule',
-                    onClick: function() { clearManualOverride(group.id, group.name); }
-                }));
-                card.appendChild(ctx);
+                card.appendChild(App.el('div', { className: 'group-control-context group-control-context-manual' }, [
+                    App.el('span', { textContent: '\u270B' }),
+                    App.el('span', { style: { fontWeight: '500' }, textContent: manualLabel }),
+                    App.el('span', { style: { opacity: '0.7' }, textContent: ' \u2022 since ' + App.formatDatetime(manualOvr.at) }),
+                    App.el('button', {
+                        className: 'btn btn-ghost btn-xs',
+                        textContent: 'Resume Schedule',
+                        style: { marginLeft: 'auto', fontSize: '0.72rem' },
+                        onClick: function() { clearManualOverride(group.id, group.name); }
+                    })
+                ]));
             } else if (override) {
-                var ovrCtx = App.el('div', { className: 'group-control-context group-control-context-override' });
-                ovrCtx.appendChild(App.iconEl('bolt', 14, 'context-icon'));
-                ovrCtx.appendChild(App.el('span', { style: { fontWeight: '600' }, textContent: override.name }));
-                ovrCtx.appendChild(App.el('span', { style: { opacity: '0.75' }, textContent: ' \u2022 ' + override.action + ' \u2022 ends ' + App.formatDatetime(override.end_datetime) }));
-                card.appendChild(ovrCtx);
+                card.appendChild(App.el('div', { className: 'group-control-context group-control-context-override' }, [
+                    App.el('span', { textContent: '\u26A1' }),
+                    App.el('span', { style: { fontWeight: '500' }, textContent: override.name }),
+                    App.el('span', { style: { opacity: '0.7' }, textContent: ' \u2022 ' + override.action + ' \u2022 ends ' + App.formatDatetime(override.end_datetime) })
+                ]));
             } else if (nextTrans) {
-                var transCtx = App.el('div', { className: 'group-control-context' });
-                transCtx.appendChild(App.iconEl('clock', 14, 'context-icon'));
-                transCtx.appendChild(App.el('span', { textContent: (nextTrans.action === 'pause' ? 'Pause' : 'Unpause') + ' scheduled at ' + App.formatTime(nextTrans.time) }));
-                card.appendChild(transCtx);
+                card.appendChild(App.el('div', { className: 'group-control-context' }, [
+                    App.el('span', { textContent: '\u25F4' }),
+                    App.el('span', { textContent: (nextTrans.action === 'pause' ? 'Pause' : 'Unpause') + ' scheduled at ' + App.formatTime(nextTrans.time) })
+                ]));
             }
 
-            // Action buttons (with icons)
+            // Action buttons
             var actionRow = App.el('div', { className: 'group-control-actions' });
 
-            function actionBtn(cls, iconName, label, handler) {
-                var b = App.el('button', { className: 'btn ' + cls, type: 'button', onClick: handler });
-                b.appendChild(App.iconEl(iconName, 13));
-                b.appendChild(App.el('span', { textContent: label }));
-                return b;
-            }
-
             if (isEmpty) {
-                actionRow.appendChild(App.el('span', {
-                    className: 'text-muted text-xs',
-                    style: { padding: '0.35rem 0', display: 'block', textAlign: 'center', width: '100%' },
-                    textContent: 'No games or kiosks assigned to this group'
-                }));
+                actionRow.appendChild(App.el('span', { className: 'text-muted text-xs', style: { padding: '0.35rem 0', display: 'block', textAlign: 'center', width: '100%' }, textContent: 'No games or kiosks assigned to this group' }));
             } else if (state === 'mixed') {
-                actionRow.appendChild(actionBtn('btn-success', 'play', 'Unpause All',
-                    function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }));
-                actionRow.appendChild(actionBtn('btn-warning', 'pause', 'Pause All',
-                    function() { doGroupAction(group.id, 'pause', group.name, combined.total); }));
+                actionRow.appendChild(App.el('button', {
+                    className: 'btn btn-success',
+                    textContent: 'Unpause All',
+                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }
+                }));
+                actionRow.appendChild(App.el('button', {
+                    className: 'btn btn-warning',
+                    textContent: 'Pause All',
+                    onClick: function() { doGroupAction(group.id, 'pause', group.name, combined.total); }
+                }));
             } else if (isPaused) {
-                actionRow.appendChild(actionBtn('btn-success', 'play', 'Unpause Group',
-                    function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }));
+                actionRow.appendChild(App.el('button', {
+                    className: 'btn btn-success',
+                    textContent: 'Unpause Group',
+                    onClick: function() { doGroupAction(group.id, 'unpause', group.name, combined.total); }
+                }));
             } else {
-                actionRow.appendChild(actionBtn('btn-warning', 'pause', 'Pause Group',
-                    function() { doGroupAction(group.id, 'pause', group.name, combined.total); }));
+                actionRow.appendChild(App.el('button', {
+                    className: 'btn btn-warning',
+                    textContent: 'Pause Group',
+                    onClick: function() { doGroupAction(group.id, 'pause', group.name, combined.total); }
+                }));
             }
 
             card.appendChild(actionRow);
@@ -1158,24 +1212,18 @@
         el.innerHTML = '';
 
         if (overrides.length === 0) {
-            el.appendChild(App.el('p', { className: 'text-muted text-sm', style: { padding: '0.25rem 0' }, textContent: 'No active overrides right now. Schedules and recurring rules are running normally.' }));
+            el.appendChild(App.el('p', { className: 'text-muted text-sm', textContent: 'No active overrides.' }));
             return;
         }
 
         overrides.forEach(function(o) {
-            var actionBadge = App.el('span', {
-                className: 'badge ' + (o.action === 'pause' ? 'badge-paused' : 'badge-enabled'),
-                textContent: o.action === 'pause' ? 'Pause' : 'Unpause'
-            });
-
             var card = App.el('div', { className: 'override-card' }, [
                 App.el('div', { className: 'override-info' }, [
-                    App.el('div', { className: 'flex-center gap-sm', style: { marginBottom: '0.2rem' } }, [
-                        App.el('span', { className: 'override-name', textContent: o.name }),
-                        actionBadge
-                    ]),
+                    App.el('div', { className: 'override-name', textContent: o.name }),
                     App.el('div', { className: 'override-meta' }, [
-                        App.el('span', { textContent: (o.group_name || '\u2014') + ' \u2022 ends ' + App.formatDatetime(o.end_datetime) })
+                        App.el('span', { textContent: o.group_name + ' \u2022 ' }),
+                        App.el('span', { className: o.action === 'pause' ? 'text-warning' : 'text-success', textContent: o.action }),
+                        App.el('span', { textContent: ' \u2022 ends ' + App.formatDatetime(o.end_datetime) })
                     ])
                 ]),
                 App.el('div', { className: 'override-countdown', textContent: App.formatRelative(o.end_datetime) })
@@ -1207,12 +1255,7 @@
 
     async function syncGames() {
         var btn = document.getElementById('sync-btn');
-        if (btn) {
-            btn.disabled = true;
-            btn.innerHTML = '';
-            btn.appendChild(App.el('span', { className: 'spinner spinner-sm' }));
-            btn.appendChild(App.el('span', { textContent: 'Syncing…' }));
-        }
+        if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
 
         try {
             await API.post('games/sync');
@@ -1221,12 +1264,7 @@
         } catch (err) {
             App.toast('Sync failed: ' + err.message, 'error');
         } finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = '';
-                btn.appendChild(App.iconEl('sync', 14));
-                btn.appendChild(App.el('span', { textContent: 'Sync Now' }));
-            }
+            if (btn) { btn.disabled = false; btn.textContent = 'Sync Now'; }
         }
     }
 })();

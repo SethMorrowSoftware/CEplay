@@ -104,6 +104,15 @@ function createSchedules(?array $input): void {
         $created[] = DB::lastInsertId();
     }
 
+    DB::auditLog('admin', 'schedule_created', null, [
+        'group_id' => $groupId,
+        'days_of_week' => $daysOfWeek,
+        'start_time' => $startTime,
+        'end_time' => $endTime,
+        'is_active' => (bool)$isActive,
+        'schedule_ids' => $created,
+    ]);
+
     // Replan today if any schedule affects today; enforce state immediately
     replanIfNeeded($daysOfWeek, [$groupId]);
 
@@ -143,6 +152,21 @@ function updateSchedule(int $scheduleId, ?array $input): void {
         [$dayOfWeek, $startTime, $endTime, $isActive, $scheduleId]
     );
 
+    DB::auditLog('admin', 'schedule_updated', null, [
+        'schedule_id' => $scheduleId,
+        'group_id' => (int)$existing['pause_group_id'],
+        'day_of_week' => $dayOfWeek,
+        'start_time' => $startTime,
+        'end_time' => $endTime,
+        'is_active' => (bool)$isActive,
+        'previous' => [
+            'day_of_week' => (int)$existing['day_of_week'],
+            'start_time' => $existing['start_time'],
+            'end_time' => $existing['end_time'],
+            'is_active' => (bool)$existing['is_active'],
+        ],
+    ]);
+
     // Replan if the old or new day is today; enforce state immediately
     replanIfNeeded([$existing['day_of_week'], $dayOfWeek], [$existing['pause_group_id']]);
 
@@ -159,6 +183,14 @@ function deleteSchedule(int $scheduleId): void {
     }
 
     DB::execute('DELETE FROM schedules WHERE id = :p0', [$scheduleId]);
+
+    DB::auditLog('admin', 'schedule_deleted', null, [
+        'schedule_id' => $scheduleId,
+        'group_id' => (int)$existing['pause_group_id'],
+        'day_of_week' => (int)$existing['day_of_week'],
+        'start_time' => $existing['start_time'],
+        'end_time' => $existing['end_time'],
+    ]);
 
     // Replan if the deleted schedule was for today; enforce state immediately
     replanIfNeeded([$existing['day_of_week']], [$existing['pause_group_id']]);

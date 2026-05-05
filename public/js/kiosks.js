@@ -11,20 +11,16 @@
     var capCache = null;
 
     async function renderKiosks(container) {
-        var syncBtn = App.el('button', {
-            className: 'btn btn-secondary',
-            id: 'kiosk-sync-btn',
-            onClick: function () { syncAndReload(); }
-        });
-        syncBtn.appendChild(App.iconEl('sync', 14));
-        syncBtn.appendChild(App.el('span', { textContent: 'Sync Now' }));
-
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Kiosks' }),
                 App.el('p', { className: 'page-subtitle', textContent: 'Pause, resume, and manage kiosks reported by the CenterEdge card system.' })
             ]),
-            App.el('div', { className: 'page-header-actions' }, [syncBtn])
+            App.el('button', {
+                className: 'btn btn-ghost',
+                textContent: 'Sync now',
+                onClick: function() { syncAndReload(); }
+            })
         ]));
 
         var listEl = App.el('div', { id: 'kiosks-list' });
@@ -55,7 +51,7 @@
             listEl.innerHTML = '';
 
             if (!supportsList) {
-                listEl.appendChild(App.emptyState('warning',
+                listEl.appendChild(App.emptyState('⚠',
                     'This card system does not support the kiosks API.',
                     null));
                 return;
@@ -63,33 +59,33 @@
 
             var kiosks = data.kiosks || [];
             if (kiosks.length === 0) {
-                var syncEmptyBtn = App.el('button', {
-                    className: 'btn btn-primary',
-                    onClick: function () { syncAndReload(); }
-                });
-                syncEmptyBtn.appendChild(App.iconEl('sync', 14));
-                syncEmptyBtn.appendChild(App.el('span', { textContent: 'Sync now' }));
-                listEl.appendChild(App.emptyState('kiosk',
-                    'No kiosks reported by the card system. If you just configured CenterEdge, click Sync now.',
-                    syncEmptyBtn));
+                listEl.appendChild(App.emptyState('▢',
+                    'No kiosks reported. If you just configured the card system, click "Sync now".',
+                    App.el('button', {
+                        className: 'btn btn-primary', textContent: 'Sync now',
+                        onClick: function() { syncAndReload(); }
+                    })));
                 return;
             }
 
             if (data.last_synced) {
                 listEl.appendChild(App.el('p', {
                     className: 'text-sm text-secondary',
-                    style: { marginBottom: '0.85rem' },
-                    textContent: 'Last synced ' + App.formatDatetime(data.last_synced) + ' • ' + App.appTimezone
+                    style: { marginBottom: '0.75rem' },
+                    textContent: 'Last synced: ' + App.formatDatetime(data.last_synced) + ' (' + App.appTimezone + ')'
                 }));
             }
 
             if (!supportsPause) {
-                var alertBox = App.el('div', { className: 'alert-warning', style: { marginBottom: '0.85rem' } });
-                alertBox.appendChild(App.iconEl('warning', 16, 'alert-icon'));
-                alertBox.appendChild(App.el('span', {
-                    textContent: 'The card system reports kiosks but does not support changing their operationStatus via the API. Pause and Unpause are disabled.'
-                }));
-                listEl.appendChild(alertBox);
+                listEl.appendChild(App.el('div', {
+                    className: 'card',
+                    style: { marginBottom: '0.75rem', borderColor: 'var(--color-warn, #b58a2a)' }
+                }, [
+                    App.el('div', { className: 'card-body' }, [
+                        App.el('p', { className: 'text-sm', textContent:
+                            'The card system reports kiosks but does not support changing their operationStatus via the API. Pause/Unpause buttons are disabled.' })
+                    ])
+                ]));
             }
 
             kiosks.forEach(function(k) {
@@ -106,75 +102,73 @@
     function buildKioskCard(kiosk, supportsPause) {
         var status = kiosk.operationStatus || 'unknown';
         var unknown = !kiosk.operationStatus;
+        // Per spec, kiosks reporting no operationStatus must NOT be pause-controlled.
         var pauseAllowed = supportsPause && !unknown;
 
-        var statusCls = status === 'enabled' ? 'enabled'
-            : status === 'paused' ? 'paused'
-            : status === 'outOfService' ? 'out-of-service'
-            : 'inactive';
-        var statusLabel = status === 'enabled' ? 'Running'
-            : status === 'paused' ? 'Paused'
-            : status === 'outOfService' ? 'Out of Service'
-            : 'Unknown';
+        var statusBadge = App.el('span', {
+            className: 'badge badge-' + (
+                status === 'enabled' ? 'enabled' :
+                status === 'paused' ? 'paused' :
+                status === 'outOfService' ? 'inactive' : 'info'
+            ),
+            textContent: status === 'enabled' ? 'Running'
+                : status === 'paused' ? 'Paused'
+                : status === 'outOfService' ? 'Out of service'
+                : 'Unknown'
+        });
 
-        var statusBadge = App.el('span', { className: 'badge badge-' + statusCls });
-        statusBadge.appendChild(App.el('span', { className: 'badge-dot' }));
-        statusBadge.appendChild(App.el('span', { textContent: statusLabel }));
-
-        var statusDotState = status === 'enabled' ? 'enabled'
-            : status === 'paused' ? 'paused'
-            : 'empty';
-
-        var actionBtns = App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem', flexWrap: 'wrap', justifyContent: 'flex-end' } });
-
-        function actionBtn(cls, iconName, label, handler) {
-            var b = App.el('button', { className: 'btn btn-sm ' + cls, type: 'button', onClick: handler });
-            if (iconName) b.appendChild(App.iconEl(iconName, 12));
-            b.appendChild(App.el('span', { textContent: label }));
-            return b;
-        }
+        var actionBtns = App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } });
 
         if (pauseAllowed) {
             if (status !== 'enabled') {
-                actionBtns.appendChild(actionBtn('btn-success', 'play', 'Unpause',
-                    function(e) { e.stopPropagation(); doStatusChange(kiosk, 'unpause'); }));
+                actionBtns.appendChild(App.el('button', {
+                    className: 'btn btn-sm btn-success',
+                    textContent: 'Unpause',
+                    onClick: function(e) { e.stopPropagation(); doStatusChange(kiosk, 'unpause'); }
+                }));
             }
             if (status !== 'paused') {
-                actionBtns.appendChild(actionBtn('btn-warning', 'pause', 'Pause',
-                    function(e) { e.stopPropagation(); doStatusChange(kiosk, 'pause'); }));
+                actionBtns.appendChild(App.el('button', {
+                    className: 'btn btn-sm btn-warning',
+                    textContent: 'Pause',
+                    onClick: function(e) { e.stopPropagation(); doStatusChange(kiosk, 'pause'); }
+                }));
             }
             if (status !== 'outOfService') {
-                actionBtns.appendChild(actionBtn('btn-ghost', null, 'Out of service',
-                    function(e) { e.stopPropagation(); doStatusChange(kiosk, 'out-of-service'); }));
+                actionBtns.appendChild(App.el('button', {
+                    className: 'btn btn-sm btn-ghost',
+                    textContent: 'Out of service',
+                    onClick: function(e) { e.stopPropagation(); doStatusChange(kiosk, 'out-of-service'); }
+                }));
             }
         }
 
-        (kiosk.supportedActions || []).forEach(function (act) {
+        // RPC actions exposed by the kiosk (e.g. "reboot")
+        (kiosk.supportedActions || []).forEach(function(act) {
             actionBtns.appendChild(App.el('button', {
                 className: 'btn btn-sm btn-ghost',
                 textContent: act.name || act.id,
                 title: act.requireManager ? 'Manager only' : '',
-                onClick: function (e) { e.stopPropagation(); doRpcAction(kiosk, act); }
+                onClick: function(e) { e.stopPropagation(); doRpcAction(kiosk, act); }
             }));
         });
 
         var meta = [];
-        if (kiosk.id) meta.push(App.el('span', { className: 'font-mono text-xs', textContent: 'ID ' + kiosk.id }));
+        meta.push('ID: ' + kiosk.id);
         if (kiosk.categories && kiosk.categories.length) {
-            meta.push(App.el('span', { className: 'text-xs', textContent: 'Categories: ' + kiosk.categories.join(', ') }));
+            meta.push('Categories: ' + kiosk.categories.join(', '));
         }
-        var metaRow = App.el('div', { className: 'flex gap-md text-secondary mt-1', style: { flexWrap: 'wrap' } });
-        meta.forEach(function (m) { metaRow.appendChild(m); });
 
-        return App.el('div', { className: 'card', style: { marginBottom: '0.75rem' } }, [
-            App.el('div', { className: 'flex-between gap-md' }, [
+        return App.el('div', {
+            className: 'card', style: { marginBottom: '0.75rem' }
+        }, [
+            App.el('div', { className: 'flex-between' }, [
                 App.el('div', { style: { flex: '1', minWidth: '0' } }, [
                     App.el('div', { className: 'flex-center gap-sm' }, [
-                        App.el('span', { className: 'status-dot status-dot-' + statusDotState }),
                         App.el('span', { className: 'card-title', textContent: kiosk.name || ('Kiosk ' + kiosk.id) }),
                         statusBadge
                     ]),
-                    metaRow
+                    App.el('p', { className: 'text-sm text-secondary mt-1', textContent: meta.join('  •  ') })
                 ]),
                 actionBtns
             ])

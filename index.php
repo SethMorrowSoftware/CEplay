@@ -52,10 +52,11 @@ if ($isHttps) {
 }
 // Content-Security-Policy: restrict sources; unsafe-inline required for the
 // inline APP_CONFIG <script> block injected by the SPA shell.
+// cdn.jsdelivr.net is allowed for Chart.js (loaded for the games analytics dashboard).
 header(
     "Content-Security-Policy: " .
     "default-src 'self'; " .
-    "script-src 'self' 'unsafe-inline'; " .
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " .
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " .
     "font-src 'self' https://fonts.gstatic.com; " .
     "img-src 'self' data:; " .
@@ -104,20 +105,33 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
             error_log('Expired-override enforcement failed: ' . $e->getMessage());
         }
 
-        // Tier 2: full enforcement (throttled to avoid hammering CenterEdge)
+        // Tier 2: full enforcement (throttled to avoid hammering CenterEdge).
+        // Use an exclusive flock+touch as the throttle gate so two concurrent
+        // API requests can't both pass the freshness check and end up running
+        // executeMissedActions() / enforceCurrentStates() back to back. A
+        // bare filemtime() check is a TOCTOU race; the lock turns it into an
+        // atomic "first one wins, the rest skip this cycle" gate.
         $missedCheckFile = __DIR__ . '/data/.last_missed_check';
-        if (!file_exists($missedCheckFile) || (time() - filemtime($missedCheckFile)) >= 15) {
-            @touch($missedCheckFile);
-            try {
-                Scheduler::executeMissedActions();
-            } catch (Exception $e) {
-                error_log('Missed-action check failed: ' . $e->getMessage());
+        $throttleFh = @fopen($missedCheckFile, 'c');
+        if ($throttleFh && flock($throttleFh, LOCK_EX | LOCK_NB)) {
+            $mtime = @filemtime($missedCheckFile) ?: 0;
+            if ((time() - $mtime) >= 15) {
+                @touch($missedCheckFile);
+                try {
+                    Scheduler::executeMissedActions();
+                } catch (Exception $e) {
+                    error_log('Missed-action check failed: ' . $e->getMessage());
+                }
+                try {
+                    Scheduler::enforceCurrentStates();
+                } catch (Exception $e) {
+                    error_log('State enforcement failed: ' . $e->getMessage());
+                }
             }
-            try {
-                Scheduler::enforceCurrentStates();
-            } catch (Exception $e) {
-                error_log('State enforcement failed: ' . $e->getMessage());
-            }
+            flock($throttleFh, LOCK_UN);
+        }
+        if ($throttleFh) {
+            fclose($throttleFh);
         }
     }
     date_default_timezone_set($__savedTz);
@@ -165,6 +179,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
             case 'games':
                 require_once __DIR__ . '/api/games.php';
                 handleGames($method, $parts, $input);
+                break;
+            case 'cards':
+                require_once __DIR__ . '/api/cards.php';
+                handleCards($method, $parts, $input);
                 break;
             case 'groups':
                 require_once __DIR__ . '/api/groups.php';
@@ -351,11 +369,9 @@ $appTimezoneJson = json_encode($appTimezone);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0a0d14" media="(prefers-color-scheme: dark)">
-    <meta name="theme-color" content="#f4f7fc" media="(prefers-color-scheme: light)">
-    <meta name="color-scheme" content="dark light">
-    <meta name="description" content="Castle Fun Center Management System — game and kiosk pause-group automation, scheduling, and overrides.">
-    <title>Castle Fun Center · Management System</title>
+    <meta name="theme-color" content="#0b0e14">
+    <meta name="description" content="Castle Fun Center Management System - Game scheduling and automation">
+    <title>Castle Fun Center - Management System</title>
     <link rel="icon" href="data:,">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken) ?>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -365,17 +381,16 @@ $appTimezoneJson = json_encode($appTimezone);
 </head>
 <body>
     <div id="app">
-        <div class="loading-overlay" id="app-loading" style="min-height:100vh;">
-            <div class="spinner" aria-hidden="true"></div>
-            <span>Loading workspace…</span>
+        <div class="loading-overlay" id="app-loading">
+            <div class="spinner"></div>
+            <span>Loading...</span>
         </div>
     </div>
     <noscript>
-        <div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;color:#e6e9f2;background:#0a0d14;text-align:center;padding:2rem;">
-            <div style="max-width:380px;">
-                <div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#5d8eff,#3ddb91);margin:0 auto 1.25rem;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:1.4rem;letter-spacing:-0.025em;">CE</div>
-                <h1 style="font-size:1.4rem;margin-bottom:0.6rem;letter-spacing:-0.02em;">JavaScript Required</h1>
-                <p style="color:#93a0bd;line-height:1.5;">The Castle Fun Center management console needs JavaScript enabled in your browser.</p>
+        <div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#e1e4ed;background:#0b0e14;text-align:center;padding:2rem;">
+            <div>
+                <h1 style="font-size:1.5rem;margin-bottom:1rem;">JavaScript Required</h1>
+                <p>This application requires JavaScript to be enabled in your browser.</p>
             </div>
         </div>
     </noscript>
@@ -388,10 +403,16 @@ $appTimezoneJson = json_encode($appTimezone);
             timezone: <?= $appTimezoneJson ?>
         };
     </script>
+    <!-- Chart.js (used by the Games analytics dashboard). Pinned to a specific
+         minor version so a future CDN release can't silently break the page. -->
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js"
+            crossorigin="anonymous"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/api.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/app.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/login.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/dashboard.js"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/games.js"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/cards.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/groups.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/kiosks.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/schedules.js"></script>

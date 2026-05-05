@@ -1,0 +1,134 @@
+<?php
+/**
+ * API: Card lookup, transaction history, and PIN probe/validate.
+ * Read-only proxy to the CenterEdge Card System for floor-staff use.
+ *
+ * GET /api/cards/{cardNumber}                  — Single card (balance, time plays, privileges)
+ * GET /api/cards/{cardNumber}/transactions     — Card transaction history (paginated)
+ * GET /api/cards/{cardNumber}/pin?validate=...  — Probe / validate PIN on a card
+ *
+ * No mutations are exposed here yet. Adjustments, wipes, combines, and
+ * bulk-issue all require operator audit captures and are deferred until
+ * the next iteration.
+ */
+
+require_once __DIR__ . '/../lib/centeredge_client.php';
+require_once __DIR__ . '/../lib/validator.php';
+
+function handleCards(string $method, array $parts, ?array $input): void {
+    Auth::requireAuth();
+
+    if ($method !== 'GET') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $cardNumber = $parts[0] ?? null;
+    if ($cardNumber === null || $cardNumber === '') {
+        http_response_code(400);
+        echo json_encode(['error' => 'Card number required']);
+        return;
+    }
+
+    // Card numbers in the spec are 6–20 chars; strip whitespace and reject
+    // obviously bogus input before calling upstream.
+    $cardNumber = trim($cardNumber);
+    if (!preg_match('/^[A-Za-z0-9]{1,32}$/', $cardNumber)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Card number must be alphanumeric (max 32 chars).']);
+        return;
+    }
+
+    $sub = $parts[1] ?? null;
+
+    $client = new CenterEdgeClient();
+    if (!$client->isConfigured()) {
+        http_response_code(400);
+        echo json_encode(['error' => 'CenterEdge API is not configured.']);
+        return;
+    }
+
+    // Card data is PII-adjacent, so every read is audit-logged with the
+    // looked-up card number — staff lookups are a known accountability
+    // requirement at the venue.
+    try {
+        if ($sub === null) {
+            $card = $client->getCard($cardNumber);
+            DB::auditLog('card-lookup', 'card_viewed', null,
+                ['card_number' => $cardNumber]);
+            echo json_encode($card);
+            return;
+        }
+
+        if ($sub === 'transactions') {
+            $skip = max(0, (int)($_GET['skip'] ?? 0));
+            $take = min(200, max(1, (int)($_GET['take'] ?? 50)));
+            $result = $client->getCardTransactions($cardNumber, $skip, $take);
+            DB::auditLog('card-lookup', 'card_transactions_viewed', null, [
+                'card_number' => $cardNumber,
+                'skip' => $skip,
+                'take' => $take,
+            ]);
+            echo json_encode($result);
+            return;
+        }
+
+        if ($sub === 'pin') {
+            $validate = $_GET['validate'] ?? null;
+            $isValidate = ($validate !== null && $validate !== '');
+            // Per spec, the pin endpoint returns 404 for unknown cards or cards
+            // without PIN. Surface that gracefully so the UI can distinguish
+            // "no PIN" from "wrong PIN".
+            try {
+                $result = $client->getCardPin($cardNumber, $isValidate ? (string)$validate : null);
+                DB::auditLog('card-pin', $isValidate ? 'card_pin_validated' : 'card_pin_probed', null, [
+                    'card_number' => $cardNumber,
+                    'pin_match' => $isValidate ? !empty($result['valid'] ?? null) : null,
+                ]);
+            } catch (RuntimeException $e) {
+                // Re-throw after logging so the outer catch keeps the existing
+                // 404/400 surface mapping intact.
+                DB::auditLog('card-pin', $isValidate ? 'card_pin_validated' : 'card_pin_probed', null, [
+                    'card_number' => $cardNumber,
+                ], false, $e->getMessage());
+                throw $e;
+            }
+            echo json_encode($result);
+            return;
+        }
+
+        http_response_code(404);
+        echo json_encode(['error' => 'Unknown card sub-resource: ' . $sub]);
+    } catch (RuntimeException $e) {
+        $msg = $e->getMessage();
+        $code = 500;
+        $payload = ['error' => sanitizeApiError($msg)];
+
+        if (strpos($msg, 'HTTP 404') !== false) {
+            $code = 404;
+            // Use a friendlier error for pin-not-found vs card-not-found so
+            // the UI can branch.
+            if ($sub === 'pin') {
+                $payload = ['error' => 'PIN not found', 'code' => 'pinNotFound'];
+            } else {
+                $payload = ['error' => 'Card not found', 'code' => 'cardNotFound'];
+            }
+        } elseif (strpos($msg, 'HTTP 400') !== false) {
+            $code = 400;
+        }
+
+        // Record the failure so failed lookups (wrong card #, bad PIN, etc.)
+        // are visible alongside successes. Skip if the pin handler already
+        // logged its specific failure above.
+        if ($sub !== 'pin') {
+            $auditAction = $sub === 'transactions' ? 'card_transactions_viewed' : 'card_viewed';
+            DB::auditLog('card-lookup', $auditAction, null, [
+                'card_number' => $cardNumber,
+            ], false, $msg);
+        }
+
+        http_response_code($code);
+        echo json_encode($payload);
+    }
+}

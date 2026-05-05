@@ -78,10 +78,41 @@ function listOverrides(): void {
     );
 
     echo json_encode([
-        'active'   => $active,
-        'upcoming' => $upcoming,
-        'expired'  => $expired,
+        'active'   => array_map(function ($r) use ($tz) { return overrideToApi($r, $tz); }, $active),
+        'upcoming' => array_map(function ($r) use ($tz) { return overrideToApi($r, $tz); }, $upcoming),
+        'expired'  => array_map(function ($r) use ($tz) { return overrideToApi($r, $tz); }, $expired),
     ]);
+}
+
+/**
+ * Normalise an override row for the API response. The DB stores start/end as
+ * "YYYY-MM-DD HH:MM" in the venue's timezone (because that's what the
+ * <input type="datetime-local"> form posted). The frontend's date helpers
+ * assume bare datetime strings are UTC, which would mis-render the values
+ * by the venue's UTC offset. Convert here to ISO 8601 with the venue offset
+ * so JS can parse them correctly with `new Date(...)`.
+ */
+function overrideToApi(array $row, string $tz): array {
+    $row['start_datetime'] = venueLocalToIso($row['start_datetime'] ?? null, $tz);
+    $row['end_datetime']   = venueLocalToIso($row['end_datetime'] ?? null, $tz);
+    return $row;
+}
+
+/**
+ * Convert "YYYY-MM-DD HH:MM[:SS]" interpreted as $tz local time into an
+ * ISO 8601 string with the matching offset (e.g. "2026-05-04T14:00:00-04:00").
+ * Returns the input unchanged if it can't be parsed.
+ */
+function venueLocalToIso(?string $localStr, string $tz): ?string {
+    if ($localStr === null || $localStr === '') {
+        return $localStr;
+    }
+    try {
+        $dt = new DateTime($localStr, new DateTimeZone($tz));
+        return $dt->format('c');
+    } catch (Exception $e) {
+        return $localStr;
+    }
 }
 
 function createOverride(?array $input, array $user): void {
@@ -176,7 +207,8 @@ function createOverride(?array $input, array $user): void {
          WHERE o.id = :p0',
         [$overrideId]
     );
-    echo json_encode($override);
+    $venueTz = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
+    echo json_encode($override ? overrideToApi($override, $venueTz) : null);
 }
 
 function deleteOverride(int $overrideId): void {

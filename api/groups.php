@@ -193,15 +193,36 @@ function listGroups(): void {
                  ORDER BY end_datetime DESC LIMIT 1',
                 [$gid, $currentDatetime]
             );
+            // Override end_datetime is stored as venue-local "YYYY-MM-DD HH:MM".
+            // Emit as ISO 8601 with offset so the SPA's `new Date()` parses it
+            // as the correct instant rather than mis-interpreting it as UTC.
+            if ($activeOverride && !empty($activeOverride['end_datetime'])) {
+                try {
+                    $endDt = new DateTime($activeOverride['end_datetime'], new DateTimeZone($tz));
+                    $activeOverride['end_datetime'] = $endDt->format('c');
+                } catch (Exception $e) {
+                    // Leave the raw string if parsing fails
+                }
+            }
         }
         $group['active_override'] = $activeOverride ?: null;
 
         // Manual override
         $group['manual_override'] = null;
         if ($group['manual_override_action']) {
+            // manual_override_at is also venue-local — convert to ISO with offset.
+            $atIso = $group['manual_override_at'];
+            if (!empty($atIso)) {
+                try {
+                    $atDt = new DateTime($atIso, new DateTimeZone($tz));
+                    $atIso = $atDt->format('c');
+                } catch (Exception $e) {
+                    // Leave the raw string if parsing fails
+                }
+            }
             $group['manual_override'] = [
                 'action' => $group['manual_override_action'],
-                'at'     => $group['manual_override_at'],
+                'at'     => $atIso,
             ];
         }
         unset($group['manual_override_action'], $group['manual_override_at']);
@@ -218,6 +239,8 @@ function listGroups(): void {
 function manualGroupAction(int $groupId, string $action): void {
     $group = DB::queryOne('SELECT id, name, is_active FROM pause_groups WHERE id = :p0', [$groupId]);
     if (!$group) {
+        DB::auditLog('admin', 'group_' . $action, null,
+            ['group_id' => $groupId], false, 'Group not found');
         http_response_code(404);
         echo json_encode(['error' => 'Group not found']);
         return;
@@ -228,14 +251,30 @@ function manualGroupAction(int $groupId, string $action): void {
 
     $results = Scheduler::executeImmediate($groupId, $action, 'manual');
 
+    $changed = count($results['changed'] ?? []);
+    $skipped = count($results['skipped'] ?? []);
+    $errors = count($results['errors'] ?? []);
+    $success = empty($results['errors']);
+
+    // Roll up per-asset details so /logs has a single user-facing summary
+    // entry for the click. The per-game/kiosk rows logged inside the
+    // scheduler stay around for forensic detail.
+    DB::auditLog('admin', 'group_' . $action, null, [
+        'group_id' => $groupId,
+        'group_name' => $group['name'],
+        'changed' => $changed,
+        'skipped' => $skipped,
+        'errors' => $errors,
+    ], $success, $success ? null : ('Errors: ' . $errors));
+
     echo json_encode([
-        'success' => empty($results['errors']),
+        'success' => $success,
         'action'  => $action,
         'group_id' => $groupId,
         'group_name' => $group['name'],
-        'changed' => count($results['changed']),
-        'skipped' => count($results['skipped']),
-        'errors'  => count($results['errors']),
+        'changed' => $changed,
+        'skipped' => $skipped,
+        'errors'  => $errors,
         'details' => $results,
     ]);
 }
@@ -249,6 +288,8 @@ function manualGroupAction(int $groupId, string $action): void {
 function enforceGroupAction(int $groupId): void {
     $group = DB::queryOne('SELECT id, name, is_active FROM pause_groups WHERE id = :p0', [$groupId]);
     if (!$group) {
+        DB::auditLog('admin', 'group_enforce', null,
+            ['group_id' => $groupId], false, 'Group not found');
         http_response_code(404);
         echo json_encode(['error' => 'Group not found']);
         return;
@@ -258,14 +299,26 @@ function enforceGroupAction(int $groupId): void {
     require_once __DIR__ . '/../lib/scheduler.php';
 
     $results = Scheduler::enforceGroupState($groupId);
+    $changed = count($results['changed'] ?? []);
+    $skipped = count($results['skipped'] ?? []);
+    $errors = count($results['errors'] ?? []);
+    $success = empty($results['errors'] ?? []);
 
-    echo json_encode([
-        'success' => empty($results['errors']),
+    DB::auditLog('admin', 'group_enforce', null, [
         'group_id' => $groupId,
         'group_name' => $group['name'],
-        'changed' => count($results['changed'] ?? []),
-        'skipped' => count($results['skipped'] ?? []),
-        'errors'  => count($results['errors'] ?? []),
+        'changed' => $changed,
+        'skipped' => $skipped,
+        'errors' => $errors,
+    ], $success, $success ? null : ('Errors: ' . $errors));
+
+    echo json_encode([
+        'success' => $success,
+        'group_id' => $groupId,
+        'group_name' => $group['name'],
+        'changed' => $changed,
+        'skipped' => $skipped,
+        'errors'  => $errors,
         'details' => $results,
     ]);
 }
@@ -276,6 +329,8 @@ function enforceGroupAction(int $groupId): void {
 function clearManualOverrideAction(int $groupId): void {
     $group = DB::queryOne('SELECT id, name FROM pause_groups WHERE id = :p0', [$groupId]);
     if (!$group) {
+        DB::auditLog('admin', 'manual_override_cleared', null,
+            ['group_id' => $groupId], false, 'Group not found');
         http_response_code(404);
         echo json_encode(['error' => 'Group not found']);
         return;
@@ -286,6 +341,14 @@ function clearManualOverrideAction(int $groupId): void {
 
     Scheduler::clearManualOverride($groupId);
     $results = Scheduler::enforceGroupState($groupId, false);
+    $errors = count($results['errors'] ?? []);
+
+    DB::auditLog('admin', 'manual_override_cleared', null, [
+        'group_id' => $groupId,
+        'group_name' => $group['name'],
+        'changed' => count($results['changed'] ?? []),
+        'errors' => $errors,
+    ], $errors === 0, $errors === 0 ? null : ('Errors: ' . $errors));
 
     echo json_encode([
         'success' => true,
@@ -376,10 +439,22 @@ function createGroup(?array $input): void {
 
         $db->exec('COMMIT');
 
+        DB::auditLog('admin', 'group_created', null, [
+            'group_id' => $groupId,
+            'group_name' => $name,
+            'category_count' => count($categoryIds),
+            'game_count' => count($gameIds),
+            'kiosk_count' => count($kioskIds),
+            'is_active' => (bool)$isActive,
+        ]);
+
         http_response_code(201);
         getGroup($groupId);
     } catch (Exception $e) {
         $db->exec('ROLLBACK');
+        DB::auditLog('admin', 'group_created', null, [
+            'group_name' => $name,
+        ], false, $e->getMessage());
         throw $e;
     }
 }
@@ -445,9 +520,23 @@ function updateGroup(int $groupId, ?array $input): void {
         }
 
         $db->exec('COMMIT');
+
+        DB::auditLog('admin', 'group_updated', null, [
+            'group_id' => $groupId,
+            'group_name' => $name,
+            'category_count' => count($categoryIds),
+            'game_count' => count($gameIds),
+            'kiosk_count' => count($kioskIds),
+            'is_active' => (bool)$isActive,
+        ]);
+
         getGroup($groupId);
     } catch (Exception $e) {
         $db->exec('ROLLBACK');
+        DB::auditLog('admin', 'group_updated', null, [
+            'group_id' => $groupId,
+            'group_name' => $name,
+        ], false, $e->getMessage());
         throw $e;
     }
 }

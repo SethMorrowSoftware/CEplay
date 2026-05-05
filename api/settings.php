@@ -10,7 +10,7 @@ require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
 function handleSettings(string $method, array $parts, ?array $input): void {
-    Auth::requireRole([Auth::ROLE_ADMIN, Auth::ROLE_TECH]);
+    Auth::requireAuth();
 
     $action = $parts[0] ?? '';
 
@@ -91,6 +91,11 @@ function handleSettings(string $method, array $parts, ?array $input): void {
         // Test connection
         $client = new CenterEdgeClient();
         $result = $client->testConnection();
+        DB::auditLog('admin', 'settings_test_connection', null, [
+            'system_name' => $result['system_name'] ?? null,
+            'interface_version' => $result['interface_version'] ?? null,
+            'game_count' => $result['game_count'] ?? null,
+        ], !empty($result['success']), $result['error'] ?? null);
         echo json_encode($result);
         return;
     }

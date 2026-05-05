@@ -1,6 +1,9 @@
 /**
  * Action log viewer: paginated table with filters.
  * Enhanced with improved pagination controls and page size selector.
+ *
+ * Filter dropdown contents are pulled live from /api/logs/options so adding
+ * a new audit-logged action only requires updating the backend whitelist.
  */
 (function() {
     App.registerRoute('#/logs', { render: renderLogs });
@@ -8,20 +11,29 @@
     let filters = {};
     let currentPage = 1;
     let perPage = 50;
+    let filterOptions = { sources: [], actions: [] };
     const debouncedLoadLogs = App.debounce(function() { loadLogs(); }, 300);
+    const debouncedTextFilter = App.debounce(function() { loadLogs(); }, 350);
 
     async function renderLogs(container) {
         filters = {};
         currentPage = 1;
 
         container.appendChild(App.el('div', { className: 'page-header' }, [
-            App.el('div', {}, [
-                App.el('h1', { className: 'page-title', textContent: 'Action Log' }),
-                App.el('p', { className: 'page-subtitle', textContent: 'Audit trail of every pause, unpause, and scheduling action.' })
-            ])
+            App.el('h1', { className: 'page-title', textContent: 'Action Log' })
         ]));
 
-        // Filters bar
+        // Pull canonical filter dropdown values from the backend so a
+        // newly audit-logged action shows up here without a JS edit.
+        try {
+            var opts = await API.get('logs/options');
+            if (opts && Array.isArray(opts.sources)) filterOptions.sources = opts.sources;
+            if (opts && Array.isArray(opts.actions)) filterOptions.actions = opts.actions;
+        } catch (e) {
+            // Non-fatal — filter dropdowns just stay empty.
+            console.warn('Failed to load log filter options:', e && e.message ? e.message : e);
+        }
+
         const filtersBar = buildFiltersBar();
         container.appendChild(filtersBar);
 
@@ -60,11 +72,11 @@
 
         // Source filter
         const sourceSelect = App.el('select', {
-            className: 'form-select', style: { maxWidth: '140px' },
+            className: 'form-select', style: { maxWidth: '180px' },
             onChange: () => { filters.source = sourceSelect.value || undefined; currentPage = 1; debouncedLoadLogs(); }
         });
         sourceSelect.appendChild(App.el('option', { value: '', textContent: 'All Sources' }));
-        ['cron', 'manual', 'override', 'schedule'].forEach(s => {
+        filterOptions.sources.forEach(s => {
             sourceSelect.appendChild(App.el('option', { value: s, textContent: s }));
         });
 
@@ -75,11 +87,11 @@
 
         // Action filter
         const actionSelect = App.el('select', {
-            className: 'form-select', style: { maxWidth: '140px' },
+            className: 'form-select', style: { maxWidth: '220px' },
             onChange: () => { filters.action = actionSelect.value || undefined; currentPage = 1; debouncedLoadLogs(); }
         });
         actionSelect.appendChild(App.el('option', { value: '', textContent: 'All Actions' }));
-        ['pause', 'unpause', 'skip', 'plan_day', 'execute_action'].forEach(a => {
+        filterOptions.actions.forEach(a => {
             actionSelect.appendChild(App.el('option', { value: a, textContent: a }));
         });
 
@@ -102,6 +114,28 @@
             statusSelect
         ]));
 
+        // Actor (username) filter
+        const userInput = App.el('input', {
+            className: 'form-input', type: 'text', placeholder: 'username',
+            style: { maxWidth: '160px' },
+            onInput: () => { filters.actor_username = userInput.value.trim() || undefined; currentPage = 1; debouncedTextFilter(); }
+        });
+        row.appendChild(App.el('div', { className: 'form-group', style: { marginBottom: 0, flex: 'none' } }, [
+            App.el('label', { className: 'form-label', textContent: 'User', style: { fontSize: '0.75rem' } }),
+            userInput
+        ]));
+
+        // IP filter
+        const ipInput = App.el('input', {
+            className: 'form-input', type: 'text', placeholder: 'IP / prefix',
+            style: { maxWidth: '160px' },
+            onInput: () => { filters.ip = ipInput.value.trim() || undefined; currentPage = 1; debouncedTextFilter(); }
+        });
+        row.appendChild(App.el('div', { className: 'form-group', style: { marginBottom: 0, flex: 'none' } }, [
+            App.el('label', { className: 'form-label', textContent: 'IP', style: { fontSize: '0.75rem' } }),
+            ipInput
+        ]));
+
         bar.appendChild(row);
         return bar;
     }
@@ -120,13 +154,18 @@
             if (filters.source) params.set('source', filters.source);
             if (filters.action) params.set('action', filters.action);
             if (filters.success !== undefined) params.set('success', filters.success);
+            if (filters.actor_username) params.set('actor_username', filters.actor_username);
+            if (filters.ip) params.set('ip', filters.ip);
 
             const data = await API.get('logs?' + params.toString()) || {};
             if (App.navGeneration() !== gen) return;
             content.innerHTML = '';
 
             if (!data.logs || data.logs.length === 0) {
-                content.appendChild(App.emptyState('list', 'No log entries match the current filters.'));
+                content.appendChild(App.el('div', { className: 'empty-state' }, [
+                    App.el('div', { className: 'empty-state-icon', textContent: '\uD83D\uDCCB' }),
+                    App.el('div', { className: 'empty-state-text', textContent: 'No log entries found.' })
+                ]));
                 return;
             }
 
@@ -137,6 +176,8 @@
             const thead = App.el('thead');
             thead.appendChild(App.el('tr', {}, [
                 App.el('th', { textContent: 'Time' }),
+                App.el('th', { textContent: 'Actor' }),
+                App.el('th', { textContent: 'IP' }),
                 App.el('th', { textContent: 'Source' }),
                 App.el('th', { textContent: 'Action' }),
                 App.el('th', { textContent: 'Group' }),
@@ -156,6 +197,20 @@
                     style: { whiteSpace: 'nowrap', fontSize: '0.8rem' }
                 }));
 
+                // Actor cell \u2014 username preferred, fall back to id, system if neither
+                var actorText = log.actor_username
+                    ? log.actor_username
+                    : (log.actor_user_id ? '#' + log.actor_user_id : 'system');
+                row.appendChild(App.el('td', {
+                    textContent: actorText,
+                    style: { fontSize: '0.8rem', whiteSpace: 'nowrap' }
+                }));
+
+                row.appendChild(App.el('td', {
+                    textContent: log.ip_address || '\u2014',
+                    style: { fontSize: '0.8rem', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }
+                }));
+
                 row.appendChild(App.el('td', {}, [
                     App.el('span', {
                         className: 'badge badge-info',
@@ -167,15 +222,25 @@
                 row.appendChild(App.el('td', { textContent: log.action || '\u2014' }));
                 row.appendChild(App.el('td', { textContent: log.group_name || '\u2014' }));
 
-                // Details: show game_name + error_message if any
+                // Details cell: prefer game_name + error, then surface a couple
+                // of high-signal keys from the structured details JSON so the
+                // operator doesn't have to inspect raw payloads in dev tools.
                 const detailParts = [];
                 if (log.game_name) detailParts.push(log.game_name);
                 if (log.error_message) detailParts.push(log.error_message);
+                if (log.details && typeof log.details === 'object') {
+                    var summaryKeys = ['group_name', 'card_number', 'changed', 'errors', 'kiosk_id', 'game_count', 'kiosk_count'];
+                    summaryKeys.forEach(function(k) {
+                        if (log.details[k] !== undefined && log.details[k] !== null && log.details[k] !== '') {
+                            detailParts.push(k + ': ' + log.details[k]);
+                        }
+                    });
+                }
                 const detailText = detailParts.join(' \u2014 ') || '\u2014';
 
                 row.appendChild(App.el('td', {
                     textContent: detailText,
-                    style: { maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                    style: { maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                     title: detailText
                 }));
 
