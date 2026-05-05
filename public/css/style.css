@@ -146,6 +146,10 @@ body::before {
     border-bottom: 1px solid var(--border);
     margin-bottom: 0.5rem;
     position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
 }
 .sidebar-brand::after {
     content: '';
@@ -163,6 +167,8 @@ body::before {
     font-weight: 800;
     color: var(--text-primary);
     letter-spacing: -0.02em;
+    line-height: 1.25;
+    padding-right: 2rem;
 }
 .sidebar-brand p {
     font-size: 0.7rem;
@@ -218,6 +224,7 @@ body::before {
 .main-content {
     flex: 1;
     margin-left: var(--sidebar-width);
+    margin-right: auto;
     padding: 2rem 2.25rem;
     min-height: 100vh;
     max-width: 1280px;
@@ -237,10 +244,11 @@ body::before {
     box-shadow: var(--shadow-sm);
 }
 .theme-toggle-inline {
-    margin-left: auto;
-    position: absolute;
-    top: 0.9rem;
-    right: 0.9rem;
+    margin-top: 0.55rem;
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
 }
 .theme-toggle:hover {
     color: var(--text-primary);
@@ -252,11 +260,14 @@ body::before {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.8rem;
     margin-bottom: 1.2rem;
-    padding: 0.9rem 1rem;
+    padding: 0.95rem 1rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+    backdrop-filter: blur(10px);
 }
 .page-title { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
 .page-subtitle { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.2rem; }
@@ -913,7 +924,7 @@ body::before {
     box-shadow: var(--shadow-md);
     transition: all var(--transition-fast);
 }
-.mobile-menu-btn:hover { background: var(--bg-card-hover); }
+.mobile-menu-btn:hover { background: var(--bg-card-hover); transform: translateY(-1px); }
 
 /* Sidebar overlay for mobile */
 .sidebar-overlay {
@@ -937,7 +948,7 @@ body::before {
     }
     .sidebar-overlay.active { display: block; }
     .main-content { margin-left: 0; padding: 1rem; padding-top: 3.5rem; }
-    .theme-toggle-inline { top: 0.6rem; right: 0.6rem; }
+    .theme-toggle-inline { margin-top: 0.45rem; }
     .page-header { padding: 0.7rem 0.8rem; }
     .schedule-week { grid-template-columns: repeat(3, 1fr); }
     .form-row { grid-template-columns: 1fr; }
