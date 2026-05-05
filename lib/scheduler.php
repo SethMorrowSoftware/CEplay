@@ -489,7 +489,9 @@ class Scheduler {
             return self::executeStateChange(
                 $groupId,
                 $desiredAction === 'pause' ? 'paused' : 'enabled',
-                'manual'
+                'manual',
+                /*syncCache*/ true,
+                /*resetGiveUps*/ true
             );
         }
 
@@ -526,7 +528,9 @@ class Scheduler {
         return self::executeStateChange(
             $groupId,
             $desiredAction === 'pause' ? 'paused' : 'enabled',
-            $source
+            $source,
+            /*syncCache*/ true,
+            /*resetGiveUps*/ true
         );
 
         } finally { self::restoreTimezone($__prevTz); }
@@ -556,7 +560,15 @@ class Scheduler {
         // regular schedule takes over again.
         self::clearManualOverride($groupId);
 
-        $results = self::executeStateChange($groupId, $desiredStatus, $source);
+        // Scheduled transition firing is a fresh intent — clear any prior
+        // gave-up records so each asset gets a full new 10-attempt window.
+        $results = self::executeStateChange(
+            $groupId,
+            $desiredStatus,
+            $source,
+            /*syncCache*/ true,
+            /*resetGiveUps*/ true
+        );
 
         // Mark action as executed
         $allSuccess = !empty($results['changed']) || (empty($results['errors']));
@@ -578,7 +590,15 @@ class Scheduler {
         // will confirm the actual new state.  This avoids an expensive API
         // round-trip that adds ~5-10s of latency to every button press.
         $skipSync = ($source === 'manual');
-        $result = self::executeStateChange($groupId, $desiredStatus, $source, !$skipSync);
+        // Manual buttons / override boundaries are fresh intents — wipe any
+        // gave-up records so the new request gets a full retry window.
+        $result = self::executeStateChange(
+            $groupId,
+            $desiredStatus,
+            $source,
+            !$skipSync,
+            /*resetGiveUps*/ true
+        );
 
         // Record manual override so the watchdog and enforcement logic
         // respect the operator's intent until the next scheduled transition.
@@ -645,13 +665,16 @@ class Scheduler {
         }
 
         $existing = DB::queryOne(
-            'SELECT desired_status, attempts FROM action_retries
+            'SELECT desired_status, attempts, gave_up_at FROM action_retries
              WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
         );
 
         if ($existing && $existing['desired_status'] === $desiredStatus) {
-            // Same intent — keep attempt count, just refresh error/timestamp.
+            // Same intent — keep attempt count and any gave_up_at marker.
+            // Just refresh error/timestamp/source so the UI sees current state.
+            // If we've already given up on this exact intent, leaving gave_up_at
+            // intact is what stops the watchdog from spinning forever.
             DB::execute(
                 'UPDATE action_retries
                  SET source = :p0, pause_group_id = :p1, last_error = :p2,
@@ -662,17 +685,20 @@ class Scheduler {
             return;
         }
 
-        // New row, or desired_status changed — reset attempts.
+        // New row, or desired_status changed — reset attempts AND clear any
+        // gave_up_at marker. The intent is fresh, so the asset gets a full
+        // new 10-attempt window.
         DB::execute(
             'INSERT INTO action_retries
                  (asset_type, asset_id, desired_status, source, pause_group_id,
-                  attempts, max_attempts, last_error, created_at, updated_at)
-             VALUES (:p0, :p1, :p2, :p3, :p4, 0, :p5, :p6, datetime(\'now\'), datetime(\'now\'))
+                  attempts, max_attempts, last_error, gave_up_at, created_at, updated_at)
+             VALUES (:p0, :p1, :p2, :p3, :p4, 0, :p5, :p6, NULL, datetime(\'now\'), datetime(\'now\'))
              ON CONFLICT(asset_type, asset_id) DO UPDATE SET
                  desired_status = :p2,
                  source = :p3,
                  pause_group_id = :p4,
                  attempts = 0,
+                 gave_up_at = NULL,
                  last_error = :p6,
                  updated_at = datetime(\'now\')',
             [$assetType, $assetId, $desiredStatus, $source, $pauseGroupId,
@@ -682,13 +708,43 @@ class Scheduler {
 
     /**
      * Drop the pending retry (if any) for an asset.
-     * Called whenever a fresh pause/unpause for that asset succeeds.
+     * Called whenever a fresh pause/unpause for that asset succeeds, or when
+     * the cache shows the asset is already in the desired state.
      */
     public static function clearRetry(string $assetType, string $assetId): void {
         DB::execute(
             'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
         );
+    }
+
+    /**
+     * Drop every retry row tied to a specific pause group.
+     * Called from executeStateChange when invoked with $resetGiveUps=true so
+     * a fresh intent (manual button, schedule transition, override boundary)
+     * starts every asset on a clean 10-attempt window.
+     */
+    public static function clearRetriesForGroup(int $groupId): void {
+        DB::execute(
+            'DELETE FROM action_retries WHERE pause_group_id = :p0',
+            [$groupId]
+        );
+    }
+
+    /**
+     * Has the watchdog already exhausted the retry window for this asset/intent?
+     * Returns true only when a row exists with the same desired_status AND a
+     * non-null gave_up_at timestamp. Different desired_status (e.g. asset was
+     * stuck on pause but we now want unpause) is NOT considered given-up.
+     */
+    public static function hasGivenUp(string $assetType, string $assetId, string $desiredStatus): bool {
+        $row = DB::queryOne(
+            'SELECT 1 FROM action_retries
+             WHERE asset_type = :p0 AND asset_id = :p1
+               AND desired_status = :p2 AND gave_up_at IS NOT NULL',
+            [$assetType, $assetId, $desiredStatus]
+        );
+        return $row !== null && $row !== false;
     }
 
     /**
@@ -706,7 +762,7 @@ class Scheduler {
             'SELECT id, asset_type, asset_id, desired_status, source, pause_group_id,
                     attempts, max_attempts
              FROM action_retries
-             WHERE attempts < max_attempts
+             WHERE attempts < max_attempts AND gave_up_at IS NULL
              ORDER BY asset_type ASC, id ASC'
         );
 
@@ -869,9 +925,18 @@ class Scheduler {
                     'gave_up' => true,
                 ]
             );
+            // Mark the row as given-up rather than deleting it. processRetries
+            // skips rows where gave_up_at is set, and executeStateChange skips
+            // upstream PATCHes for assets in this state — so the watchdog won't
+            // resurrect this retry every minute. A successful patch (manual or
+            // schedule-driven) calls clearRetry() and wipes the row; a fresh
+            // intent change in queueRetry() resets attempts and clears gave_up_at.
             DB::execute(
-                'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
-                [$assetType, $assetId]
+                'UPDATE action_retries
+                 SET attempts = :p0, last_attempted_at = :p1, last_error = :p2,
+                     gave_up_at = :p1, updated_at = datetime(\'now\')
+                 WHERE asset_type = :p3 AND asset_id = :p4',
+                [$newAttempts, $now, $errorMsg, $assetType, $assetId]
             );
             return;
         }
@@ -903,7 +968,8 @@ class Scheduler {
      */
     public static function getPendingRetry(string $assetType, string $assetId): ?array {
         $row = DB::queryOne(
-            'SELECT desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
+            'SELECT desired_status, source, attempts, max_attempts, last_attempted_at,
+                    last_error, gave_up_at, created_at
              FROM action_retries
              WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
@@ -918,6 +984,7 @@ class Scheduler {
             'max_attempts'      => (int)$row['max_attempts'],
             'last_attempted_at' => $row['last_attempted_at'],
             'last_error'        => $row['last_error'],
+            'gave_up_at'        => $row['gave_up_at'],
             'created_at'        => $row['created_at'],
         ];
     }
@@ -928,7 +995,8 @@ class Scheduler {
      */
     public static function getPendingRetriesByType(string $assetType): array {
         $rows = DB::query(
-            'SELECT asset_id, desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
+            'SELECT asset_id, desired_status, source, attempts, max_attempts, last_attempted_at,
+                    last_error, gave_up_at, created_at
              FROM action_retries WHERE asset_type = :p0',
             [$assetType]
         );
@@ -941,6 +1009,7 @@ class Scheduler {
                 'max_attempts'      => (int)$r['max_attempts'],
                 'last_attempted_at' => $r['last_attempted_at'],
                 'last_error'        => $r['last_error'],
+                'gave_up_at'        => $r['gave_up_at'],
                 'created_at'        => $r['created_at'],
             ];
         }
@@ -949,8 +1018,22 @@ class Scheduler {
 
     /**
      * Core state change logic: resolve games + kiosks, check states, patch CenterEdge.
+     *
+     * $resetGiveUps controls retry-queue behaviour:
+     *   - false (default, used by enforceCurrentStates): existing gave-up
+     *     records are honoured. Assets that already exhausted their 10-attempt
+     *     window are skipped; the upstream PATCH is not retried.
+     *   - true (used by manual actions, override start/end, scheduled
+     *     transitions firing): wipe gave-up state for this group's assets so
+     *     a fresh intent gets a clean 10-attempt window.
      */
-    private static function executeStateChange(int $groupId, string $desiredStatus, string $source, bool $syncCache = true): array {
+    private static function executeStateChange(
+        int $groupId,
+        string $desiredStatus,
+        string $source,
+        bool $syncCache = true,
+        bool $resetGiveUps = false
+    ): array {
         $results = ['changed' => [], 'skipped' => [], 'errors' => []];
 
         try {
@@ -968,6 +1051,13 @@ class Scheduler {
                 }
             }
 
+            // Fresh-intent callers (manual button, schedule transition firing,
+            // override start/end) get a clean retry slate so an asset that
+            // gave up earlier today gets a full new 10-attempt window.
+            if ($resetGiveUps) {
+                self::clearRetriesForGroup($groupId);
+            }
+
             // ---- Games ----
             $gameIds = self::resolveGroupGames($groupId);
             $gameChanges = [];
@@ -983,6 +1073,21 @@ class Scheduler {
                 }
                 if ($cached['operation_status'] === $desiredStatus) {
                     $results['skipped'][] = ['game_id' => $gameId, 'game_name' => $cached['game_name'], 'reason' => 'already_' . $desiredStatus];
+                    // Cache reflects upstream — any retry row is stale, drop it.
+                    self::clearRetry('game', $gameId);
+                    continue;
+                }
+                if (self::hasGivenUp('game', $gameId, $desiredStatus)) {
+                    // We already exhausted the retry window for this exact
+                    // intent. Skip the upstream PATCH so we don't spam the
+                    // CenterEdge API every minute. A fresh intent (different
+                    // desired_status, manual action, or schedule transition)
+                    // will clear gave_up_at and start a new window.
+                    $results['skipped'][] = [
+                        'game_id' => $gameId,
+                        'game_name' => $cached['game_name'],
+                        'reason' => 'gave_up',
+                    ];
                     continue;
                 }
                 $gameChanges[$gameId] = $desiredStatus;
@@ -1049,6 +1154,15 @@ class Scheduler {
                 }
                 if ($cachedStatus === $desiredStatus) {
                     $results['skipped'][] = ['kiosk_id' => $kioskId, 'kiosk_name' => $cached['kiosk_name'], 'reason' => 'already_' . $desiredStatus];
+                    self::clearRetry('kiosk', $kioskId);
+                    continue;
+                }
+                if (self::hasGivenUp('kiosk', $kioskId, $desiredStatus)) {
+                    $results['skipped'][] = [
+                        'kiosk_id' => $kioskId,
+                        'kiosk_name' => $cached['kiosk_name'],
+                        'reason' => 'gave_up',
+                    ];
                     continue;
                 }
                 $kioskChanges[$kioskId] = $desiredStatus;
@@ -1398,7 +1512,16 @@ class Scheduler {
 
             if ($needsEnforcement) {
                 try {
-                    self::executeStateChange($groupId, $desiredStatus, $source, true);
+                    // An override just expired — that's a fresh intent for the
+                    // schedule/default state to take over. Reset gave-up
+                    // markers so the new desired state gets a clean window.
+                    self::executeStateChange(
+                        $groupId,
+                        $desiredStatus,
+                        $source,
+                        /*syncCache*/ true,
+                        /*resetGiveUps*/ true
+                    );
                     $summary['groups_enforced']++;
                 } catch (Exception $e) {
                     error_log("enforceExpiredOverrides: failed for group #$groupId: " . $e->getMessage());
