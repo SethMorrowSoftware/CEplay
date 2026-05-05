@@ -37,6 +37,14 @@ function handleGames(string $method, array $parts, ?array $input): void {
         gamesPollTransactions();
         return;
     }
+    if ($method === 'GET' && $action === 'transactions' && $sub === 'summary') {
+        gamesTransactionSummary();
+        return;
+    }
+    if ($method === 'GET' && $action === 'transactions' && $sub === 'by-category') {
+        gamesTransactionsByCategory();
+        return;
+    }
 
     if ($method === 'GET' && $action === 'analytics') {
         gamesAnalytics();
@@ -479,6 +487,110 @@ function gamesPollTransactions(): void {
         http_response_code(500);
         echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
     }
+}
+
+/**
+ * Per-category swipe breakdown for the dashboard.
+ * Each play is counted once per category the game belongs to (a game with two
+ * categories appears in both). Unique-cards count is exact per category —
+ * computed via a subquery that pairs transaction_id with category before
+ * aggregating, so a card that plays two games in the same category is only
+ * counted once for that category.
+ *
+ * Uses SQLite's json_each() (available since SQLite 3.9, released 2015-10-14).
+ *
+ * GET /api/games/transactions/by-category?window=hour|today|week
+ */
+function gamesTransactionsByCategory(): void {
+    $window = $_GET['window'] ?? 'today';
+    if (!in_array($window, ['hour', 'today', 'week'], true)) {
+        $window = 'today';
+    }
+
+    $tz = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try { $tzObj = new DateTimeZone($tz); } catch (Exception $e) { $tzObj = new DateTimeZone('UTC'); }
+
+    switch ($window) {
+        case 'hour':
+            $cutoff = (new DateTime('-1 hour',        $tzObj))->format('c');
+            break;
+        case 'week':
+            $cutoff = (new DateTime('-7 days',        $tzObj))->format('c');
+            break;
+        default:
+            $cutoff = (new DateTime('today 00:00:00', $tzObj))->format('c');
+    }
+
+    try {
+        // Use json_each() to unnest the categories JSON array stored per game.
+        // The DISTINCT on the outer card-number COUNT gives correct unique-card
+        // counts per category (avoids double-counting a card that played
+        // multiple games in the same category).
+        $rows = DB::query(
+            'SELECT cat_name                        AS category_name,
+                    COUNT(*)                        AS total_swipes,
+                    COUNT(DISTINCT card_key)        AS unique_cards
+             FROM (
+                 SELECT json_extract(cat.value, \'$.name\') AS cat_name,
+                        t.transaction_id,
+                        CASE WHEN t.card_number != \'000000\' AND t.card_number != \'\'
+                             THEN t.card_number END  AS card_key
+                 FROM game_play_transactions t
+                 JOIN game_state_cache c ON c.game_id = t.game_id
+                 , json_each(c.categories) AS cat
+                 WHERE t.transaction_time >= :p0
+                   AND json_array_length(c.categories) > 0
+             )
+             GROUP BY category_name
+             ORDER BY total_swipes DESC
+             LIMIT 50',
+            [$cutoff]
+        );
+    } catch (Exception $e) {
+        $rows = [];
+    }
+
+    $categories = array_map(function ($r) {
+        $r['total_swipes'] = (int)$r['total_swipes'];
+        $r['unique_cards'] = (int)$r['unique_cards'];
+        return $r;
+    }, $rows);
+
+    echo json_encode(['window' => $window, 'categories' => $categories]);
+}
+
+/**
+ * Lightweight swipe counts for the dashboard summary widget.
+ * Returns total plays and unique card counts for the last hour, today, and
+ * the last 7 days in a single round-trip.
+ *
+ * GET /api/games/transactions/summary
+ */
+function gamesTransactionSummary(): void {
+    $tz = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try { $tzObj = new DateTimeZone($tz); } catch (Exception $e) { $tzObj = new DateTimeZone('UTC'); }
+
+    $cutoffs = [
+        'hour'  => (new DateTime('-1 hour',        $tzObj))->format('c'),
+        'today' => (new DateTime('today 00:00:00', $tzObj))->format('c'),
+        'week'  => (new DateTime('-7 days',        $tzObj))->format('c'),
+    ];
+
+    $sql = 'SELECT COUNT(*) AS total,
+                   COUNT(DISTINCT CASE WHEN card_number != \'000000\' AND card_number != \'\' THEN card_number END) AS unique_cards
+            FROM game_play_transactions
+            WHERE transaction_time >= :p0';
+
+    $windows = [];
+    foreach ($cutoffs as $key => $cutoff) {
+        $row = DB::queryOne($sql, [$cutoff]);
+        $windows[$key] = [
+            'total_swipes' => (int)($row['total'] ?? 0),
+            'unique_cards' => (int)($row['unique_cards'] ?? 0),
+        ];
+    }
+
+    echo json_encode(['windows' => $windows]);
 }
 
 /**
