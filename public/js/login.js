@@ -8,8 +8,11 @@
         const wrap = App.el('div', { className: 'login-container' });
         const card = App.el('div', { className: 'login-card' });
 
-        card.appendChild(App.el('div', { className: 'login-title', textContent: 'Pause Groups' }));
-        card.appendChild(App.el('div', { className: 'login-subtitle', textContent: 'Sign in to manage game schedules' }));
+        card.appendChild(App.el('div', { className: 'login-brand', 'aria-hidden': 'true', textContent: 'CF' }));
+        card.appendChild(App.el('div', { className: 'login-title', textContent: 'Castle Fun Center' }));
+        card.appendChild(App.el('div', { className: 'login-subtitle' }, [
+            App.el('span', { textContent: 'Sign in to manage game schedules' })
+        ]));
 
         const errorBox = App.el('div', { className: 'login-error hidden', id: 'login-error' });
         card.appendChild(errorBox);
