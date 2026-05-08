@@ -1,145 +1,128 @@
-# CEplay Robustness Audit (Castle Fun Center / CenterEdge)
+# CEplay Robustness Audit (Castle Fun Center ↔ CenterEdge)
 
 **Date:** 2026-05-08  
-**Audience:** Castle Fun Center operations + engineering owners  
-**Goal of this rewrite:** Identify practical bugs, failure modes, and logic flaws that can keep CEplay from being a **rock-solid, resilient integration** with CenterEdge.  
-**Explicit non-goal:** Custom roles/user types (per request).
+**Scope reviewed:** API handlers, scheduler/watchdog flow, CenterEdge client, auth/session controls, DB layer, install/runtime configuration.  
+**Explicitly out of scope (per request):** custom roles and user types.
 
 ---
 
 ## Executive Summary
 
-CEplay is already a strong operational base: local caching, retry loops, cron watchdogs, stale-fallback caches, and comprehensive audit logging are all in place. The platform can run reliably day-to-day.
+CEplay has a solid reliability foundation (WAL-enabled SQLite, retry + circuit breaker behavior, stale-cache fallback, watchdog reconciliation, and detailed audit logging). The system is clearly designed to self-heal around transient CenterEdge issues.
 
-However, there are several reliability risks that should be considered **high priority** because they can directly affect availability, correctness, or operator confidence:
+That said, there are several logic and operational weaknesses that can still cause surprising behavior in production. The most impactful risks are:
 
-1. **All outbound CenterEdge requests follow redirects (`CURLOPT_FOLLOWLOCATION=true`)**. This can leak credentials/tokens to unexpected hosts if upstream or a proxy misbehaves.  
-2. **Automatic retries are synchronous and blocking (`sleep(2/4/8)`)** in request paths. Under repeated upstream trouble, operator-facing API calls can stall for long periods and pile up PHP workers.  
-3. **SQLite write pressure is concentrated** (transactions feed ingestion + scheduler writes + UI actions) without explicit write queuing/decoupling, creating risk of lock contention and latency spikes during busy windows.  
-4. **Credential and connectivity failures are not always surfaced as actionable health states** for operators; some issues remain in logs only.
+1. **No distributed locking across hosts**: file locks only protect one machine; running cron/watchdog on two app nodes can double-execute actions.
+2. **Idempotency gaps around game/kiosk state writes**: retries and watchdog reconciliation are strong, but some action paths can still race and emit duplicate side effects/logs under concurrency.
+3. **Health signaling is present but not fully “operator-grade”**: degraded upstream conditions are tracked, but escalation/visibility can still be too passive for frontline ops.
+4. **Schedule model excludes overnight windows by design**: this is documented in code, but operationally it creates a fragile two-row workaround with edge-case failure potential.
+5. **SQLite single-writer limits remain a scaling boundary** during heavy watchdog + admin activity.
 
-These are solvable with targeted hardening and observability improvements.
-
----
-
-## What Looks Solid Today
-
-- **Idempotent cache sync patterns** for games/kiosks and safe pruning strategy for large venues.  
-- **Token reuse with proactive refresh + 401 re-auth retry**, reducing login churn.  
-- **Tiered enforcement model** (request-time + watchdog) that reduces drift risk if cron jitter occurs.  
-- **Stale-on-failure cache fallback** for capabilities/categories to keep UI operational through short upstream outages.  
-- **Audit logging coverage** across major administrative actions.
-
-These design choices are directionally correct for resilience.
+Bottom line: this can be made “rock solid,” but only if runtime topology constraints, scheduling edge cases, and operational observability are tightened.
 
 ---
 
-## High-Priority Findings (Reliability / Robustness)
+## What Is Already Strong
 
-### 1) Redirect-following on authenticated API requests
+- **CenterEdge request hardening:** redirects are explicitly not followed, reducing credential leak risk from 30x behavior.
+- **Context-aware retries:** UI context is short-backoff; CLI context has deeper retries.
+- **Circuit-breaker behavior for UI traffic:** prevents operator request pileups during upstream incidents.
+- **Stale-cache fallback for categories/capabilities:** protects admin UI continuity during upstream API instability.
+- **Watchdog reconciliation loop + pending retry table:** good pattern for eventually consistent enforcement.
+- **Security baseline:** bcrypt hashes, session fixation mitigation, strict same-site cookies, CSRF token flow.
+
+---
+
+## High-Priority Findings
+
+### 1) Single-host lock strategy can fail in multi-node deployments
 **Severity:** High  
-**Why it matters:** `httpRequest()` enables cURL redirect following while also sending bearer/API-key credentials in headers. In faulted proxy/CDN setups or malicious redirect scenarios, this can increase credential exposure risk and create confusing cross-host behavior.
+**Why it matters:** locking uses local files (`LOCK_FILE`, `WATCHDOG_LOCK_FILE`). If Castle Fun Center runs CEplay on multiple web/cron nodes sharing the same database but not the same filesystem lock file, both nodes can run scheduler/watchdog concurrently.
 
-**Evidence:** `lib/centeredge_client.php` sets `CURLOPT_FOLLOWLOCATION => true` with auth headers.  
+**Failure mode:** duplicate action execution, duplicated retries, conflicting state flips, noisy logs.
 
-**Impact path:** Unexpected 30x responses can silently reroute traffic, producing hard-to-debug failures or security exposure.
+**Recommendation:** either (a) enforce single-node scheduler/watchdog deployment as a hard requirement, or (b) migrate locks to DB-backed advisory/lease locks.
 
 ---
 
-### 2) Blocking retry strategy can starve request handling
+### 2) Overnight schedule support is operationally fragile
 **Severity:** High  
-**Why it matters:** API retries use inline `sleep()` (2s/4s/8s). A transient upstream outage can make each request take ~14+ seconds before failing, especially if multiple endpoints trigger retries simultaneously.
+**Why it matters:** schedule creation enforces `start_time < end_time` and instructs operators to split overnight windows into two entries. That works, but increases misconfiguration risk and makes DST/day-boundary behavior harder to reason about.
 
-**Evidence:** `request()` in `lib/centeredge_client.php` retries inside request thread/process using `sleep()`.
+**Failure mode:** partial coverage (e.g., forgot second segment), unintended pause windows at midnight boundaries, higher support burden.
 
-**Impact path:** Slow admin UI responses, exhausted PHP-FPM worker pool, cascading timeout behavior.
-
----
-
-### 3) Single shared scheduler lock can serialize too much work
-**Severity:** Medium-High  
-**Why it matters:** Daily cron, watchdog, and run-action scripts share a single lock file. During long operations, the watchdog may defer critical retries/enforcement until later cycles.
-
-**Evidence:** `LOCK_FILE` shared in `config.php`; scheduler scripts coordinate through that shared lock.
-
-**Impact path:** Temporary state drift, delayed corrective actions, or delayed feed polling under load.
+**Recommendation:** keep current behavior if needed short-term, but document and validate “paired overnight segments” at the UI/API level with explicit linting warnings.
 
 ---
 
-### 4) Upstream outage behavior is resilient but not operator-obvious
-**Severity:** Medium-High  
-**Why it matters:** Some failover behaviors (stale caches, legacy decrypt path notices, repeated transient errors) primarily log to PHP/system logs. Operators may see “works partially” without understanding they are running degraded.
+### 3) SQLite write contention remains a real resilience boundary
+**Severity:** High  
+**Why it matters:** WAL + busyTimeout are good, but CEplay still has a single-writer database. Watchdog ingestion, scheduled action writes, login attempt writes, and admin updates can converge.
 
-**Evidence:** Error signaling in client helper paths is often `error_log(...)` based.
+**Failure mode:** long write waits, intermittent request latency spikes, occasional failed write bursts under peak conditions.
 
-**Impact path:** Prolonged degraded operation without prompt intervention.
-
----
-
-### 5) Transaction feed ingestion is strong but still vulnerable to DB contention bursts
-**Severity:** Medium  
-**Why it matters:** Poll loop inserts many rows + checkpoint writes while scheduler and UI may write concurrently. SQLite WAL helps, but heavy write overlap can still produce latency or `busy` waits.
-
-**Evidence:** `pollGameTransactions()` writes each transaction row + per-page checkpoint updates.
-
-**Impact path:** Slow requests, watchdog lag, and delayed analytics freshness during peak activity.
+**Recommendation:** add explicit write-pressure monitoring and set operational SLO thresholds (max watchdog loop duration, max DB busy wait); consider future migration path if throughput grows.
 
 ---
 
-## Medium Findings
+## Medium-Priority Findings
 
-### 6) Capabilities/categories stale fallback can mask upstream changes too long
-If upstream capabilities change unexpectedly, stale cache behavior protects availability but may hide feature changes/incompatibilities until TTL refresh or manual refresh.
+### 4) Degraded-upstream signaling is tracked, but escalation path is weak
+Current design records `ce_last_success_at`, consecutive failure count, and last failure message. This is good, but without active alerting/clear UI urgency, operators may miss prolonged degraded mode.
 
-### 7) Retry policy is global-ish but not endpoint-specific
-Transient retry behavior is mostly generic. Different CenterEdge routes may benefit from route-specific retry caps/timeouts to reduce blast radius during partial outages.
+**Recommendation:** define alert thresholds (e.g., 5+ consecutive failures or no upstream success for N minutes) and surface hard warnings on dashboard.
 
-### 8) Installer artifacts remain a deployment footgun if not removed
-The project guidance is clear, but reliability/security posture depends on correctly removing install utilities after bootstrap.
+### 5) Retry/reconciliation can still generate confusing duplicate operator signals
+Retries and watchdog enforcement are resilient, but concurrent/manual actions can produce repeated logs and “already in desired state” churn that looks like instability.
 
----
+**Recommendation:** strengthen idempotency semantics in operator messaging and reporting (distinguish “noop already compliant” from true state change).
 
-## Logic/Operational Flaws That Could Surprise Production
+### 6) Authentication anti-bruteforce controls are IP-based only
+Progressive delay + rate limiting are good, but IP-only control can be noisy behind NAT/shared networks and weaker against distributed attacks.
 
-- **Synchronous API behavior in user-driven paths** means transient upstream health directly impacts operator UX speed.  
-- **Health/degraded-state communication gap** means “degraded but not failed” may go unnoticed.  
-- **Shared lock topology** prioritizes safety but can reduce timeliness under busy or fault conditions.
-
-None of these invalidate CEplay’s architecture, but they are exactly the class of issues that make systems feel “unreliable” during real incidents.
+**Recommendation:** add username+IP dimensional controls and lockout telemetry to improve reliability for legitimate staff without weakening protection.
 
 ---
 
-## Prioritized Hardening Plan (No Role System Required)
+## Low-Priority / Hygiene Risks
 
-### Phase 1 — Immediate (highest value)
-1. Disable redirect following for authenticated CE requests, or enforce strict same-host redirect policy.  
-2. Replace blocking in-request retries with bounded/non-blocking strategy for UI-triggered routes.  
-3. Add explicit degraded-health signals surfaced in UI + `/api/health` (e.g., stale cache age, repeated upstream failures, last successful CE call timestamp).
-
-### Phase 2 — Next
-4. Split lock strategy (or shorten critical sections) so watchdog enforcement cannot be delayed by unrelated long tasks.  
-5. Add per-endpoint timeout/retry budgets and circuit-breaker-style suppression during ongoing upstream incidents.
-
-### Phase 3 — Maturity
-6. Add structured incident telemetry: retry counts, queue depth, oldest pending retry, polling lag, DB busy metrics.  
-7. Introduce synthetic canary checks against critical CE endpoints and alert when degraded mode exceeds threshold.
+- **Installer/runtime artifact exposure risk:** reliability/security assumes installer scripts are removed or blocked after setup.
+- **Config fragility around encryption key provisioning:** missing/invalid key fails fast (good for safety) but should be proactively checked by a health preflight so failures are caught before runtime operations.
 
 ---
 
-## Suggested Reliability Acceptance Criteria
+## Prioritized Hardening Plan (No Roles/User Types)
 
-You can treat CEplay as “rock solid” when these are true in production:
+### Phase 1 (Immediate)
+1. Publish a **deployment invariant**: exactly one scheduler/watchdog executor unless distributed lock is implemented.
+2. Add **dashboard health escalation** for sustained CenterEdge degradation.
+3. Add **overnight schedule safety checks** (detect likely missing second segment).
 
-- CenterEdge 5xx burst for 10+ minutes does **not** freeze operator UI actions end-to-end.  
-- Degraded mode is visible within 1 minute to operators (not just logs).  
-- Watchdog enforcement latency remains bounded during long run-action windows.  
-- Feed polling backlog is measurable and automatically recovers after outages without manual intervention.  
-- No authenticated API call follows off-host redirects.
+### Phase 2 (Near-term)
+4. Add **DB contention observability** (busy incidents, loop duration, write latency buckets).
+5. Improve **idempotent operator feedback** for reconciler/manual-action overlap.
+6. Expand login-abuse controls beyond IP-only heuristics.
+
+### Phase 3 (Maturity)
+7. Consider **DB-backed lease locking** to safely support HA/multi-node execution.
+8. Define and test **incident runbooks** for CenterEdge outage, DB contention, and cron drift.
 
 ---
 
-## Bottom Line
+## Reliability Acceptance Criteria
 
-CEplay is close to a resilient production-grade integration and already has many correct reliability primitives. The key remaining work is to reduce blocking behavior, tighten outbound request safety, improve degraded-state visibility, and reduce lock/contention sensitivity.
+Treat this integration as robust when all criteria are consistently met:
 
-If those hardening items are completed, this can be a robust and dependable Castle Fun Center ↔ CenterEdge operations bridge without introducing custom roles/user types.
+- A 10-minute CenterEdge outage does **not** cause operator API timeouts or unusable UI workflows.
+- Degraded mode is visible to operators in under 60 seconds with clear “action required” messaging.
+- No duplicate schedule/watchdog execution occurs across deployment topology.
+- Overnight schedule intent can be validated pre-save with low operator error rate.
+- Watchdog reconciliation recovers system state automatically after transient failures with bounded lag.
+
+---
+
+## Final Assessment
+
+CEplay is close to production-grade robustness and already includes many of the right primitives. The largest remaining risks are less about missing features and more about **operational guarantees**: topology-safe locking, schedule edge-case safety, and high-signal observability for degraded conditions.
+
+Addressing those areas will make this a resilient, dependable Castle Fun Center ↔ CenterEdge integration without introducing custom roles/user types.
