@@ -1,6 +1,7 @@
-# CEplay Robustness Audit (Castle Fun Center ↔ CenterEdge)
+# CEplay Robustness Audit (Castle Fun Center ↔ CenterEdge, Single FCOS Instance)
 
 **Date:** 2026-05-08  
+**Deployment assumption:** single Fedora CoreOS (FCOS) instance (no multi-node cluster).  
 **Scope reviewed:** API handlers, scheduler/watchdog flow, CenterEdge client, auth/session controls, DB layer, install/runtime configuration.  
 **Explicitly out of scope (per request):** custom roles and user types.
 
@@ -8,121 +9,116 @@
 
 ## Executive Summary
 
-CEplay has a solid reliability foundation (WAL-enabled SQLite, retry + circuit breaker behavior, stale-cache fallback, watchdog reconciliation, and detailed audit logging). The system is clearly designed to self-heal around transient CenterEdge issues.
+For a **single-instance FCOS deployment**, CEplay has a strong base: WAL-enabled SQLite, short UI retries with circuit-breaker behavior, watchdog reconciliation, stale-cache fallback for key data, and broad audit logging.
 
-That said, there are several logic and operational weaknesses that can still cause surprising behavior in production. The most impactful risks are:
+The biggest remaining robustness risks are now mostly about **logic edge cases and operability**, not topology:
 
-1. **No distributed locking across hosts**: file locks only protect one machine; running cron/watchdog on two app nodes can double-execute actions.
-2. **Idempotency gaps around game/kiosk state writes**: retries and watchdog reconciliation are strong, but some action paths can still race and emit duplicate side effects/logs under concurrency.
-3. **Health signaling is present but not fully “operator-grade”**: degraded upstream conditions are tracked, but escalation/visibility can still be too passive for frontline ops.
-4. **Schedule model excludes overnight windows by design**: this is documented in code, but operationally it creates a fragile two-row workaround with edge-case failure potential.
-5. **SQLite single-writer limits remain a scaling boundary** during heavy watchdog + admin activity.
+1. **Overnight schedule handling is fragile** (requires two rows and careful operator setup).
+2. **SQLite single-writer contention remains the main scaling bottleneck** under concurrent watchdog/admin activity.
+3. **Degraded-upstream state is tracked but can still be too easy to miss operationally**.
+4. **Retry/reconciliation behavior can generate noisy or confusing duplicate signals during incidents**.
+5. **Auth rate limiting is IP-based only**, which can punish shared-NAT users and miss distributed attack patterns.
 
-Bottom line: this can be made “rock solid,” but only if runtime topology constraints, scheduling edge cases, and operational observability are tightened.
+Bottom line: for single-node FCOS, this can be made very reliable by tightening schedule safety, DB pressure visibility, and operator-facing health signals.
 
 ---
 
 ## What Is Already Strong
 
-- **CenterEdge request hardening:** redirects are explicitly not followed, reducing credential leak risk from 30x behavior.
-- **Context-aware retries:** UI context is short-backoff; CLI context has deeper retries.
-- **Circuit-breaker behavior for UI traffic:** prevents operator request pileups during upstream incidents.
-- **Stale-cache fallback for categories/capabilities:** protects admin UI continuity during upstream API instability.
-- **Watchdog reconciliation loop + pending retry table:** good pattern for eventually consistent enforcement.
-- **Security baseline:** bcrypt hashes, session fixation mitigation, strict same-site cookies, CSRF token flow.
+- **CenterEdge credential safety hardening:** redirects are refused instead of auto-followed.
+- **Context-aware retry behavior:** fast-fail bias for UI, deeper retry in CLI workers.
+- **Circuit-breaker behavior for operator traffic:** avoids UI worker pileups during upstream instability.
+- **Stale cache fallback (categories/capabilities):** keeps UI usable through short outages.
+- **Watchdog + retry table pattern:** good eventual consistency model for state enforcement.
+- **Security baseline:** bcrypt password hashing, session fixation mitigation, CSRF token flow, secure cookie posture.
 
 ---
 
 ## High-Priority Findings
 
-### 1) Single-host lock strategy can fail in multi-node deployments
+### 1) Overnight schedule model is error-prone
 **Severity:** High  
-**Why it matters:** locking uses local files (`LOCK_FILE`, `WATCHDOG_LOCK_FILE`). If Castle Fun Center runs CEplay on multiple web/cron nodes sharing the same database but not the same filesystem lock file, both nodes can run scheduler/watchdog concurrently.
+**Why it matters:** schedule creation enforces `start_time < end_time`, so overnight windows must be split into two entries. This is workable but fragile in day-boundary and DST contexts.
 
-**Failure mode:** duplicate action execution, duplicated retries, conflicting state flips, noisy logs.
+**Failure mode:** missed second segment, accidental coverage gaps, incorrect midnight behavior, increased support overhead.
 
-**Recommendation:** either (a) enforce single-node scheduler/watchdog deployment as a hard requirement, or (b) migrate locks to DB-backed advisory/lease locks.
+**Recommendation:** add explicit “overnight intent” validation/linting in admin workflows (or API-level validation guidance) so operators get warnings before saving risky combinations.
 
 ---
 
-### 2) Overnight schedule support is operationally fragile
+### 2) SQLite write contention is the primary resilience boundary
 **Severity:** High  
-**Why it matters:** schedule creation enforces `start_time < end_time` and instructs operators to split overnight windows into two entries. That works, but increases misconfiguration risk and makes DST/day-boundary behavior harder to reason about.
+**Why it matters:** even with WAL and busy timeout, SQLite stays single-writer. Watchdog ingestion, scheduled-action updates, auth attempt logging, and admin writes can overlap during busy periods.
 
-**Failure mode:** partial coverage (e.g., forgot second segment), unintended pause windows at midnight boundaries, higher support burden.
+**Failure mode:** bursty latency, long waits, occasional failed writes/timeouts under load.
 
-**Recommendation:** keep current behavior if needed short-term, but document and validate “paired overnight segments” at the UI/API level with explicit linting warnings.
+**Recommendation:** add DB pressure observability (busy waits, loop duration, write latency) and define SLO-based thresholds for intervention.
 
 ---
 
-### 3) SQLite write contention remains a real resilience boundary
+### 3) Degraded-upstream signaling lacks strong operator escalation
 **Severity:** High  
-**Why it matters:** WAL + busyTimeout are good, but CEplay still has a single-writer database. Watchdog ingestion, scheduled action writes, login attempt writes, and admin updates can converge.
+**Why it matters:** the system tracks upstream failures and last-success time, but without prominent/active escalation operators can run degraded for too long before responding.
 
-**Failure mode:** long write waits, intermittent request latency spikes, occasional failed write bursts under peak conditions.
+**Failure mode:** partial functionality appears “mostly fine” while critical automation reliability degrades.
 
-**Recommendation:** add explicit write-pressure monitoring and set operational SLO thresholds (max watchdog loop duration, max DB busy wait); consider future migration path if throughput grows.
+**Recommendation:** promote degraded mode to high-visibility dashboard warnings + alert thresholds (e.g., no successful CE call for N minutes).
 
 ---
 
 ## Medium-Priority Findings
 
-### 4) Degraded-upstream signaling is tracked, but escalation path is weak
-Current design records `ce_last_success_at`, consecutive failure count, and last failure message. This is good, but without active alerting/clear UI urgency, operators may miss prolonged degraded mode.
+### 4) Reconciliation/idempotency signals can look unstable during incidents
+Retries and watchdog enforcement are robust, but repeated attempts can create log noise and confusing operator perception (“things are flapping”) even when the system is converging.
 
-**Recommendation:** define alert thresholds (e.g., 5+ consecutive failures or no upstream success for N minutes) and surface hard warnings on dashboard.
+**Recommendation:** improve event labeling so operators can distinguish true state change vs. noop/retry convergence.
 
-### 5) Retry/reconciliation can still generate confusing duplicate operator signals
-Retries and watchdog enforcement are resilient, but concurrent/manual actions can produce repeated logs and “already in desired state” churn that looks like instability.
+### 5) IP-only auth throttling has operational downsides
+Progressive delay + lockout are helpful, but IP-only strategy can over-throttle legitimate users behind shared egress and under-detect distributed credential attacks.
 
-**Recommendation:** strengthen idempotency semantics in operator messaging and reporting (distinguish “noop already compliant” from true state change).
-
-### 6) Authentication anti-bruteforce controls are IP-based only
-Progressive delay + rate limiting are good, but IP-only control can be noisy behind NAT/shared networks and weaker against distributed attacks.
-
-**Recommendation:** add username+IP dimensional controls and lockout telemetry to improve reliability for legitimate staff without weakening protection.
+**Recommendation:** add combined dimensions (username + IP + time window) and expose lockout telemetry.
 
 ---
 
 ## Low-Priority / Hygiene Risks
 
-- **Installer/runtime artifact exposure risk:** reliability/security assumes installer scripts are removed or blocked after setup.
-- **Config fragility around encryption key provisioning:** missing/invalid key fails fast (good for safety) but should be proactively checked by a health preflight so failures are caught before runtime operations.
+- **Installer/runtime artifact handling:** reliability/security posture still assumes install paths are removed or blocked post-setup.
+- **Encryption key preflight:** missing/invalid key fails safely, but this should be surfaced early by startup/health checks before operator workflows are impacted.
 
 ---
 
-## Prioritized Hardening Plan (No Roles/User Types)
+## Prioritized Hardening Plan (Single-Instance FCOS)
 
 ### Phase 1 (Immediate)
-1. Publish a **deployment invariant**: exactly one scheduler/watchdog executor unless distributed lock is implemented.
-2. Add **dashboard health escalation** for sustained CenterEdge degradation.
-3. Add **overnight schedule safety checks** (detect likely missing second segment).
+1. Add **overnight schedule safety validation** and operator warnings.
+2. Add **dashboard degraded-state escalation** with clear action text.
+3. Add **health thresholds** based on upstream last-success age and consecutive failures.
 
 ### Phase 2 (Near-term)
-4. Add **DB contention observability** (busy incidents, loop duration, write latency buckets).
-5. Improve **idempotent operator feedback** for reconciler/manual-action overlap.
-6. Expand login-abuse controls beyond IP-only heuristics.
+4. Add **SQLite contention telemetry** (busy events, watchdog runtime, write latency buckets).
+5. Improve **idempotent status messaging** for retries/reconciliation.
+6. Strengthen auth protection with **username+IP aware throttling metrics**.
 
 ### Phase 3 (Maturity)
-7. Consider **DB-backed lease locking** to safely support HA/multi-node execution.
-8. Define and test **incident runbooks** for CenterEdge outage, DB contention, and cron drift.
+7. Build **incident runbooks** for CenterEdge outage, DB contention, and cron drift.
+8. Add **periodic resilience drills** (simulated CE outage + recovery timing verification).
 
 ---
 
-## Reliability Acceptance Criteria
+## Reliability Acceptance Criteria (Single Instance)
 
 Treat this integration as robust when all criteria are consistently met:
 
-- A 10-minute CenterEdge outage does **not** cause operator API timeouts or unusable UI workflows.
-- Degraded mode is visible to operators in under 60 seconds with clear “action required” messaging.
-- No duplicate schedule/watchdog execution occurs across deployment topology.
-- Overnight schedule intent can be validated pre-save with low operator error rate.
-- Watchdog reconciliation recovers system state automatically after transient failures with bounded lag.
+- A 10-minute CenterEdge outage does **not** make operator UI workflows unusable.
+- Degraded state is visibly surfaced to operators within 60 seconds.
+- Overnight schedule configurations are validated pre-save with low misconfiguration rate.
+- Watchdog reconciliation converges automatically after transient failures with bounded lag.
+- SQLite contention is measurable and remains within defined SLO limits during peak operations.
 
 ---
 
 ## Final Assessment
 
-CEplay is close to production-grade robustness and already includes many of the right primitives. The largest remaining risks are less about missing features and more about **operational guarantees**: topology-safe locking, schedule edge-case safety, and high-signal observability for degraded conditions.
+Given your **single FCOS instance** architecture, CEplay is close to a robust production solution. The key remaining work is practical hardening: safer overnight scheduling workflows, stronger degraded-mode visibility, and measurable DB/runtime health.
 
-Addressing those areas will make this a resilient, dependable Castle Fun Center ↔ CenterEdge integration without introducing custom roles/user types.
+Addressing those items will materially improve reliability without adding custom roles/user types.
