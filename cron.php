@@ -25,17 +25,22 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire exclusive file lock (non-blocking — skip if another instance is running).
-// Close the handle on the early-exit path so we don't leak a descriptor when
-// flock contended with a parallel run_action.php / cron_watchdog.php invocation.
-$lockFile = fopen(LOCK_FILE, 'c');
-if (!$lockFile) {
-    echo "[" . date('c') . "] Could not open lock file. Exiting.\n";
+// Acquire a "daily-cron is running" lock. This prevents two concurrent
+// invocations of cron.php (e.g. from a manual run + the scheduled cron),
+// but is *separate* from the LOCK_FILE used during the planning section.
+// We deliberately do NOT hold LOCK_FILE during the long upstream data-sync
+// phase — those are idempotent SQLite writes that don't need exclusion from
+// run_action.php / replanToday(). Only the planning section (which mutates
+// scheduled_actions) takes LOCK_FILE.
+$cronOwnLock = LOCK_FILE . '.daily';
+$cronLockFh = fopen($cronOwnLock, 'c');
+if (!$cronLockFh) {
+    echo "[" . date('c') . "] Could not open daily cron lock file. Exiting.\n";
     exit(1);
 }
-if (!flock($lockFile, LOCK_EX | LOCK_NB)) {
-    echo "[" . date('c') . "] Another instance is already running. Exiting.\n";
-    fclose($lockFile);
+if (!flock($cronLockFh, LOCK_EX | LOCK_NB)) {
+    echo "[" . date('c') . "] Another daily cron instance is already running. Exiting.\n";
+    fclose($cronLockFh);
     exit(0);
 }
 
@@ -48,6 +53,8 @@ try {
     echo "[" . date('c') . "] === Daily Plan for $today (TZ: $tz) ===\n";
 
     // Step 1: Sync game states from CenterEdge
+    // No global lock here: the watchdog and run_action.php are free to keep
+    // executing during the (potentially multi-second) data-sync calls.
     echo "Syncing game states from CenterEdge...\n";
     try {
         $count = Scheduler::syncGameStates();
@@ -83,22 +90,47 @@ try {
         echo "  WARNING: Categories refresh failed: " . $e->getMessage() . "\n";
     }
 
-    // Step 2: Execute any missed actions from earlier
-    echo "Checking for missed actions...\n";
-    Scheduler::executeMissedActions($today);
-
-    // Step 3: Plan today's actions
-    echo "Planning actions for $today...\n";
-    $actions = Scheduler::planDay($today);
-    echo "  Planned " . count($actions) . " actions:\n";
-    foreach ($actions as $a) {
-        echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
+    // -------- Planning section (takes the shared scheduler lock briefly) --------
+    // Acquire LOCK_FILE only here so run_action.php / replanToday() can't
+    // race with us while we mutate scheduled_actions. Opens with a short
+    // blocking retry; if we genuinely can't acquire it within ~30s, we skip
+    // planning rather than deadlock — the watchdog will pick up later actions.
+    $planLockFh = fopen(LOCK_FILE, 'c');
+    $planLockHeld = false;
+    if ($planLockFh) {
+        for ($i = 0; $i < 30; $i++) {
+            if (flock($planLockFh, LOCK_EX | LOCK_NB)) {
+                $planLockHeld = true;
+                break;
+            }
+            sleep(1);
+        }
     }
+    if (!$planLockHeld) {
+        echo "[" . date('c') . "] WARNING: could not acquire planning lock after 30s — skipping planning section.\n";
+    } else {
+        try {
+            // Step 2: Execute any missed actions from earlier
+            echo "Checking for missed actions...\n";
+            Scheduler::executeMissedActions($today);
 
-    // Step 4: Queue at jobs (if available on this host)
-    echo "Queuing at jobs (or fallback mode if at/atrm unavailable)...\n";
-    Scheduler::queueAtJobs($today);
-    echo "  Done.\n";
+            // Step 3: Plan today's actions
+            echo "Planning actions for $today...\n";
+            $actions = Scheduler::planDay($today);
+            echo "  Planned " . count($actions) . " actions:\n";
+            foreach ($actions as $a) {
+                echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
+            }
+
+            // Step 4: Queue at jobs (if available on this host)
+            echo "Queuing at jobs (or fallback mode if at/atrm unavailable)...\n";
+            Scheduler::queueAtJobs($today);
+            echo "  Done.\n";
+        } finally {
+            flock($planLockFh, LOCK_UN);
+            fclose($planLockFh);
+        }
+    }
 
     // Step 5: Purge old data to prevent unbounded growth
     echo "Purging old data...\n";
@@ -163,6 +195,6 @@ try {
 
     exit(1);
 } finally {
-    flock($lockFile, LOCK_UN);
-    fclose($lockFile);
+    flock($cronLockFh, LOCK_UN);
+    fclose($cronLockFh);
 }

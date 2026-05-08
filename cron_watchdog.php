@@ -25,26 +25,18 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire exclusive file lock with a short blocking wait.
-// Previous behavior: non-blocking skip.  Problem: if cron.php or run_action.php
-// held the lock for even a few seconds the watchdog would silently do nothing,
-// causing missed actions and delayed enforcement.  Now we retry for up to 15s
-// so the watchdog almost always runs within its 1-minute cadence.
-$lockFile = fopen(LOCK_FILE, 'c');
+// Acquire the watchdog-specific lock. Using a dedicated lock (not LOCK_FILE)
+// means the per-minute watchdog never has to wait for the daily cron's
+// multi-second data-sync run to finish — its enforcement and missed-action
+// checks fire on schedule. Concurrent watchdog instances are still prevented
+// because they all contend on this same file.
+$lockFile = fopen(WATCHDOG_LOCK_FILE, 'c');
 if (!$lockFile) {
     exit(0);
 }
-$lockAcquired = false;
-for ($i = 0; $i < 15; $i++) {
-    if (flock($lockFile, LOCK_EX | LOCK_NB)) {
-        $lockAcquired = true;
-        break;
-    }
-    sleep(1);
-}
-if (!$lockAcquired) {
-    // Another long-running process still holds the lock after 15s — skip this cycle
-    error_log("[" . date('c') . "] watchdog: lock not acquired after 15s, skipping cycle");
+if (!flock($lockFile, LOCK_EX | LOCK_NB)) {
+    // Another watchdog cycle is still running — skip this one.
+    error_log("[" . date('c') . "] watchdog: prior cycle still running, skipping");
     fclose($lockFile);
     exit(0);
 }
@@ -56,15 +48,50 @@ try {
 
     $errors = [];
 
-    // Execute any missed actions (scheduled time has passed but not yet executed)
-    try {
-        Scheduler::executeMissedActions($today);
-    } catch (Exception $e) {
-        $errors[] = "executeMissedActions: " . $e->getMessage();
-        error_log("[" . date('c') . "] watchdog executeMissedActions error: " . $e->getMessage());
-    }
+    // Helper: run a callback while briefly holding LOCK_FILE so we don't race
+    // with the daily cron's planning section or run_action.php. If we can't
+    // acquire it within $waitSec we skip that step but the rest of the cycle
+    // still runs (enforcement, retries, transaction polling) — that's the
+    // whole point of having a separate watchdog lock.
+    $withPlanLock = function (string $name, int $waitSec, callable $fn) use (&$errors): void {
+        $fh = @fopen(LOCK_FILE, 'c');
+        if (!$fh) {
+            $errors[] = "$name: could not open scheduler lock file";
+            return;
+        }
+        $held = false;
+        for ($i = 0; $i < $waitSec; $i++) {
+            if (flock($fh, LOCK_EX | LOCK_NB)) {
+                $held = true;
+                break;
+            }
+            sleep(1);
+        }
+        if (!$held) {
+            $errors[] = "$name: scheduler lock busy after {$waitSec}s, skipping this cycle";
+            error_log("[" . date('c') . "] watchdog $name: skipping (planning lock busy)");
+            fclose($fh);
+            return;
+        }
+        try {
+            $fn();
+        } catch (Exception $e) {
+            $errors[] = "$name: " . $e->getMessage();
+            error_log("[" . date('c') . "] watchdog $name error: " . $e->getMessage());
+        } finally {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    };
 
-    // Enforce the live desired state as a fallback when queued jobs are delayed/missing.
+    // Execute any missed actions (scheduled time has passed but not yet executed).
+    // Mutates scheduled_actions, so coordinate with cron.php's planning section.
+    $withPlanLock('executeMissedActions', 5, function () use ($today) {
+        Scheduler::executeMissedActions($today);
+    });
+
+    // Enforce the live desired state. This patches CenterEdge but does NOT
+    // mutate scheduled_actions, so it's safe to run without LOCK_FILE.
     try {
         Scheduler::enforceCurrentStates();
     } catch (Exception $e) {
@@ -72,14 +99,11 @@ try {
         error_log("[" . date('c') . "] watchdog enforceCurrentStates error: " . $e->getMessage());
     }
 
-    // Re-queue any actions that are missing their at jobs
-    // (pending, future, but no at_job_id — can happen if at failed silently)
-    try {
+    // Re-queue any actions that are missing their at jobs (pending, future, no
+    // at_job_id). Mutates scheduled_actions.at_job_id, so take the plan lock.
+    $withPlanLock('queueAtJobs', 5, function () use ($today) {
         Scheduler::queueAtJobs($today);
-    } catch (Exception $e) {
-        $errors[] = "queueAtJobs: " . $e->getMessage();
-        error_log("[" . date('c') . "] watchdog queueAtJobs error: " . $e->getMessage());
-    }
+    });
 
     // Re-attempt any pause/unpause actions that previously failed at the
     // source (e.g. kiosk in use). Cap is enforced inside processRetries —

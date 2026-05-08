@@ -24,8 +24,14 @@ define('APP_DEBUG', filter_var(getenv('PG_APP_DEBUG') ?: false, FILTER_VALIDATE_
 // Application base path (auto-detected)
 define('BASE_PATH', rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? ''), '/'));
 
-// Lock file for concurrent execution prevention
+// Lock file for concurrent execution prevention.
+// LOCK_FILE: serialises action execution + day-replanning across cron.php,
+// run_action.php, and replanToday(). Held only for short critical sections.
+// WATCHDOG_LOCK_FILE: used by cron_watchdog.php to prevent overlapping
+// watchdog cycles. Separate from LOCK_FILE so the per-minute watchdog never
+// waits for the daily cron's multi-second data sync to finish.
 define('LOCK_FILE', __DIR__ . '/data/.scheduler.lock');
+define('WATCHDOG_LOCK_FILE', __DIR__ . '/data/.watchdog.lock');
 
 // CenterEdge API defaults
 define('API_TIMEOUT', 30);        // seconds

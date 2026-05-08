@@ -2486,6 +2486,28 @@ textarea.form-input {
     width: 3px;
     background: var(--warning);
 }
+.alert-error {
+    background: var(--danger-subtle, rgba(239, 68, 68, 0.12));
+    color: var(--danger, #ef4444);
+    border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 35%, transparent);
+    border-radius: var(--radius-lg);
+    padding: 0.85rem 1.1rem 0.85rem 1.25rem;
+    font-size: 0.88rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    line-height: 1.45;
+    position: relative;
+    overflow: hidden;
+}
+.alert-error::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--danger, #ef4444);
+}
 .btn-lg {
     padding: 12px 28px;
     font-size: 1.05em;
