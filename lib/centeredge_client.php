@@ -690,11 +690,46 @@ class CenterEdgeClient {
 
     /**
      * Make an authenticated API request with retry on 401 and transient errors.
-     * Retries up to 3 times with exponential backoff for network errors and 5xx.
+     *
+     * Retry budget depends on context (php_sapi_name()):
+     *   - CLI (cron / watchdog / run_action): 3 retries with 2s/4s/8s backoff
+     *     (~14s worst case). These are background workers that can afford to
+     *     wait through a transient blip.
+     *   - HTTP (operator UI calls): 1 retry with a 500ms backoff (~0.5s
+     *     worst case). UI responsiveness is more important than getting the
+     *     last drop of resilience — the watchdog will catch up shortly after.
+     *
+     * The circuit breaker (5 consecutive failures within a 60s cooldown) also
+     * applies to HTTP context: requests fail fast with a clear "upstream is
+     * degraded" message instead of stalling the worker pool. CLI scripts
+     * ignore the breaker so the watchdog can probe and recover.
      */
     private function request(string $method, string $path, ?array $body = null, array $query = []): array {
+        $isCli = (php_sapi_name() === 'cli');
+
+        // HTTP context: bail early if the breaker is open. The watchdog will
+        // keep probing and the next /api/health response will tell the UI we
+        // are degraded. This prevents a flaky upstream from blocking every
+        // operator click for 14s.
+        if (!$isCli) {
+            $openSince = self::circuitBreakerOpenSince();
+            if ($openSince !== null) {
+                throw new RuntimeException(
+                    'CenterEdge API is currently degraded (upstream errors since ' . $openSince
+                    . ' UTC). Skipping request to avoid stalling the UI; the watchdog will retry in the background.'
+                );
+            }
+        }
+
         $token = $this->getToken();
-        $maxRetries = 3;
+
+        if ($isCli) {
+            $maxRetries = 3;
+            $backoffSeq = [2, 4, 8]; // seconds
+        } else {
+            $maxRetries = 1;
+            $backoffSeq = [0]; // sub-second (handled with usleep below)
+        }
         $lastException = null;
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
@@ -718,11 +753,22 @@ class CenterEdgeClient {
                     }
                 }
 
+                // Don't retry refused redirects — they won't fix themselves.
+                if (strpos($msg, 'redirect') !== false) {
+                    throw $e;
+                }
+
                 // Retry on transient errors: network failures, 5xx, 408, 429
                 if ($attempt < $maxRetries) {
-                    $delay = (int)pow(2, $attempt + 1); // 2s, 4s, 8s
+                    $delay = $backoffSeq[$attempt] ?? end($backoffSeq);
                     error_log("CenterEdge API transient error (attempt " . ($attempt + 1) . "/$maxRetries, retrying in {$delay}s): $msg");
-                    sleep($delay);
+                    if ($isCli && $delay > 0) {
+                        sleep($delay);
+                    } else {
+                        // 500ms — short enough to keep the request responsive,
+                        // long enough to ride out a single dropped packet.
+                        usleep(500000);
+                    }
                 }
             }
         }
@@ -759,8 +805,12 @@ class CenterEdgeClient {
             CURLOPT_TIMEOUT        => API_TIMEOUT,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS      => 3,
+            // Never follow redirects automatically: cURL would re-send the
+            // Authorization / X-Api-Key headers to the redirect target, which
+            // could leak credentials to a malicious or misconfigured host.
+            // 30x responses are surfaced as errors below so the operator can
+            // see something is wrong rather than silently degrading.
+            CURLOPT_FOLLOWLOCATION => false,
         ]);
 
         if ($method === 'POST') {
@@ -791,7 +841,34 @@ class CenterEdgeClient {
         curl_close($ch);
 
         if ($curlError) {
+            self::recordUpstreamFailure($curlError);
             throw new RuntimeException("CenterEdge API connection error ($url): $curlError");
+        }
+
+        // Redirects: refuse to follow. If the upstream reports a redirect, we
+        // treat it as an error rather than letting cURL silently re-send the
+        // bearer/API-key headers to the new host. If the new Location is on
+        // the same host we surface a clearer message so the operator can fix
+        // their base_url; cross-host redirects are flagged as a security
+        // concern.
+        if ($httpCode >= 300 && $httpCode < 400) {
+            $location = '';
+            // CURLINFO_REDIRECT_URL needs a fresh handle; we already closed it
+            // so parse the body for a Location-like hint when available.
+            if (is_string($responseBody) && preg_match('#Location:\s*([^\r\n]+)#i', $responseBody, $m)) {
+                $location = trim($m[1]);
+            }
+            $sameHost = false;
+            if ($location !== '') {
+                $base = parse_url($url, PHP_URL_HOST) ?: '';
+                $target = parse_url($location, PHP_URL_HOST) ?: '';
+                $sameHost = ($target === '' || strcasecmp($base, $target) === 0);
+            }
+            $reason = $sameHost
+                ? "upstream returned HTTP $httpCode redirect to $location — update base_url in Settings"
+                : "upstream returned HTTP $httpCode redirect" . ($location !== '' ? " to $location" : '') . " (cross-host redirect refused for credential safety)";
+            self::recordUpstreamFailure($reason);
+            throw new RuntimeException("CenterEdge API error: $reason");
         }
 
         $data = [];
@@ -799,12 +876,15 @@ class CenterEdgeClient {
             $data = json_decode($responseBody, true);
             if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
                 $snippet = substr(trim($responseBody), 0, 200);
+                self::recordUpstreamFailure("non-JSON response (HTTP $httpCode)");
                 throw new RuntimeException("CenterEdge API ($url) returned non-JSON (HTTP $httpCode). Response begins with: $snippet");
             }
         }
 
         if ($httpCode === 401) {
             $msg = $data['message'] ?? ($data['error'] ?? 'Unauthorized – check username, password, and API key');
+            // 401 is an auth-state issue, not an upstream outage — don't trip
+            // the circuit breaker.
             throw new RuntimeException("CenterEdge API error: $msg (HTTP 401)");
         }
 
@@ -815,9 +895,133 @@ class CenterEdgeClient {
 
         if ($httpCode >= 400) {
             $msg = $data['message'] ?? ($data['error'] ?? "HTTP $httpCode");
+            // 4xx (except 408/429) is "upstream said no", not unhealthy.
+            // Only count 5xx, 408, 429 as health-impacting failures.
+            if ($httpCode >= 500 || $httpCode === 408 || $httpCode === 429) {
+                self::recordUpstreamFailure("HTTP $httpCode: $msg");
+            }
             throw new RuntimeException("CenterEdge API error: $msg (HTTP $httpCode)");
         }
 
+        // Successful 2xx — note the time of last good upstream call so the
+        // health endpoint and dashboard can surface degraded-mode signals.
+        self::recordUpstreamSuccess();
+
         return $data ?? [];
+    }
+
+    // -----------------------------------------------
+    // Upstream health tracking (for /api/health + UI)
+    // -----------------------------------------------
+
+    /**
+     * Stamp the timestamp of the most recent successful CenterEdge call and
+     * clear any consecutive-failure counter. Called from httpRequest() on 2xx.
+     */
+    private static function recordUpstreamSuccess(): void {
+        try {
+            DB::setConfig('ce_last_success_at', gmdate('Y-m-d H:i:s'), false);
+            DB::setConfig('ce_consecutive_failures', '0', false);
+            DB::setConfig('ce_last_failure_message', '', false);
+        } catch (Exception $e) {
+            error_log('recordUpstreamSuccess failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Increment the consecutive-failure counter and stash the latest error
+     * message so the dashboard can show "degraded — last error: …".
+     * Anything that genuinely indicates the upstream is unhealthy (network
+     * error, 5xx, 408, 429, refused redirect) feeds this; 4xx auth/validation
+     * errors do NOT, since they're the operator's fault, not an outage.
+     */
+    private static function recordUpstreamFailure(string $reason): void {
+        try {
+            $prev = (int)(DB::getConfig('ce_consecutive_failures') ?? '0');
+            DB::setConfig('ce_consecutive_failures', (string)($prev + 1), false);
+            DB::setConfig('ce_last_failure_at', gmdate('Y-m-d H:i:s'), false);
+            // Trim so a runaway error doesn't bloat the api_config row.
+            $trimmed = substr($reason, 0, 500);
+            DB::setConfig('ce_last_failure_message', $trimmed, false);
+        } catch (Exception $e) {
+            error_log('recordUpstreamFailure failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Public read of the upstream-health snapshot for /api/health and the UI.
+     * Returns an array even when nothing has been recorded yet.
+     */
+    public static function getUpstreamHealth(): array {
+        try {
+            $lastSuccess = DB::getConfig('ce_last_success_at');
+            $lastFailure = DB::getConfig('ce_last_failure_at');
+            $lastFailureMsg = DB::getConfig('ce_last_failure_message');
+            $consecutive = (int)(DB::getConfig('ce_consecutive_failures') ?? '0');
+        } catch (Exception $e) {
+            return [
+                'last_success_at' => null,
+                'last_failure_at' => null,
+                'last_failure_message' => null,
+                'consecutive_failures' => 0,
+                'last_success_age_seconds' => null,
+                'degraded' => false,
+            ];
+        }
+        $ageSec = null;
+        if ($lastSuccess) {
+            $ts = strtotime($lastSuccess . ' UTC');
+            if ($ts !== false) {
+                $ageSec = max(0, time() - $ts);
+            }
+        }
+        // "Degraded" means: 3+ consecutive failures, OR no success seen within
+        // the last 5 minutes when we know we've tried (last_failure exists).
+        $degraded = $consecutive >= 3
+            || ($lastFailure !== null && $lastFailure !== '' && $ageSec !== null && $ageSec > 300)
+            || ($lastFailure !== null && $lastFailure !== '' && $lastSuccess === null);
+
+        return [
+            'last_success_at' => $lastSuccess ?: null,
+            'last_failure_at' => $lastFailure ?: null,
+            'last_failure_message' => $lastFailureMsg ?: null,
+            'consecutive_failures' => $consecutive,
+            'last_success_age_seconds' => $ageSec,
+            'degraded' => $degraded,
+        ];
+    }
+
+    /**
+     * Has the circuit breaker tripped recently? Returns the time (UTC) the
+     * breaker was opened, or null if it's closed. The breaker opens after
+     * $threshold consecutive failures and stays open for $cooldownSeconds.
+     * UI-triggered request paths can short-circuit on this so a flaky upstream
+     * doesn't drag every operator click into a 14s retry storm.
+     */
+    public static function circuitBreakerOpenSince(int $threshold = 5, int $cooldownSeconds = 60): ?string {
+        try {
+            $consecutive = (int)(DB::getConfig('ce_consecutive_failures') ?? '0');
+            if ($consecutive < $threshold) {
+                return null;
+            }
+            $lastFailure = DB::getConfig('ce_last_failure_at');
+            if (!$lastFailure) {
+                return null;
+            }
+            $ts = strtotime($lastFailure . ' UTC');
+            if ($ts === false) {
+                return null;
+            }
+            // Breaker stays open for cooldownSeconds after the most recent
+            // failure. After cooldown the next request gets to try again
+            // (half-open behaviour); a success resets the counter, a failure
+            // pushes the open time forward.
+            if ((time() - $ts) > $cooldownSeconds) {
+                return null;
+            }
+            return $lastFailure;
+        } catch (Exception $e) {
+            return null;
+        }
     }
 }

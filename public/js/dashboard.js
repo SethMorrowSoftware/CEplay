@@ -377,6 +377,122 @@
         renderGameView(allGames);
     }
 
+    /**
+     * Format an "age in seconds" value as a short human-readable string,
+     * e.g. 92 -> "1m 32s", 3700 -> "1h 1m". Used by the degraded-state banner
+     * so the operator sees "no upstream success for 4m 12s" at a glance.
+     */
+    function formatAge(sec) {
+        if (sec === null || sec === undefined || isNaN(sec)) return 'unknown';
+        sec = Math.max(0, Math.floor(sec));
+        if (sec < 60) return sec + 's';
+        if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+        if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+        return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+    }
+
+    /**
+     * Render security warnings + degraded-state banners for the dashboard.
+     * Operators need to see "the system is running but degraded" within one
+     * polling cycle. Banners cover: CenterEdge upstream outages (circuit
+     * breaker open / consecutive failures), assets stuck after retry
+     * exhaustion, and watchdog/cron heartbeat staleness.
+     */
+    function renderHealthBanners(container, health) {
+        if (!container || !health) return;
+
+        // Security warnings (install.php still present, APP_DEBUG, etc.)
+        if (Array.isArray(health.warnings)) {
+            health.warnings.forEach(function(msg) {
+                container.appendChild(App.el('div', {
+                    className: 'alert alert-warning',
+                    style: { marginBottom: '0.75rem' },
+                    textContent: msg
+                }));
+            });
+        }
+
+        // CenterEdge upstream degraded
+        var ce = health.centeredge;
+        if (ce && (ce.degraded || ce.breaker_open_since)) {
+            var lines = [];
+            if (ce.breaker_open_since) {
+                lines.push('Circuit breaker open since ' + ce.breaker_open_since + ' UTC — UI calls are short-circuiting to keep the dashboard responsive. The watchdog will retry in the background.');
+            } else {
+                lines.push('CenterEdge upstream is degraded.');
+            }
+            if (ce.consecutive_failures) {
+                lines.push(ce.consecutive_failures + ' consecutive failure(s).');
+            }
+            if (ce.last_failure_message) {
+                lines.push('Last error: ' + ce.last_failure_message);
+            }
+            if (ce.last_success_at) {
+                lines.push('Last successful call: ' + ce.last_success_at + ' UTC ('
+                    + formatAge(ce.last_success_age_seconds) + ' ago).');
+            } else {
+                lines.push('No successful upstream call recorded.');
+            }
+            var ceBanner = App.el('div', {
+                className: 'alert alert-warning',
+                style: { marginBottom: '0.75rem' }
+            });
+            ceBanner.appendChild(App.el('strong', { textContent: 'CenterEdge upstream degraded — ' }));
+            ceBanner.appendChild(document.createTextNode(lines.join(' ')));
+            container.appendChild(ceBanner);
+        }
+
+        // Retry queue: assets that gave up
+        var retries = health.retries;
+        if (retries && retries.gave_up > 0) {
+            var rb = App.el('div', {
+                className: 'alert alert-warning',
+                style: { marginBottom: '0.75rem' }
+            });
+            rb.appendChild(App.el('strong', { textContent: 'Retry exhaustion — ' }));
+            rb.appendChild(document.createTextNode(
+                retries.gave_up + ' asset(s) gave up after exhausting their retry window. '
+                + 'A fresh manual action, schedule transition, or override boundary will reset them.'
+            ));
+            container.appendChild(rb);
+        }
+
+        // Watchdog stalled
+        if (health.watchdog && health.watchdog.healthy === false) {
+            var wb = App.el('div', {
+                className: 'alert alert-error',
+                style: { marginBottom: '0.75rem' }
+            });
+            wb.appendChild(App.el('strong', { textContent: 'Watchdog stalled — ' }));
+            var ageStr = (health.watchdog.age_seconds !== undefined && health.watchdog.age_seconds !== null)
+                ? formatAge(health.watchdog.age_seconds)
+                : 'never';
+            wb.appendChild(document.createTextNode(
+                'Per-minute cron has not run in ' + ageStr + '. Scheduled actions and state '
+                + 'enforcement will be late or missing until cron resumes. Check that cron_watchdog.php is in your crontab.'
+            ));
+            container.appendChild(wb);
+        }
+
+        // Cache staleness — only flag if heartbeat is healthy but cache is old
+        // (otherwise the watchdog banner above already covers it).
+        if (health.watchdog && health.watchdog.healthy && health.caches && health.caches.games) {
+            var gAge = health.caches.games.age_seconds;
+            if (gAge !== null && gAge !== undefined && gAge > 600) {
+                var sb = App.el('div', {
+                    className: 'alert alert-warning',
+                    style: { marginBottom: '0.75rem' }
+                });
+                sb.appendChild(App.el('strong', { textContent: 'Stale game cache — ' }));
+                sb.appendChild(document.createTextNode(
+                    'Oldest game state was synced ' + formatAge(gAge) + ' ago. '
+                    + 'The watchdog should refresh it within a minute; if this persists, CenterEdge may be unreachable.'
+                ));
+                container.appendChild(sb);
+            }
+        }
+    }
+
     async function loadDashboard() {
         var gen = App.navGeneration();
         try {
@@ -394,19 +510,14 @@
             var groupsData = results[2] || {};
             var healthData = results[3] || {};
 
-            // Render security warnings if present
+            // Render security warnings + degraded-state banner if present.
+            // The /api/health endpoint reports CenterEdge upstream health,
+            // retry-queue depth, and cache freshness so operators see degraded
+            // mode within one polling cycle instead of grepping PHP logs.
             var warningsEl = document.getElementById('security-warnings');
             if (warningsEl) {
                 warningsEl.innerHTML = '';
-                if (healthData.warnings && healthData.warnings.length > 0) {
-                    healthData.warnings.forEach(function(msg) {
-                        warningsEl.appendChild(App.el('div', {
-                            className: 'alert alert-warning',
-                            style: { marginBottom: '0.75rem' },
-                            textContent: msg
-                        }));
-                    });
-                }
+                renderHealthBanners(warningsEl, healthData);
             }
 
             allGames = gamesData.games || [];

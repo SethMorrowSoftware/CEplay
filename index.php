@@ -241,11 +241,22 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
 
 /**
  * Health check endpoint (no auth required).
- * Reports cron heartbeat status so operators can detect if scheduling is alive.
+ * Reports cron heartbeat status, CenterEdge upstream health, retry queue depth,
+ * and cache freshness so operators can detect a degraded-but-not-failed
+ * state without having to grep PHP error logs.
  */
 function handleHealthCheck(): void {
     $dataDir = dirname(DB_PATH);
-    $status = ['status' => 'ok', 'cron' => null, 'watchdog' => null, 'database' => false];
+    $status = [
+        'status' => 'ok',
+        'cron' => null,
+        'watchdog' => null,
+        'database' => false,
+        'centeredge' => null,
+        'retries' => null,
+        'caches' => null,
+    ];
+    $degradedReasons = [];
 
     // Check database connectivity
     try {
@@ -253,6 +264,7 @@ function handleHealthCheck(): void {
         $status['database'] = true;
     } catch (Exception $e) {
         $status['status'] = 'degraded';
+        $degradedReasons[] = 'database unreachable';
     }
 
     // Check cron heartbeat
@@ -268,10 +280,12 @@ function handleHealthCheck(): void {
         ];
         if ($age >= 90000) {
             $status['status'] = 'degraded';
+            $degradedReasons[] = 'daily cron has not run in 25h';
         }
     } else {
         $status['cron'] = ['last_run' => null, 'healthy' => false];
         $status['status'] = 'degraded';
+        $degradedReasons[] = 'daily cron has never run';
     }
 
     // Check watchdog heartbeat
@@ -287,10 +301,134 @@ function handleHealthCheck(): void {
         ];
         if ($age >= 180) {
             $status['status'] = 'degraded';
+            $degradedReasons[] = 'per-minute watchdog has not run in 3 min';
         }
     } else {
         $status['watchdog'] = ['last_run' => null, 'healthy' => false];
         $status['status'] = 'degraded';
+        $degradedReasons[] = 'watchdog has never run';
+    }
+
+    // CenterEdge upstream health
+    try {
+        require_once __DIR__ . '/lib/centeredge_client.php';
+        $ceHealth = CenterEdgeClient::getUpstreamHealth();
+        $breakerOpenSince = CenterEdgeClient::circuitBreakerOpenSince();
+        $ceHealth['breaker_open_since'] = $breakerOpenSince;
+        $status['centeredge'] = $ceHealth;
+        if (!empty($ceHealth['degraded'])) {
+            $status['status'] = 'degraded';
+            $msg = 'CenterEdge upstream degraded';
+            if (!empty($ceHealth['consecutive_failures'])) {
+                $msg .= ' (' . $ceHealth['consecutive_failures'] . ' consecutive failures)';
+            }
+            $degradedReasons[] = $msg;
+        }
+    } catch (Exception $e) {
+        $status['centeredge'] = ['error' => 'unavailable'];
+    }
+
+    // Retry queue depth: how many assets are stuck waiting for the watchdog?
+    // Useful as an operator-visible signal that something has been failing
+    // upstream long enough to accumulate state.
+    try {
+        $rqRow = DB::queryOne(
+            'SELECT
+               COUNT(*) AS pending,
+               SUM(CASE WHEN gave_up_at IS NOT NULL THEN 1 ELSE 0 END) AS gave_up,
+               MIN(created_at) AS oldest_created_at
+             FROM action_retries'
+        );
+        $pending = $rqRow ? (int)($rqRow['pending'] ?? 0) : 0;
+        $gaveUp = $rqRow ? (int)($rqRow['gave_up'] ?? 0) : 0;
+        $oldest = $rqRow ? ($rqRow['oldest_created_at'] ?? null) : null;
+        $oldestAge = null;
+        if ($oldest) {
+            $ts = strtotime($oldest . ' UTC');
+            if ($ts !== false) $oldestAge = max(0, time() - $ts);
+        }
+        $status['retries'] = [
+            'pending'        => $pending,
+            'gave_up'        => $gaveUp,
+            'active'         => max(0, $pending - $gaveUp),
+            'oldest_age_seconds' => $oldestAge,
+        ];
+        if ($gaveUp > 0) {
+            $status['status'] = 'degraded';
+            $degradedReasons[] = "$gaveUp asset(s) gave up after retry exhaustion";
+        }
+    } catch (Exception $e) {
+        $status['retries'] = ['error' => 'unavailable'];
+    }
+
+    // Cache freshness — surfaces "we're running on stale data"
+    try {
+        $gameOldest = DB::queryOne('SELECT MIN(last_synced_at) AS oldest, COUNT(*) AS n FROM game_state_cache');
+        $kioskOldest = DB::queryOne('SELECT MIN(last_synced_at) AS oldest, COUNT(*) AS n FROM kiosk_state_cache');
+        $catFetched = DB::getConfig('categories_cache_at');
+
+        $status['caches'] = [
+            'games'      => formatCacheStat($gameOldest),
+            'kiosks'     => formatCacheStat($kioskOldest),
+            'categories' => $catFetched ? [
+                'fetched_at'  => $catFetched,
+                'age_seconds' => max(0, time() - (strtotime($catFetched . ' UTC') ?: time())),
+            ] : null,
+        ];
+    } catch (Exception $e) {
+        $status['caches'] = ['error' => 'unavailable'];
+    }
+
+    // Game-transaction polling lag — how long since the watchdog last
+    // ingested a transaction page? If this grows unbounded the live activity
+    // feed and Top Games widgets will go stale.
+    try {
+        $lastTx = DB::queryOne('SELECT MAX(fetched_at) AS last_at FROM game_play_transactions');
+        $lastAt = $lastTx ? ($lastTx['last_at'] ?? null) : null;
+        $lagSec = null;
+        if ($lastAt) {
+            $ts = strtotime($lastAt . ' UTC');
+            if ($ts !== false) $lagSec = max(0, time() - $ts);
+        }
+        $status['polling'] = [
+            'transactions' => [
+                'last_fetched_at'  => $lastAt,
+                'lag_seconds'      => $lagSec,
+            ],
+        ];
+        // Only flag as degraded if the watchdog is healthy (otherwise the
+        // watchdog banner already explains why polling stopped).
+        if ($status['watchdog'] && !empty($status['watchdog']['healthy'])
+            && $lagSec !== null && $lagSec > 1800) { // 30 min
+            $status['status'] = 'degraded';
+            $degradedReasons[] = 'transaction feed poll lag exceeds 30 min';
+        }
+    } catch (Exception $e) {
+        $status['polling'] = ['error' => 'unavailable'];
+    }
+
+    // Recent error rate from action_log (last hour). Useful as a quick
+    // "is something failing right now?" signal that doesn't depend on
+    // upstream-call counters (which only move when something tries the API).
+    try {
+        $sinceCutoff = gmdate('Y-m-d H:i:s', time() - 3600);
+        $errRow = DB::queryOne(
+            'SELECT
+               SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS errors,
+               COUNT(*) AS total
+             FROM action_log WHERE timestamp >= :p0',
+            [$sinceCutoff]
+        );
+        $status['errors_last_hour'] = [
+            'errors' => $errRow ? (int)($errRow['errors'] ?? 0) : 0,
+            'total'  => $errRow ? (int)($errRow['total'] ?? 0) : 0,
+        ];
+    } catch (Exception $e) {
+        $status['errors_last_hour'] = ['error' => 'unavailable'];
+    }
+
+    if (!empty($degradedReasons)) {
+        $status['degraded_reasons'] = $degradedReasons;
     }
 
     // Security warnings for operators
@@ -311,6 +449,25 @@ function handleHealthCheck(): void {
     $httpCode = $status['status'] === 'ok' ? 200 : 503;
     http_response_code($httpCode);
     echo json_encode($status);
+}
+
+/**
+ * Helper: format a cache freshness row {oldest, n} into the shape the
+ * /api/health response expects. Used for game_state_cache and kiosk_state_cache.
+ */
+function formatCacheStat(?array $row): ?array {
+    if (!$row) return null;
+    $oldest = $row['oldest'] ?? null;
+    $n = (int)($row['n'] ?? 0);
+    if (!$oldest) {
+        return ['count' => $n, 'oldest_synced_at' => null, 'age_seconds' => null];
+    }
+    $ts = strtotime($oldest . ' UTC');
+    return [
+        'count'            => $n,
+        'oldest_synced_at' => $oldest,
+        'age_seconds'      => $ts !== false ? max(0, time() - $ts) : null,
+    ];
 }
 
 // ---------------------------------------------------
