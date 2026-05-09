@@ -93,6 +93,19 @@ function listGroups(): void {
     $currentTime = $now->format('H:i');
     $currentDatetime = $now->format('Y-m-d H:i');
 
+    // Pre-load the full game and kiosk state caches once. Avoids issuing
+    // 2 queries per asset across all groups — at a venue with hundreds of
+    // games and a dozen groups that's the difference between ~3000 round
+    // trips per /api/groups call and a single pair of full-table reads.
+    $allGameStates = [];
+    foreach (DB::query('SELECT game_id, operation_status FROM game_state_cache') as $r) {
+        $allGameStates[(string)$r['game_id']] = $r['operation_status'];
+    }
+    $allKioskStates = [];
+    foreach (DB::query('SELECT kiosk_id, operation_status FROM kiosk_state_cache') as $r) {
+        $allKioskStates[(string)$r['kiosk_id']] = $r['operation_status'];
+    }
+
     foreach ($groups as &$group) {
         $gid = (int)$group['id'];
 
@@ -108,11 +121,11 @@ function listGroups(): void {
         $gamePaused = 0;
         $gameOos = 0;
         foreach ($gameIds as $gameId) {
-            $cached = DB::queryOne('SELECT operation_status FROM game_state_cache WHERE game_id = :p0', [$gameId]);
-            if (!$cached) continue;
-            if ($cached['operation_status'] === 'enabled') $gameEnabled++;
-            elseif ($cached['operation_status'] === 'paused') $gamePaused++;
-            elseif ($cached['operation_status'] === 'outOfService') $gameOos++;
+            if (!isset($allGameStates[$gameId])) continue;
+            $st = $allGameStates[$gameId];
+            if ($st === 'enabled') $gameEnabled++;
+            elseif ($st === 'paused') $gamePaused++;
+            elseif ($st === 'outOfService') $gameOos++;
         }
 
         $kioskEnabled = 0;
@@ -120,9 +133,8 @@ function listGroups(): void {
         $kioskOos = 0;
         $kioskUnknown = 0;
         foreach ($kioskIds as $kioskId) {
-            $cached = DB::queryOne('SELECT operation_status FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
-            if (!$cached) continue;
-            $st = $cached['operation_status'];
+            if (!isset($allKioskStates[$kioskId])) continue;
+            $st = $allKioskStates[$kioskId];
             if ($st === 'enabled') $kioskEnabled++;
             elseif ($st === 'paused') $kioskPaused++;
             elseif ($st === 'outOfService') $kioskOos++;

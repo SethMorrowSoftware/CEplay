@@ -45,6 +45,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
 
         // ---- Scheduler behaviour ----
         $retryMaxAttempts       = (int)(DB::getConfig('retry_max_attempts')      ?? 10);
+        $retryCooldownMinutes   = (int)(DB::getConfig('retry_cooldown_minutes')  ?? 60);
         $topGamesLimit          = (int)(DB::getConfig('dashboard_top_games_limit') ?? 5);
 
         echo json_encode([
@@ -72,6 +73,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             'retention_transactions_days'        => $retentionTransactions,
 
             'retry_max_attempts'             => $retryMaxAttempts,
+            'retry_cooldown_minutes'         => $retryCooldownMinutes,
             'dashboard_top_games_limit'      => $topGamesLimit,
         ]);
         return;
@@ -162,6 +164,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
 
         // ---- Scheduler behaviour ----
         $saveInt('retry_max_attempts',         1,  50);
+        $saveInt('retry_cooldown_minutes',     5, 1440);
         $saveInt('dashboard_top_games_limit',  1,  20);
 
         DB::auditLog('admin', 'settings_updated', null, [
