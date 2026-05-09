@@ -32,16 +32,60 @@ if (!is_dir($dataDir)) {
 // phase — those are idempotent SQLite writes that don't need exclusion from
 // run_action.php / replanToday(). Only the planning section (which mutates
 // scheduled_actions) takes LOCK_FILE.
+//
+// Stale-lock recovery: this script only runs once per day (00:05 UTC via
+// systemd timer). A "lock contended" outcome is therefore almost always a
+// stale fd left behind by a crashed/killed prior run, not a genuine overlap.
+// We retry briefly, then steal the lock with a loud log line so a real
+// problem is visible without leaving the daily planner wedged for days.
 $cronOwnLock = LOCK_FILE . '.daily';
-$cronLockFh = fopen($cronOwnLock, 'c');
-if (!$cronLockFh) {
-    echo "[" . date('c') . "] Could not open daily cron lock file. Exiting.\n";
-    exit(1);
-}
-if (!flock($cronLockFh, LOCK_EX | LOCK_NB)) {
-    echo "[" . date('c') . "] Another daily cron instance is already running. Exiting.\n";
+$cronLockFh = null;
+$lockAcquired = false;
+
+for ($attempt = 1; $attempt <= 4; $attempt++) {
+    $cronLockFh = @fopen($cronOwnLock, 'c');
+    if (!$cronLockFh) {
+        echo "[" . date('c') . "] Could not open daily cron lock file (attempt $attempt). Exiting.\n";
+        exit(1);
+    }
+    if (flock($cronLockFh, LOCK_EX | LOCK_NB)) {
+        $lockAcquired = true;
+        break;
+    }
     fclose($cronLockFh);
-    exit(0);
+    $cronLockFh = null;
+
+    if ($attempt < 4) {
+        echo "[" . date('c') . "] Daily lock contended (attempt $attempt/4) — retrying in 10s...\n";
+        sleep(10);
+    }
+}
+
+if (!$lockAcquired) {
+    // Lock has been busy for ~30s. The daily timer fires at most once per day
+    // and a real prior invocation finishes well under a minute, so this is
+    // almost certainly a leaked fd from a long-dead PHP-FPM worker or a
+    // killed container. Steal it: delete and recreate, then re-acquire.
+    // Log loudly so the operator sees this happened (and so we can diagnose
+    // a recurring leak source if it shows up again).
+    echo "[" . date('c') . "] WARNING: daily lock has been contended for 30s — assuming stale, breaking it.\n";
+    error_log('cron.php: breaking apparently-stale .scheduler.lock.daily after 30s of contention');
+
+    @unlink($cronOwnLock);
+    $cronLockFh = @fopen($cronOwnLock, 'c');
+    if (!$cronLockFh) {
+        echo "[" . date('c') . "] Could not recreate daily lock file after stale-break. Exiting.\n";
+        exit(1);
+    }
+    if (!flock($cronLockFh, LOCK_EX | LOCK_NB)) {
+        // Still contended after delete+recreate? That means a real concurrent
+        // process is actively holding it RIGHT NOW (between our unlink and
+        // fopen). Bail out — better to skip a day than to double-plan.
+        echo "[" . date('c') . "] Daily lock still contended after stale-break — a real concurrent run exists. Exiting.\n";
+        fclose($cronLockFh);
+        exit(0);
+    }
+    $lockAcquired = true;
 }
 
 try {
