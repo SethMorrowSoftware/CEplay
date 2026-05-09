@@ -54,6 +54,10 @@ if (!$lockAcquired) {
     exit(1);
 }
 
+// Tell Scheduler we already hold LOCK_FILE so nested withSchedulerLock()
+// calls don't fight a competing fd within this process.
+Scheduler::declareLockHeld();
+
 try {
     // Load timezone
     $tz = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
@@ -95,6 +99,7 @@ try {
 
     exit(1);
 } finally {
+    Scheduler::declareLockReleased();
     flock($lockFile, LOCK_UN);
     fclose($lockFile);
 }

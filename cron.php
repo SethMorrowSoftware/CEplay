@@ -109,6 +109,11 @@ try {
     if (!$planLockHeld) {
         echo "[" . date('c') . "] WARNING: could not acquire planning lock after 30s — skipping planning section.\n";
     } else {
+        // Tell the Scheduler that the LOCK_FILE is already held by this
+        // process, so nested withSchedulerLock() calls inside planDay /
+        // executeMissedActions / queueAtJobs won't try to re-acquire on
+        // a competing fd and silently skip.
+        Scheduler::declareLockHeld();
         try {
             // Step 2: Execute any missed actions from earlier
             echo "Checking for missed actions...\n";
@@ -127,6 +132,7 @@ try {
             Scheduler::queueAtJobs($today);
             echo "  Done.\n";
         } finally {
+            Scheduler::declareLockReleased();
             flock($planLockFh, LOCK_UN);
             fclose($planLockFh);
         }

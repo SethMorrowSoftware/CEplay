@@ -115,16 +115,28 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
             $mtime = @filemtime($missedCheckFile) ?: 0;
             if ((time() - $mtime) >= $tier2Throttle) {
                 @touch($missedCheckFile);
-                try {
-                    Scheduler::executeMissedActions();
-                } catch (Exception $e) {
-                    error_log('Missed-action check failed: ' . $e->getMessage());
-                }
-                try {
-                    Scheduler::enforceCurrentStates();
-                } catch (Exception $e) {
-                    error_log('State enforcement failed: ' . $e->getMessage());
-                }
+                // Run inside the scheduler lock so this HTTP-driven safety
+                // net doesn't race the watchdog cron / at-jobs / the
+                // operator-side manual buttons that all touch the same
+                // upstream state. If the lock is contended we skip — the
+                // watchdog runs every minute and will catch up shortly.
+                // executeMissedActions and enforceCurrentStates each
+                // re-acquire the lock internally too; flock() is a no-op
+                // when held by the same fd in the same process, so the
+                // outer wrapper just guarantees we don't enter the slow
+                // path while another worker is mid-flight.
+                Scheduler::withSchedulerLock(function () {
+                    try {
+                        Scheduler::executeMissedActions();
+                    } catch (Exception $e) {
+                        error_log('Missed-action check failed: ' . $e->getMessage());
+                    }
+                    try {
+                        Scheduler::enforceCurrentStates();
+                    } catch (Exception $e) {
+                        error_log('State enforcement failed: ' . $e->getMessage());
+                    }
+                }, /*waitSec*/ 2, /*skipOnContention*/ true);
             }
             flock($throttleFh, LOCK_UN);
         }
@@ -240,12 +252,20 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
 }
 
 /**
- * Health check endpoint (no auth required).
- * Reports cron heartbeat status, CenterEdge upstream health, retry queue depth,
- * and cache freshness so operators can detect a degraded-but-not-failed
- * state without having to grep PHP error logs.
+ * Health check endpoint.
+ *
+ * Public surface (unauthenticated): minimal liveness — overall status,
+ * heartbeat ages, and a single "degraded" boolean. Anything that could
+ * help an attacker (specific error messages, install.php-still-present
+ * warnings, retry counts, exact failure reasons) requires a logged-in
+ * session. This keeps the endpoint useful for external monitoring while
+ * not leaking operational detail to anonymous probes.
+ *
+ * Authenticated callers see the full payload.
  */
 function handleHealthCheck(): void {
+    $isAuthed = (Auth::check() !== null);
+
     $dataDir = dirname(DB_PATH);
     $status = [
         'status' => 'ok',
@@ -427,23 +447,44 @@ function handleHealthCheck(): void {
         $status['errors_last_hour'] = ['error' => 'unavailable'];
     }
 
-    if (!empty($degradedReasons)) {
+    if (!empty($degradedReasons) && $isAuthed) {
         $status['degraded_reasons'] = $degradedReasons;
     }
 
-    // Security warnings for operators
-    $warnings = [];
-    if (file_exists(__DIR__ . '/install.php')) {
-        $warnings[] = 'install.php is still web-accessible. Remove or block it in your web server config.';
+    // Security warnings for operators (only visible to authenticated sessions
+    // so an anonymous probe can't learn that install.php is still around).
+    if ($isAuthed) {
+        $warnings = [];
+        if (file_exists(__DIR__ . '/install.php')) {
+            $warnings[] = 'install.php is still web-accessible. Remove or block it in your web server config.';
+        }
+        if (file_exists(__DIR__ . '/fresh_install.php')) {
+            $warnings[] = 'fresh_install.php is still present. Delete it — it contains default credentials.';
+        }
+        if (defined('APP_DEBUG') && APP_DEBUG) {
+            $warnings[] = 'APP_DEBUG is enabled. Disable it for production (unset PG_APP_DEBUG or set to false).';
+        }
+        if (!empty($warnings)) {
+            $status['warnings'] = $warnings;
+        }
     }
-    if (file_exists(__DIR__ . '/fresh_install.php')) {
-        $warnings[] = 'fresh_install.php is still present. Delete it — it contains default credentials.';
-    }
-    if (defined('APP_DEBUG') && APP_DEBUG) {
-        $warnings[] = 'APP_DEBUG is enabled. Disable it for production (unset PG_APP_DEBUG or set to false).';
-    }
-    if (!empty($warnings)) {
-        $status['warnings'] = $warnings;
+
+    // Strip detail-rich fields from the unauthenticated public surface.
+    // Keep: overall status, heartbeat ages, degraded boolean. Drop: error
+    // messages, retry counts, cache details, polling lag. External monitors
+    // see "is this thing alive?" — operators see "what's wrong?".
+    if (!$isAuthed) {
+        if (is_array($status['centeredge'] ?? null)) {
+            $status['centeredge'] = [
+                'degraded' => !empty($status['centeredge']['degraded']),
+            ];
+        }
+        unset(
+            $status['retries'],
+            $status['caches'],
+            $status['polling'],
+            $status['errors_last_hour']
+        );
     }
 
     $httpCode = $status['status'] === 'ok' ? 200 : 503;

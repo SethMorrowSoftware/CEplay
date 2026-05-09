@@ -414,6 +414,7 @@ class CenterEdgeClient {
         $lastId = $sinceId;
 
         for ($page = 0; $page < $maxPages; $page++) {
+            $pageStartSinceId = $sinceId;
             $result = $this->getGameTransactions($sinceId, $feedName, $pageSize);
             $txs = $result['transactions'] ?? [];
             if (empty($txs)) {
@@ -464,6 +465,16 @@ class CenterEdgeClient {
 
             // If we got fewer than requested, the feed is caught up.
             if (count($txs) < $pageSize) {
+                break;
+            }
+
+            // Defensive: if a full page came back but no transaction had a
+            // higher id than we started with, sinceId would never advance
+            // and we'd burn through all $maxPages re-fetching the same data.
+            // This shouldn't happen per the OpenAPI spec ("ascending ID,
+            // unique within a feed") but a buggy upstream could trip it.
+            if ($sinceId === $pageStartSinceId) {
+                error_log("pollGameTransactions: feed '$feedName' returned a full page with no id > sinceId=$sinceId — bailing to avoid infinite loop");
                 break;
             }
         }

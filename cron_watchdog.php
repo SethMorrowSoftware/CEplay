@@ -73,12 +73,17 @@ try {
             fclose($fh);
             return;
         }
+        // Tell Scheduler we already hold the lock so nested
+        // withSchedulerLock() calls (from executeMissedActions etc) don't
+        // race a competing fd within this same process.
+        Scheduler::declareLockHeld();
         try {
             $fn();
         } catch (Exception $e) {
             $errors[] = "$name: " . $e->getMessage();
             error_log("[" . date('c') . "] watchdog $name error: " . $e->getMessage());
         } finally {
+            Scheduler::declareLockReleased();
             flock($fh, LOCK_UN);
             fclose($fh);
         }
