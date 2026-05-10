@@ -1,0 +1,52 @@
+[Unit]
+Description=CEplay Game Out-of-Service Slack Alerter
+Documentation=https://github.com/morroware/ceplay
+After=network-online.target
+Wants=network-online.target
+# Give up after 5 restarts in 10 minutes so a permanently-broken config
+# doesn't burn CPU forever. systemctl reset-failed clears the count.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ceplay-alerts
+Group=ceplay-alerts
+
+# Edit ExecStart if you install the script somewhere else.
+ExecStart=/usr/local/bin/ceplay_game_alerts.py --config /etc/ceplay-alerts/config.ini
+
+Restart=on-failure
+RestartSec=10s
+# Allow time for an in-flight HTTP retry sequence (timeout * retries) to
+# finish gracefully before SIGKILL.
+TimeoutStopSec=90s
+KillSignal=SIGTERM
+
+# State directory: created at /var/lib/ceplay-alerts and chowned to the
+# service user automatically.
+StateDirectory=ceplay-alerts
+StateDirectoryMode=0750
+
+# Log to journald.
+StandardOutput=journal
+StandardError=journal
+
+# ---- Hardening ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# AF_UNIX kept for syslog/journald and nss-resolve socket fallbacks.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
