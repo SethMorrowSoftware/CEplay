@@ -1,0 +1,47 @@
+[Unit]
+Description=CEplay Game Out-of-Service Slack Alerter
+Documentation=https://github.com/morroware/ceplay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ceplay-alerts
+Group=ceplay-alerts
+
+# Edit ExecStart if you install the script somewhere else.
+ExecStart=/usr/local/bin/ceplay_game_alerts.py --config /etc/ceplay-alerts/config.ini
+
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# State directory: created at /var/lib/ceplay-alerts and chowned to the
+# service user automatically.
+StateDirectory=ceplay-alerts
+StateDirectoryMode=0750
+
+# Log to journald.
+StandardOutput=journal
+StandardError=journal
+
+# ---- Hardening ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/ceplay-alerts
+
+[Install]
+WantedBy=multi-user.target

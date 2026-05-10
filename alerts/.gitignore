@@ -1,0 +1,7 @@
+# Local config (contains API credentials and Slack bot token)
+config.ini
+
+# Local state file if someone runs the script from this directory
+state.json
+*.tmp
+__pycache__/
