@@ -56,6 +56,9 @@ function setStatus(text, cls, detail) {
 // --------------------------------------------------------------------------
 
 async function refreshConnection() {
+  // Never run a connection check on top of an in-flight unpause — its async
+  // result would re-enable buttons and overwrite the operation's status line.
+  if (busy) return;
   const cfg = await api.getConfig();
   configured = !!(cfg.baseUrl && cfg.username && cfg.hasPassword);
   if (!configured) {
@@ -64,9 +67,11 @@ async function refreshConnection() {
     setStatus('Not configured yet. Open Settings (⚙) to enter the server URL and login.', 'warn');
     return;
   }
+  if (busy) return;
   setConn('working');
   setStatus('Checking connection…', null);
   const res = await api.test();
+  if (busy) return; // an operation started while the test was in flight
   if (res.ok) {
     setConn('ok');
     setButtonsEnabled(true);
@@ -121,12 +126,17 @@ async function withBusy(activeBtn, subEl, workingText, fn) {
   subEl.textContent = workingText;
   try {
     await fn();
+  } catch (e) {
+    // fn (the IPC call + summarize) normally resolves with {ok:false} rather
+    // than throwing, but guard anyway so the dot can't get stuck on 'working'.
+    setStatus('Unexpected error: ' + (e && e.message ? e.message : String(e)), 'error');
+    setConn('error');
   } finally {
     busy = false;
     subEl.textContent = 'Tap to start';
-    // Re-evaluate connection state (also re-enables buttons if healthy).
+    // The run callback sets the connection dot from the actual result;
+    // here we just restore button availability.
     setButtonsEnabled(configured);
-    setConn(configured ? 'ok' : 'unknown');
   }
 }
 
@@ -182,6 +192,7 @@ makeButton(el.btnGames, el.gamesSub, 'Tap to start', async () => {
     const res = await api.unpauseGames();
     const out = summarize('arcade readers', res);
     setStatus(out.text, out.cls, out.detail);
+    setConn(out.cls === 'error' ? 'error' : 'ok');
   });
 });
 
@@ -191,6 +202,7 @@ makeButton(el.btnKiosks, el.kiosksSub, 'Tap to start', async () => {
     const res = await api.unpauseKiosks();
     const out = summarize('kiosks', res);
     setStatus(out.text, out.cls, out.detail);
+    setConn(out.cls === 'error' ? 'error' : 'ok');
   });
 });
 

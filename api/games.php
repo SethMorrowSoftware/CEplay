@@ -242,20 +242,30 @@ function gamesApplyStatusChanges(CenterEdgeClient $client, array $changes): arra
 
     $result = $client->patchGames($changes);
 
-    // Update cache only for games that actually succeeded; queue a fresh retry
-    // on failure so the watchdog re-attempts up to max_attempts. (Writing the
-    // cache optimistically for every requested change would make it lie when
-    // the upstream API rejects a patch.)
+    // Confirmed successes = game ids the API echoed back in the "games" array.
+    // Anything not confirmed — whether it errored OR was silently dropped from
+    // the response — is treated as a failure and queued for retry, so the cache
+    // never claims a game is enabled when the upstream didn't confirm it. This
+    // matches the watchdog's processRetries()/applyRetryResult() reconciliation.
     $errors = $result['errors'] ?? [];
+    $succeeded = [];
+    foreach (($result['games'] ?? []) as $g) {
+        $gid = (string)($g['id'] ?? '');
+        if ($gid !== '') {
+            $succeeded[$gid] = true;
+        }
+    }
+
     foreach ($changes as $gameId => $status) {
         $gid = (string)$gameId;
-        if (!isset($errors[$gameId]) && !isset($errors[$gid])) {
+        $hasError = isset($errors[$gameId]) || isset($errors[$gid]);
+        if (!$hasError && isset($succeeded[$gid])) {
             DB::execute(
                 'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
                 [$status, $gid]
             );
         } else {
-            $err = $errors[$gameId] ?? $errors[$gid];
+            $err = $errors[$gameId] ?? ($errors[$gid] ?? 'no response from server');
             $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
             Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errorText);
         }
@@ -281,9 +291,13 @@ function gamesUnpauseAll(): void {
         return;
     }
 
+    // Refresh state if the cache is stale, reusing the project's freshness
+    // contract (~30s, like the main app's manual buttons) instead of forcing a
+    // full CenterEdge re-fetch on every press. A genuine sync failure (the
+    // games endpoint is always supported) is surfaced as a non-fatal warning.
     $syncWarning = null;
     try {
-        $client->syncGamesToCache();
+        Scheduler::syncGameStatesIfStale(30);
     } catch (Exception $e) {
         $syncWarning = sanitizeApiError($e->getMessage());
         error_log('games unpause-all: sync failed, using cached state: ' . $e->getMessage());
@@ -313,22 +327,25 @@ function gamesUnpauseAll(): void {
     }
 
     $errors = $result['errors'] ?? [];
-    $failed = count($errors);
-    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
-    $success = ($patchError === null && $failed === 0);
 
+    // Failures = changed games that ended up with a pending retry (errored or
+    // silently dropped). Successes cleared their retry row inside the helper, so
+    // whatever is still pending is a real failure the watchdog will keep chasing.
     $pending = Scheduler::getPendingRetriesByType('game');
     $retrying = [];
     foreach (array_keys($changes) as $gid) {
         if (isset($pending[$gid])) {
             $retrying[] = [
-                'id'           => $gid,
+                'id'           => (string)$gid,
                 'attempts'     => $pending[$gid]['attempts'],
                 'max_attempts' => $pending[$gid]['max_attempts'],
                 'last_error'   => $pending[$gid]['last_error'],
             ];
         }
     }
+    $failed = count($retrying);
+    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
+    $success = ($patchError === null && $failed === 0);
 
     $userId = Auth::check()['id'] ?? null;
     DB::auditLog('game-unpause-all', 'games_unpause_all', $userId, [

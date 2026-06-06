@@ -142,6 +142,9 @@ async function login() {
   }
 
   storeSetCookies(res.headers);
+  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+    throw new Error('Server returned a redirect — check the server URL (http vs https, or an extra/missing path).');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data && data.error ? data.error : `Login failed (HTTP ${res.status}).`);
@@ -185,6 +188,10 @@ async function apiRequest(method, p, body, opts = {}) {
   }
 
   storeSetCookies(res.headers);
+
+  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+    throw new Error('Server returned a redirect — check the server URL (http vs https, or an extra/missing path).');
+  }
 
   if ((res.status === 401 || res.status === 403) && retryAuth && p !== '/api/auth/login') {
     await login();
@@ -244,6 +251,8 @@ ipcMain.handle('ceplay:setConfig', (_event, incoming) => {
 
   saveConfig(next);
   resetSession(); // force a fresh login with the new settings
+  // Apply the TLS choice to subsequent connections without needing a restart.
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = next.insecureTLS ? '0' : '1';
   return { ok: true };
 });
 

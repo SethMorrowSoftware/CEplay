@@ -15,8 +15,8 @@ const LOG_FILTER_SOURCES = [
     'cron', 'manual', 'override', 'schedule', 'watchdog', 'expired_override',
     'admin', 'auth',
     'kiosk-pause', 'kiosk-unpause', 'kiosk-out-of-service',
-    'kiosk-patch', 'kiosk-action', 'kiosk-sync',
-    'game-action', 'game-patch', 'game-sync', 'game-poll',
+    'kiosk-patch', 'kiosk-action', 'kiosk-sync', 'kiosk-unpause-all',
+    'game-action', 'game-patch', 'game-sync', 'game-poll', 'game-unpause-all',
     'card-lookup', 'card-pin',
     'retry',
 ];
@@ -39,10 +39,10 @@ const LOG_FILTER_ACTIONS = [
     'override_created', 'override_deleted',
     // Games
     'games_bulk_patch', 'games_sync_triggered', 'games_poll_triggered',
-    'game_action_performed',
+    'game_action_performed', 'games_unpause_all',
     // Kiosks
     'kiosk_status_changed', 'kiosk_action_failed', 'kiosk_bulk_patch',
-    'kiosk_action_performed', 'kiosks_sync_triggered',
+    'kiosk_action_performed', 'kiosks_sync_triggered', 'kiosks_unpause_all',
     // Cards
     'card_viewed', 'card_transactions_viewed',
     'card_pin_probed', 'card_pin_validated',
