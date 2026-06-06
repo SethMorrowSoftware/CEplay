@@ -1,9 +1,12 @@
-# CEplay Unpause Remote
+# CEplay Remote
 
-A tiny standalone desktop app (Electron) with **two buttons**:
+A tiny standalone desktop app (Electron) with **four buttons** — unpause
+everything in the morning, pause it again at night:
 
 - **Unpause All Arcade Readers** — sets every paused arcade game to `enabled`.
 - **Unpause All Kiosks** — sets every paused kiosk to `enabled`.
+- **Pause All Arcade Readers** — sets every enabled arcade game to `paused`.
+- **Pause All Kiosks** — sets every enabled kiosk to `paused`.
 
 It is meant to live on a **different PC** than the main CEplay project (e.g. a
 front‑desk machine) and talks to CEplay over the network using the project's
@@ -13,29 +16,32 @@ to CenterEdge directly — CEplay handles all of that.
 ## How it works
 
 The app logs in to CEplay (`POST /api/auth/login`), keeps the session cookie +
-CSRF token in the Electron **main process**, and calls two endpoints:
+CSRF token in the Electron **main process**, and calls these endpoints:
 
-| Button                    | Endpoint                      |
-| ------------------------- | ----------------------------- |
+| Button                     | Endpoint                       |
+| -------------------------- | ------------------------------ |
 | Unpause All Arcade Readers | `POST /api/games/unpause-all`  |
+| Pause All Arcade Readers   | `POST /api/games/pause-all`    |
 | Unpause All Kiosks         | `POST /api/kiosks/unpause-all` |
+| Pause All Kiosks           | `POST /api/kiosks/pause-all`   |
 
-Each endpoint refreshes state from CenterEdge, flips every **paused** asset to
-`enabled`, and skips anything `outOfService` (and kiosks with unknown status,
-which the API spec says must not be controlled). **Per-asset failures (e.g. a
-unit that is in use) are queued into the exact same retry table the main CEplay
-app uses** (`Scheduler::queueRetry`), so the per‑minute watchdog
-(`Scheduler::processRetries`) keeps re‑attempting them up to `max_attempts` —
-identical behaviour to clicking pause/unpause inside the main app.
+Each endpoint refreshes state from CenterEdge, flips every eligible asset to the
+target state (unpause: `paused → enabled`; pause: `enabled → paused`), and skips
+anything `outOfService` (and kiosks with unknown status, which the API spec says
+must not be controlled). **Per-asset failures (e.g. a unit that is in use) are
+queued into the exact same retry table the main CEplay app uses**
+(`Scheduler::queueRetry`), so the per‑minute watchdog (`Scheduler::processRetries`)
+keeps re‑attempting them up to `max_attempts` — identical behaviour to clicking
+pause/unpause inside the main app.
 
 Because all network requests run in the main process (not the browser window),
 there are no CORS/CSP issues and no backend CORS changes are required.
 
 > Note: this is intended for arcade games/kiosks that are **not** on a pause
-> schedule. If you point it at assets governed by an active pause window, the
-> scheduler may re‑pause them on its next cycle (it has no way to know the
-> unpause was intentional). For scheduled groups, use an override in the main
-> app instead.
+> schedule (you drive them manually — on in the morning, off at night). If you
+> point it at assets governed by an active pause window, the scheduler may
+> re‑pause them on its next cycle (it has no way to know a manual change was
+> intentional). For scheduled groups, use an override in the main app instead.
 
 ## Prerequisites
 
@@ -77,9 +83,9 @@ does not cross‑compile reliably).
 Configuration lives in the per‑user Electron `userData` folder (not in this
 repo):
 
-- Windows: `%APPDATA%\CEplay Unpause Remote\config.json`
-- macOS: `~/Library/Application Support/CEplay Unpause Remote/config.json`
-- Linux: `~/.config/CEplay Unpause Remote/config.json`
+- Windows: `%APPDATA%\CEplay Remote\config.json`
+- macOS: `~/Library/Application Support/CEplay Remote/config.json`
+- Linux: `~/.config/CEplay Remote/config.json`
 
 The password is encrypted at rest with the OS keychain via Electron's
 `safeStorage` when available. If no keychain backend exists, it falls back to
@@ -90,5 +96,5 @@ low‑privilege account.
 
 Each button must be tapped **twice** (tap to arm, tap again within 3 seconds to
 confirm) so it can't be triggered by an accidental click. The result line then
-reports how many were unpaused, how many were already running, how many were
-skipped, and how many are busy and being retried by the server.
+reports how many were changed, how many were already in the target state, how
+many were skipped, and how many are busy and being retried by the server.

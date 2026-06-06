@@ -1,8 +1,8 @@
 {
-  "name": "ceplay-unpause-remote",
-  "productName": "CEplay Unpause Remote",
+  "name": "ceplay-remote",
+  "productName": "CEplay Remote",
   "version": "1.0.0",
-  "description": "Two-button desktop remote that unpauses all arcade games and all kiosks via the CEplay API.",
+  "description": "Desktop remote to bulk pause/unpause all arcade games and all kiosks via the CEplay API.",
   "main": "main.js",
   "author": "Castle Fun Center",
   "license": "MIT",
@@ -19,8 +19,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.castlefuncenter.ceplay.unpause",
-    "productName": "CEplay Unpause Remote",
+    "appId": "com.castlefuncenter.ceplay.remote",
+    "productName": "CEplay Remote",
     "files": [
       "main.js",
       "preload.js",

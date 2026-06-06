@@ -1,18 +1,20 @@
 'use strict';
 
 /**
- * CEplay Unpause Remote — Electron main process.
+ * CEplay Remote — Electron main process.
  *
  * All network I/O lives here (never in the renderer) so we sidestep browser
  * CORS / CSP entirely and keep the CEplay session cookie + CSRF token out of
  * the web context. The renderer talks to us only over the IPC bridge defined
  * in preload.js.
  *
- * The two buttons map to two CEplay endpoints, which apply the change through
+ * The four buttons map to four CEplay endpoints, which apply the change through
  * the SAME retry queue the main CEplay app uses (Scheduler::queueRetry →
  * watchdog Scheduler::processRetries):
  *   POST /api/games/unpause-all    — unpause every paused arcade reader
+ *   POST /api/games/pause-all      — pause every enabled arcade reader
  *   POST /api/kiosks/unpause-all   — unpause every paused kiosk
+ *   POST /api/kiosks/pause-all     — pause every enabled kiosk
  */
 
 const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
@@ -268,14 +270,14 @@ ipcMain.handle('ceplay:test', async () => {
   }
 });
 
-async function runUnpause(endpoint) {
+async function runBulk(endpoint) {
   try {
     await ensureAuth();
     const summary = await apiRequest('POST', endpoint, {});
     return { ok: true, summary };
   } catch (err) {
-    // The unpause endpoints return a structured summary even on a hard
-    // failure (HTTP 502) — surface it so the UI can explain what happened.
+    // The pause/unpause-all endpoints return a structured summary even on a
+    // hard failure (HTTP 502) — surface it so the UI can explain what happened.
     if (err.data && typeof err.data === 'object') {
       return { ok: false, summary: err.data, error: err.message };
     }
@@ -283,8 +285,10 @@ async function runUnpause(endpoint) {
   }
 }
 
-ipcMain.handle('ceplay:unpauseGames', () => runUnpause('/api/games/unpause-all'));
-ipcMain.handle('ceplay:unpauseKiosks', () => runUnpause('/api/kiosks/unpause-all'));
+ipcMain.handle('ceplay:unpauseGames', () => runBulk('/api/games/unpause-all'));
+ipcMain.handle('ceplay:pauseGames', () => runBulk('/api/games/pause-all'));
+ipcMain.handle('ceplay:unpauseKiosks', () => runBulk('/api/kiosks/unpause-all'));
+ipcMain.handle('ceplay:pauseKiosks', () => runBulk('/api/kiosks/pause-all'));
 
 // ---------------------------------------------------------------------------
 // Window
@@ -293,11 +297,11 @@ ipcMain.handle('ceplay:unpauseKiosks', () => runUnpause('/api/kiosks/unpause-all
 function createWindow() {
   const win = new BrowserWindow({
     width: 780,
-    height: 600,
+    height: 680,
     minWidth: 480,
-    minHeight: 440,
+    minHeight: 520,
     backgroundColor: '#0b0e14',
-    title: 'CEplay Unpause Remote',
+    title: 'CEplay Remote',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

@@ -8,10 +8,6 @@ const el = {
   connDot: document.getElementById('conn-dot'),
   statusLine: document.getElementById('status-line'),
   status: document.getElementById('status'),
-  btnGames: document.getElementById('btn-games'),
-  btnKiosks: document.getElementById('btn-kiosks'),
-  gamesSub: document.getElementById('games-sub'),
-  kiosksSub: document.getElementById('kiosks-sub'),
   settingsBtn: document.getElementById('settings-btn'),
   overlay: document.getElementById('settings-overlay'),
   cfgUrl: document.getElementById('cfg-url'),
@@ -84,9 +80,17 @@ async function refreshConnection() {
   }
 }
 
+// The four action buttons, each with its sub-label, the IPC call it triggers,
+// the noun for messages, and the present-tense verb shown while it runs.
+const controls = [
+  { btn: document.getElementById('btn-games-unpause'),  sub: document.getElementById('games-unpause-sub'),  run: () => api.unpauseGames(),  noun: 'arcade readers', verb: 'Unpausing' },
+  { btn: document.getElementById('btn-kiosks-unpause'), sub: document.getElementById('kiosks-unpause-sub'), run: () => api.unpauseKiosks(), noun: 'kiosks',         verb: 'Unpausing' },
+  { btn: document.getElementById('btn-games-pause'),    sub: document.getElementById('games-pause-sub'),    run: () => api.pauseGames(),    noun: 'arcade readers', verb: 'Pausing' },
+  { btn: document.getElementById('btn-kiosks-pause'),   sub: document.getElementById('kiosks-pause-sub'),   run: () => api.pauseKiosks(),   noun: 'kiosks',         verb: 'Pausing' },
+];
+
 function setButtonsEnabled(on) {
-  el.btnGames.disabled = !on;
-  el.btnKiosks.disabled = !on;
+  for (const c of controls) c.btn.disabled = !on;
 }
 
 // --------------------------------------------------------------------------
@@ -119,7 +123,7 @@ function makeButton(btn, subEl, idleText, run) {
   return { disarm };
 }
 
-async function withBusy(activeBtn, subEl, workingText, fn) {
+async function withBusy(subEl, workingText, fn) {
   busy = true;
   setConn('working');
   setButtonsEnabled(false);
@@ -153,20 +157,26 @@ function summarize(noun, res) {
     return { cls: 'error', text: noun + ': ' + s.error, detail: null };
   }
 
+  const isPause = s.action === 'pause';
+  const didVerb = isPause ? 'Paused' : 'Unpaused';
+  const alreadyWord = isPause ? 'already paused' : 'already running';
+
   const lines = [];
-  if (typeof s.already_enabled === 'number') lines.push(`${s.already_enabled} already running`);
+  if (typeof s.already === 'number' && s.already > 0) lines.push(`${s.already} ${alreadyWord}`);
   if (typeof s.out_of_service === 'number' && s.out_of_service > 0) lines.push(`${s.out_of_service} out of service (skipped)`);
   if (typeof s.unknown === 'number' && s.unknown > 0) lines.push(`${s.unknown} unknown status (skipped)`);
 
   let cls = 'ok';
   let head;
   if ((s.attempted || 0) === 0) {
-    head = `All ${noun} already running. Nothing to unpause.`;
+    head = isPause
+      ? `All ${noun} already paused. Nothing to pause.`
+      : `All ${noun} already running. Nothing to unpause.`;
   } else if ((s.failed || 0) === 0) {
-    head = `Unpaused ${s.unpaused} ${noun}.`;
+    head = `${didVerb} ${s.changed} ${noun}.`;
   } else {
     cls = 'warn';
-    head = `Unpaused ${s.unpaused} of ${s.attempted} ${noun}. ${s.failed} busy — the server will keep retrying.`;
+    head = `${didVerb} ${s.changed} of ${s.attempted} ${noun}. ${s.failed} busy — the server will keep retrying.`;
     const r = (s.retrying || []).slice(0, 6).map((x) => {
       const a = `attempt ${x.attempts}/${x.max_attempts}`;
       return `• ${x.id} (${a})${x.last_error ? ' — ' + x.last_error : ''}`;
@@ -186,25 +196,17 @@ function summarize(noun, res) {
 // Wire up buttons
 // --------------------------------------------------------------------------
 
-makeButton(el.btnGames, el.gamesSub, 'Tap to start', async () => {
-  await withBusy(el.btnGames, el.gamesSub, 'Unpausing…', async () => {
-    setStatus('Unpausing all arcade readers…', null);
-    const res = await api.unpauseGames();
-    const out = summarize('arcade readers', res);
-    setStatus(out.text, out.cls, out.detail);
-    setConn(out.cls === 'error' ? 'error' : 'ok');
+for (const c of controls) {
+  makeButton(c.btn, c.sub, 'Tap to start', async () => {
+    await withBusy(c.sub, c.verb + '…', async () => {
+      setStatus(`${c.verb} all ${c.noun}…`, null);
+      const res = await c.run();
+      const out = summarize(c.noun, res);
+      setStatus(out.text, out.cls, out.detail);
+      setConn(out.cls === 'error' ? 'error' : 'ok');
+    });
   });
-});
-
-makeButton(el.btnKiosks, el.kiosksSub, 'Tap to start', async () => {
-  await withBusy(el.btnKiosks, el.kiosksSub, 'Unpausing…', async () => {
-    setStatus('Unpausing all kiosks…', null);
-    const res = await api.unpauseKiosks();
-    const out = summarize('kiosks', res);
-    setStatus(out.text, out.cls, out.detail);
-    setConn(out.cls === 'error' ? 'error' : 'ok');
-  });
-});
+}
 
 // --------------------------------------------------------------------------
 // Settings panel

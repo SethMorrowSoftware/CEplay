@@ -8,6 +8,7 @@
  * GET    /api/games/transactions/top    — Top-games aggregation (cached locally)
  * POST   /api/games/sync               — Force sync game states from CenterEdge
  * POST   /api/games/unpause-all        — Unpause every paused game ("arcade reader")
+ * POST   /api/games/pause-all          — Pause every enabled game ("arcade reader")
  * POST   /api/games/transactions/poll  — Force-poll the play feed (manual catch-up)
  * GET    /api/games/{id}               — Single game (live from CenterEdge)
  * POST   /api/games/{id}/action        — RPC perform-action (e.g. reboot)
@@ -52,16 +53,20 @@ function handleGames(string $method, array $parts, ?array $input): void {
         return;
     }
 
-    // POST /api/games/unpause-all — unpause every paused game in one shot
+    // POST /api/games/unpause-all | /pause-all — bulk flip every game in one shot
     if ($method === 'POST' && $action === 'unpause-all') {
-        gamesUnpauseAll();
+        gamesBulkAll('unpause');
+        return;
+    }
+    if ($method === 'POST' && $action === 'pause-all') {
+        gamesBulkAll('pause');
         return;
     }
 
     // GET /api/games/{id}  and  POST /api/games/{id}/action
     // We treat any /api/games/<value> where value is not a reserved word as a
-    // single-game lookup. Reserved: 'categories', 'sync', 'transactions', 'analytics', 'unpause-all'.
-    $reservedActions = ['categories', 'sync', 'transactions', 'analytics', 'unpause-all', ''];
+    // single-game lookup.
+    $reservedActions = ['categories', 'sync', 'transactions', 'analytics', 'unpause-all', 'pause-all', ''];
     if ($action !== '' && !in_array($action, $reservedActions, true)) {
         $gameId = $action;
         if ($method === 'GET' && $sub === '') {
@@ -275,15 +280,20 @@ function gamesApplyStatusChanges(CenterEdgeClient $client, array $changes): arra
 }
 
 /**
- * Unpause every paused game in one action (the remote-control "Unpause all
- * arcade readers" button).
+ * Bulk pause or unpause every eligible game in one action (the remote-control
+ * "Pause / Unpause All Arcade Readers" buttons).
  *
- * Mirrors kioskUnpauseAll(): sync the game cache first (best-effort) so we act
- * on the true current state, flip every game currently `paused` to `enabled`,
- * skip anything outOfService, and route per-game failures through the shared
- * retry path so the watchdog keeps re-attempting busy units.
+ * $action = 'unpause' (flip every paused game to enabled) or
+ *           'pause'   (flip every enabled game to paused).
+ *
+ * Syncs the game cache if stale so we act on the true current state, skips
+ * anything outOfService, and routes per-game failures through the shared retry
+ * path (gamesApplyStatusChanges) so the watchdog keeps re-attempting busy units.
  */
-function gamesUnpauseAll(): void {
+function gamesBulkAll(string $action): void {
+    $fromStatus = $action === 'pause' ? 'enabled' : 'paused';
+    $toStatus   = $action === 'pause' ? 'paused'  : 'enabled';
+
     $client = new CenterEdgeClient();
     if (!$client->isConfigured()) {
         http_response_code(400);
@@ -300,19 +310,22 @@ function gamesUnpauseAll(): void {
         Scheduler::syncGameStatesIfStale(30);
     } catch (Exception $e) {
         $syncWarning = sanitizeApiError($e->getMessage());
-        error_log('games unpause-all: sync failed, using cached state: ' . $e->getMessage());
+        error_log("games {$action}-all: sync failed, using cached state: " . $e->getMessage());
     }
 
     $rows = DB::query('SELECT game_id, game_name, operation_status FROM game_state_cache');
     $total = count($rows);
     $changes = [];
-    $alreadyEnabled = 0;
+    $already = 0;        // already in the target state
     $outOfService = 0;
     foreach ($rows as $r) {
-        switch ($r['operation_status']) {
-            case 'paused':       $changes[(string)$r['game_id']] = 'enabled'; break;
-            case 'outOfService': $outOfService++; break;
-            default:             $alreadyEnabled++; // games always carry a status
+        $st = $r['operation_status'];
+        if ($st === $fromStatus) {
+            $changes[(string)$r['game_id']] = $toStatus;
+        } elseif ($st === 'outOfService') {
+            $outOfService++;
+        } else {
+            $already++; // already in $toStatus (or otherwise not actionable)
         }
     }
 
@@ -344,35 +357,37 @@ function gamesUnpauseAll(): void {
         }
     }
     $failed = count($retrying);
-    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
+    $changed = $patchError === null ? max(0, count($changes) - $failed) : 0;
     $success = ($patchError === null && $failed === 0);
 
     $userId = Auth::check()['id'] ?? null;
-    DB::auditLog('game-unpause-all', 'games_unpause_all', $userId, [
-        'total'           => $total,
-        'attempted'       => count($changes),
-        'unpaused'        => $unpaused,
-        'failed'          => $failed,
-        'already_enabled' => $alreadyEnabled,
-        'out_of_service'  => $outOfService,
+    DB::auditLog('game-' . $action . '-all', 'games_' . $action . '_all', $userId, [
+        'total'          => $total,
+        'attempted'      => count($changes),
+        'changed'        => $changed,
+        'failed'         => $failed,
+        'already'        => $already,
+        'out_of_service' => $outOfService,
     ], $success, $success ? null : ($patchError ?? ($failed . ' game(s) failed; queued for retry')));
 
     if ($patchError !== null) {
         http_response_code(502);
     }
     echo json_encode([
-        'success'         => $success,
-        'asset'           => 'game',
-        'total'           => $total,
-        'attempted'       => count($changes),
-        'unpaused'        => $unpaused,
-        'failed'          => $failed,
-        'already_enabled' => $alreadyEnabled,
-        'out_of_service'  => $outOfService,
-        'retrying'        => $retrying,
-        'errors'          => $errors,
-        'error'           => $patchError,   // non-null only on a hard PATCH failure
-        'sync_warning'    => $syncWarning,
+        'success'        => $success,
+        'asset'          => 'game',
+        'action'         => $action,
+        'total'          => $total,
+        'attempted'      => count($changes),
+        'changed'        => $changed,
+        'failed'         => $failed,
+        'already'        => $already,
+        'out_of_service' => $outOfService,
+        'unknown'        => 0,
+        'retrying'       => $retrying,
+        'errors'         => $errors,
+        'error'          => $patchError,   // non-null only on a hard PATCH failure
+        'sync_warning'   => $syncWarning,
     ]);
 }
 

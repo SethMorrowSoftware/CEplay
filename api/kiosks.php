@@ -6,6 +6,7 @@
  * GET    /api/kiosks/{id}              — Single kiosk (live from CenterEdge)
  * POST   /api/kiosks/sync              — Force resync from CenterEdge
  * POST   /api/kiosks/unpause-all       — Unpause every paused kiosk (skips OOS/unknown)
+ * POST   /api/kiosks/pause-all         — Pause every enabled kiosk (skips OOS/unknown)
  * POST   /api/kiosks/{id}/pause        — Set operationStatus = paused
  * POST   /api/kiosks/{id}/unpause      — Set operationStatus = enabled
  * POST   /api/kiosks/{id}/out-of-service — Set operationStatus = outOfService
@@ -29,9 +30,13 @@ function handleKiosks(string $method, array $parts, ?array $input): void {
         return;
     }
 
-    // POST /api/kiosks/unpause-all — unpause every paused kiosk in one shot
+    // POST /api/kiosks/unpause-all | /pause-all — bulk flip every kiosk in one shot
     if ($method === 'POST' && $kioskId === 'unpause-all' && $action === null) {
-        kioskUnpauseAll();
+        kioskBulkAll('unpause');
+        return;
+    }
+    if ($method === 'POST' && $kioskId === 'pause-all' && $action === null) {
+        kioskBulkAll('pause');
         return;
     }
 
@@ -346,17 +351,22 @@ function kioskApplyStatusChanges(CenterEdgeClient $client, array $changes): arra
 }
 
 /**
- * Unpause every paused kiosk in one action (the remote-control "Unpause all
- * kiosks" button).
+ * Bulk pause or unpause every eligible kiosk in one action (the remote-control
+ * "Pause / Unpause All Kiosks" buttons).
  *
- * Syncs the kiosk cache first (best-effort) so we act on the true current
- * state, then flips every kiosk currently `paused` to `enabled`. Kiosks that
- * are outOfService — or report no operationStatus ("unknown"), which per the
- * API spec MUST NOT be pause-controlled — are skipped. Per-kiosk failures are
- * routed through the shared retry path (kioskApplyStatusChanges), so a busy
- * kiosk is re-attempted by the watchdog just like a single manual unpause.
+ * $action = 'unpause' (flip every paused kiosk to enabled) or
+ *           'pause'   (flip every enabled kiosk to paused).
+ *
+ * Syncs the kiosk cache if stale so we act on the true current state. Kiosks
+ * that are outOfService — or report no operationStatus ("unknown"), which per
+ * the API spec MUST NOT be pause-controlled — are skipped. Per-kiosk failures
+ * are routed through the shared retry path (kioskApplyStatusChanges), so a busy
+ * kiosk is re-attempted by the watchdog just like a single manual action.
  */
-function kioskUnpauseAll(): void {
+function kioskBulkAll(string $action): void {
+    $fromStatus = $action === 'pause' ? 'enabled' : 'paused';
+    $toStatus   = $action === 'pause' ? 'paused'  : 'enabled';
+
     $client = new CenterEdgeClient();
     if (!$client->isConfigured()) {
         http_response_code(400);
@@ -374,15 +384,19 @@ function kioskUnpauseAll(): void {
     $rows = DB::query('SELECT kiosk_id, kiosk_name, operation_status FROM kiosk_state_cache');
     $total = count($rows);
     $changes = [];
-    $alreadyEnabled = 0;
+    $already = 0;        // already in the target state
     $outOfService = 0;
     $unknown = 0;
     foreach ($rows as $r) {
-        switch ($r['operation_status']) {
-            case 'paused':       $changes[(string)$r['kiosk_id']] = 'enabled'; break;
-            case 'enabled':      $alreadyEnabled++; break;
-            case 'outOfService': $outOfService++; break;
-            default:             $unknown++; // '' / null → unknown; must not control
+        $st = $r['operation_status'];
+        if ($st === $fromStatus) {
+            $changes[(string)$r['kiosk_id']] = $toStatus;
+        } elseif ($st === 'outOfService') {
+            $outOfService++;
+        } elseif ($st === '' || $st === null) {
+            $unknown++; // unknown status; must not control
+        } else {
+            $already++; // already in $toStatus
         }
     }
 
@@ -414,37 +428,38 @@ function kioskUnpauseAll(): void {
         }
     }
     $failed = count($retrying);
-    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
+    $changed = $patchError === null ? max(0, count($changes) - $failed) : 0;
     $success = ($patchError === null && $failed === 0);
 
     $userId = Auth::check()['id'] ?? null;
-    DB::auditLog('kiosk-unpause-all', 'kiosks_unpause_all', $userId, [
-        'total'           => $total,
-        'attempted'       => count($changes),
-        'unpaused'        => $unpaused,
-        'failed'          => $failed,
-        'already_enabled' => $alreadyEnabled,
-        'out_of_service'  => $outOfService,
-        'unknown'         => $unknown,
+    DB::auditLog('kiosk-' . $action . '-all', 'kiosks_' . $action . '_all', $userId, [
+        'total'          => $total,
+        'attempted'      => count($changes),
+        'changed'        => $changed,
+        'failed'         => $failed,
+        'already'        => $already,
+        'out_of_service' => $outOfService,
+        'unknown'        => $unknown,
     ], $success, $success ? null : ($patchError ?? ($failed . ' kiosk(s) failed; queued for retry')));
 
     if ($patchError !== null) {
         http_response_code(502);
     }
     echo json_encode([
-        'success'         => $success,
-        'asset'           => 'kiosk',
-        'total'           => $total,
-        'attempted'       => count($changes),
-        'unpaused'        => $unpaused,
-        'failed'          => $failed,
-        'already_enabled' => $alreadyEnabled,
-        'out_of_service'  => $outOfService,
-        'unknown'         => $unknown,
-        'retrying'        => $retrying,
-        'errors'          => $errors,
-        'error'           => $patchError,   // non-null only on a hard PATCH failure
-        'sync_warning'    => null,          // kiosk sync failures are non-fatal here
+        'success'        => $success,
+        'asset'          => 'kiosk',
+        'action'         => $action,
+        'total'          => $total,
+        'attempted'      => count($changes),
+        'changed'        => $changed,
+        'failed'         => $failed,
+        'already'        => $already,
+        'out_of_service' => $outOfService,
+        'unknown'        => $unknown,
+        'retrying'       => $retrying,
+        'errors'         => $errors,
+        'error'          => $patchError,   // non-null only on a hard PATCH failure
+        'sync_warning'   => null,          // kiosk sync failures are non-fatal here
     ]);
 }
 
