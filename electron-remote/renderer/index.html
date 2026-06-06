@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CEplay Remote</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="conn-dot" data-state="unknown"></span>
+      <span class="brand-text">CEplay Remote</span>
+    </div>
+    <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+  </header>
+
+  <main id="main-view">
+    <div class="buttons">
+      <button class="big-btn unpause" id="btn-games-unpause" data-armed="0" disabled>
+        <span class="big-btn-verb">Unpause</span>
+        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-sub" id="games-unpause-sub">Tap to start</span>
+      </button>
+
+      <button class="big-btn unpause" id="btn-kiosks-unpause" data-armed="0" disabled>
+        <span class="big-btn-verb">Unpause</span>
+        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-sub" id="kiosks-unpause-sub">Tap to start</span>
+      </button>
+
+      <button class="big-btn pause" id="btn-games-pause" data-armed="0" disabled>
+        <span class="big-btn-verb">Pause</span>
+        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-sub" id="games-pause-sub">Tap to start</span>
+      </button>
+
+      <button class="big-btn pause" id="btn-kiosks-pause" data-armed="0" disabled>
+        <span class="big-btn-verb">Pause</span>
+        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-sub" id="kiosks-pause-sub">Tap to start</span>
+      </button>
+    </div>
+
+    <section class="status" id="status" aria-live="polite">
+      <p class="status-line" id="status-line">Checking connection…</p>
+    </section>
+  </main>
+
+  <!-- Settings panel -->
+  <div class="overlay hidden" id="settings-overlay">
+    <div class="panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+
+      <label for="cfg-url">CEplay server URL</label>
+      <input type="url" id="cfg-url" placeholder="https://ceplay.local" autocomplete="off" />
+
+      <label for="cfg-user">Username</label>
+      <input type="text" id="cfg-user" placeholder="frontdesk" autocomplete="off" />
+
+      <label for="cfg-pass">Password</label>
+      <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
+
+      <label class="checkbox">
+        <input type="checkbox" id="cfg-insecure" />
+        Allow self-signed TLS certificate (LAN only)
+      </label>
+
+      <p class="hint" id="enc-hint"></p>
+
+      <div class="panel-actions">
+        <button id="cfg-test" class="btn-secondary">Test connection</button>
+        <span class="spacer"></span>
+        <button id="cfg-cancel" class="btn-secondary">Close</button>
+        <button id="cfg-save" class="btn-primary">Save</button>
+      </div>
+
+      <p class="panel-msg" id="cfg-msg"></p>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
