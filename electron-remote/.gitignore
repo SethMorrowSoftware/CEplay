@@ -1,0 +1,8 @@
+node_modules/
+dist/
+out/
+build/
+*.log
+
+# Never commit runtime credentials if someone drops a local config here.
+config.json

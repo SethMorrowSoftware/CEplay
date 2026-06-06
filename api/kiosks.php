@@ -5,6 +5,7 @@
  * GET    /api/kiosks                   — List kiosks (cache-first; auto-syncs if empty)
  * GET    /api/kiosks/{id}              — Single kiosk (live from CenterEdge)
  * POST   /api/kiosks/sync              — Force resync from CenterEdge
+ * POST   /api/kiosks/unpause-all       — Unpause every paused kiosk (skips OOS/unknown)
  * POST   /api/kiosks/{id}/pause        — Set operationStatus = paused
  * POST   /api/kiosks/{id}/unpause      — Set operationStatus = enabled
  * POST   /api/kiosks/{id}/out-of-service — Set operationStatus = outOfService
@@ -25,6 +26,12 @@ function handleKiosks(string $method, array $parts, ?array $input): void {
     // POST /api/kiosks/sync
     if ($method === 'POST' && $kioskId === 'sync' && $action === null) {
         kioskSync();
+        return;
+    }
+
+    // POST /api/kiosks/unpause-all — unpause every paused kiosk in one shot
+    if ($method === 'POST' && $kioskId === 'unpause-all' && $action === null) {
+        kioskUnpauseAll();
         return;
     }
 
@@ -270,23 +277,43 @@ function kioskPatchBulk(?array $input): void {
         }
     }
 
-    // Manual bulk patch is a fresh intent — clear any prior retry/give-up
-    // state for these kiosks before issuing the patch so a failure starts
-    // a clean 10-attempt window instead of inheriting earlier give-up state.
-    foreach ($changes as $kioskId => $_status) {
-        Scheduler::clearRetry('kiosk', (string)$kioskId);
-    }
-
     try {
-        $result = $client->patchKiosks($changes);
+        $result = kioskApplyStatusChanges($client, $changes);
     } catch (RuntimeException $e) {
         http_response_code(500);
         echo json_encode(['error' => sanitizeApiError($e->getMessage())]);
         return;
     }
 
-    // Reflect successful changes in the local cache; on failure, queue a
-    // fresh retry (the watchdog will re-attempt up to max_attempts).
+    $userId = Auth::check()['id'] ?? null;
+    DB::auditLog('kiosk-patch', 'kiosk_bulk_patch', $userId, [
+        'changes' => $changes,
+        'errors' => $result['errors'] ?? [],
+    ]);
+
+    echo json_encode($result);
+}
+
+/**
+ * Apply a set of kiosk operationStatus changes through the CenterEdge client,
+ * using the exact same retry semantics as every other manual kiosk action:
+ *   - clear any prior retry/give-up state first (fresh intent → clean window)
+ *   - PATCH the changes upstream
+ *   - on per-kiosk success, reflect the new state in the local cache
+ *   - on per-kiosk failure, queue a retry so the watchdog re-attempts it (up
+ *     to max_attempts) exactly like a single pause/unpause click would.
+ *
+ * $changes = ['kioskId' => 'enabled'|'paused'|'outOfService', ...]
+ * Returns the raw CenterEdge result: ['kiosks' => [...], 'errors' => [...]].
+ * Throws RuntimeException if the bulk PATCH itself fails (network/4xx/5xx).
+ */
+function kioskApplyStatusChanges(CenterEdgeClient $client, array $changes): array {
+    foreach ($changes as $kioskId => $_status) {
+        Scheduler::clearRetry('kiosk', (string)$kioskId);
+    }
+
+    $result = $client->patchKiosks($changes);
+
     foreach ($changes as $kioskId => $status) {
         if (!isset($result['errors'][$kioskId])) {
             DB::execute(
@@ -300,13 +327,112 @@ function kioskPatchBulk(?array $input): void {
         }
     }
 
-    $userId = Auth::check()['id'] ?? null;
-    DB::auditLog('kiosk-patch', 'kiosk_bulk_patch', $userId, [
-        'changes' => $changes,
-        'errors' => $result['errors'] ?? [],
-    ]);
+    return $result;
+}
 
-    echo json_encode($result);
+/**
+ * Unpause every paused kiosk in one action (the remote-control "Unpause all
+ * kiosks" button).
+ *
+ * Syncs the kiosk cache first (best-effort) so we act on the true current
+ * state, then flips every kiosk currently `paused` to `enabled`. Kiosks that
+ * are outOfService — or report no operationStatus ("unknown"), which per the
+ * API spec MUST NOT be pause-controlled — are skipped. Per-kiosk failures are
+ * routed through the shared retry path (kioskApplyStatusChanges), so a busy
+ * kiosk is re-attempted by the watchdog just like a single manual unpause.
+ */
+function kioskUnpauseAll(): void {
+    $client = new CenterEdgeClient();
+    if (!$client->isConfigured()) {
+        http_response_code(400);
+        echo json_encode(['error' => 'CenterEdge API is not configured.']);
+        return;
+    }
+
+    // Authoritative refresh. If it fails we fall back to the cached state
+    // rather than refusing to act — the operator pressed "unpause" for a reason.
+    $syncWarning = null;
+    try {
+        $client->syncKiosksToCache();
+    } catch (Exception $e) {
+        $syncWarning = sanitizeApiError($e->getMessage());
+        error_log('kiosk unpause-all: sync failed, using cached state: ' . $e->getMessage());
+    }
+
+    $rows = DB::query('SELECT kiosk_id, kiosk_name, operation_status FROM kiosk_state_cache');
+    $total = count($rows);
+    $changes = [];
+    $alreadyEnabled = 0;
+    $outOfService = 0;
+    $unknown = 0;
+    foreach ($rows as $r) {
+        switch ($r['operation_status']) {
+            case 'paused':       $changes[(string)$r['kiosk_id']] = 'enabled'; break;
+            case 'enabled':      $alreadyEnabled++; break;
+            case 'outOfService': $outOfService++; break;
+            default:             $unknown++; // '' / null → unknown; must not control
+        }
+    }
+
+    $result = ['kiosks' => [], 'errors' => []];
+    $patchError = null;
+    if (!empty($changes)) {
+        try {
+            $result = kioskApplyStatusChanges($client, $changes);
+        } catch (RuntimeException $e) {
+            $patchError = sanitizeApiError($e->getMessage());
+        }
+    }
+
+    $errors = $result['errors'] ?? [];
+    $failed = count($errors);
+    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
+    $success = ($patchError === null && $failed === 0);
+
+    // Surface what's now waiting on the watchdog so the remote app can say
+    // "N kiosk(s) busy — will keep retrying".
+    $pending = Scheduler::getPendingRetriesByType('kiosk');
+    $retrying = [];
+    foreach (array_keys($changes) as $kid) {
+        if (isset($pending[$kid])) {
+            $retrying[] = [
+                'id'           => $kid,
+                'attempts'     => $pending[$kid]['attempts'],
+                'max_attempts' => $pending[$kid]['max_attempts'],
+                'last_error'   => $pending[$kid]['last_error'],
+            ];
+        }
+    }
+
+    $userId = Auth::check()['id'] ?? null;
+    DB::auditLog('kiosk-unpause-all', 'kiosks_unpause_all', $userId, [
+        'total'           => $total,
+        'attempted'       => count($changes),
+        'unpaused'        => $unpaused,
+        'failed'          => $failed,
+        'already_enabled' => $alreadyEnabled,
+        'out_of_service'  => $outOfService,
+        'unknown'         => $unknown,
+    ], $success, $success ? null : ($patchError ?? ($failed . ' kiosk(s) failed; queued for retry')));
+
+    if ($patchError !== null) {
+        http_response_code(502);
+    }
+    echo json_encode([
+        'success'         => $success,
+        'asset'           => 'kiosk',
+        'total'           => $total,
+        'attempted'       => count($changes),
+        'unpaused'        => $unpaused,
+        'failed'          => $failed,
+        'already_enabled' => $alreadyEnabled,
+        'out_of_service'  => $outOfService,
+        'unknown'         => $unknown,
+        'retrying'        => $retrying,
+        'errors'          => $errors,
+        'error'           => $patchError,   // non-null only on a hard PATCH failure
+        'sync_warning'    => $syncWarning,
+    ]);
 }
 
 /**

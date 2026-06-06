@@ -7,6 +7,7 @@
  * GET    /api/games/transactions/recent — Recent plays (cached locally)
  * GET    /api/games/transactions/top    — Top-games aggregation (cached locally)
  * POST   /api/games/sync               — Force sync game states from CenterEdge
+ * POST   /api/games/unpause-all        — Unpause every paused game ("arcade reader")
  * POST   /api/games/transactions/poll  — Force-poll the play feed (manual catch-up)
  * GET    /api/games/{id}               — Single game (live from CenterEdge)
  * POST   /api/games/{id}/action        — RPC perform-action (e.g. reboot)
@@ -51,10 +52,16 @@ function handleGames(string $method, array $parts, ?array $input): void {
         return;
     }
 
+    // POST /api/games/unpause-all — unpause every paused game in one shot
+    if ($method === 'POST' && $action === 'unpause-all') {
+        gamesUnpauseAll();
+        return;
+    }
+
     // GET /api/games/{id}  and  POST /api/games/{id}/action
     // We treat any /api/games/<value> where value is not a reserved word as a
-    // single-game lookup. Reserved: 'categories', 'sync', 'transactions', 'analytics'.
-    $reservedActions = ['categories', 'sync', 'transactions', 'analytics', ''];
+    // single-game lookup. Reserved: 'categories', 'sync', 'transactions', 'analytics', 'unpause-all'.
+    $reservedActions = ['categories', 'sync', 'transactions', 'analytics', 'unpause-all', ''];
     if ($action !== '' && !in_array($action, $reservedActions, true)) {
         $gameId = $action;
         if ($method === 'GET' && $sub === '') {
@@ -168,37 +175,9 @@ function handleGames(string $method, array $parts, ?array $input): void {
             return;
         }
 
-        // Manual click is a fresh intent. Wipe any prior retry rows (including
-        // gave-up markers) for the games we're about to patch so a failure
-        // here starts a clean 10-attempt window instead of inheriting the
-        // earlier give-up state.
-        foreach ($changes as $gameId => $_status) {
-            Scheduler::clearRetry('game', (string)$gameId);
-        }
+        $result = gamesApplyStatusChanges($client, $changes);
 
-        $result = $client->patchGames($changes);
-
-        // Update cache only for games that actually succeeded, and reconcile
-        // the retry queue: nothing to do on success (we already cleared above),
-        // queue a fresh retry on failure. Older code wrote optimistically for
-        // every requested change, which meant the cache would lie if the
-        // upstream API rejected the patch.
-        $errors = $result['errors'] ?? [];
-        foreach ($changes as $gameId => $status) {
-            $gid = (string)$gameId;
-            if (!isset($errors[$gameId]) && !isset($errors[$gid])) {
-                DB::execute(
-                    'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
-                    [$status, $gid]
-                );
-            } else {
-                $err = $errors[$gameId] ?? $errors[$gid];
-                $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
-                Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errorText);
-            }
-        }
-
-        $errorCount = count($errors);
+        $errorCount = count($result['errors'] ?? []);
         DB::auditLog('game-patch', 'games_bulk_patch', null, [
             'requested' => count($changes),
             'errors' => $errorCount,
@@ -241,6 +220,143 @@ function handleGames(string $method, array $parts, ?array $input): void {
 
     http_response_code(405);
     echo json_encode(['error' => 'Method not allowed']);
+}
+
+/**
+ * Apply a set of game operationStatus changes through the CenterEdge client,
+ * using the exact same retry semantics as the manual bulk PATCH handler:
+ *   - clear any prior retry/give-up state first (fresh intent → clean window)
+ *   - PATCH the changes upstream
+ *   - on per-game success, reflect the new state in the local cache
+ *   - on per-game failure, queue a retry so the watchdog re-attempts it (up to
+ *     max_attempts), exactly like a single pause/unpause click would.
+ *
+ * $changes = ['gameId' => 'enabled'|'paused'|'outOfService', ...]
+ * Returns the raw CenterEdge result: ['games' => [...], 'errors' => [...]].
+ * Throws RuntimeException if the bulk PATCH itself fails (network/4xx/5xx).
+ */
+function gamesApplyStatusChanges(CenterEdgeClient $client, array $changes): array {
+    foreach ($changes as $gameId => $_status) {
+        Scheduler::clearRetry('game', (string)$gameId);
+    }
+
+    $result = $client->patchGames($changes);
+
+    // Update cache only for games that actually succeeded; queue a fresh retry
+    // on failure so the watchdog re-attempts up to max_attempts. (Writing the
+    // cache optimistically for every requested change would make it lie when
+    // the upstream API rejects a patch.)
+    $errors = $result['errors'] ?? [];
+    foreach ($changes as $gameId => $status) {
+        $gid = (string)$gameId;
+        if (!isset($errors[$gameId]) && !isset($errors[$gid])) {
+            DB::execute(
+                'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
+                [$status, $gid]
+            );
+        } else {
+            $err = $errors[$gameId] ?? $errors[$gid];
+            $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
+            Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errorText);
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Unpause every paused game in one action (the remote-control "Unpause all
+ * arcade readers" button).
+ *
+ * Mirrors kioskUnpauseAll(): sync the game cache first (best-effort) so we act
+ * on the true current state, flip every game currently `paused` to `enabled`,
+ * skip anything outOfService, and route per-game failures through the shared
+ * retry path so the watchdog keeps re-attempting busy units.
+ */
+function gamesUnpauseAll(): void {
+    $client = new CenterEdgeClient();
+    if (!$client->isConfigured()) {
+        http_response_code(400);
+        echo json_encode(['error' => 'CenterEdge API is not configured.']);
+        return;
+    }
+
+    $syncWarning = null;
+    try {
+        $client->syncGamesToCache();
+    } catch (Exception $e) {
+        $syncWarning = sanitizeApiError($e->getMessage());
+        error_log('games unpause-all: sync failed, using cached state: ' . $e->getMessage());
+    }
+
+    $rows = DB::query('SELECT game_id, game_name, operation_status FROM game_state_cache');
+    $total = count($rows);
+    $changes = [];
+    $alreadyEnabled = 0;
+    $outOfService = 0;
+    foreach ($rows as $r) {
+        switch ($r['operation_status']) {
+            case 'paused':       $changes[(string)$r['game_id']] = 'enabled'; break;
+            case 'outOfService': $outOfService++; break;
+            default:             $alreadyEnabled++; // games always carry a status
+        }
+    }
+
+    $result = ['games' => [], 'errors' => []];
+    $patchError = null;
+    if (!empty($changes)) {
+        try {
+            $result = gamesApplyStatusChanges($client, $changes);
+        } catch (RuntimeException $e) {
+            $patchError = sanitizeApiError($e->getMessage());
+        }
+    }
+
+    $errors = $result['errors'] ?? [];
+    $failed = count($errors);
+    $unpaused = $patchError === null ? max(0, count($changes) - $failed) : 0;
+    $success = ($patchError === null && $failed === 0);
+
+    $pending = Scheduler::getPendingRetriesByType('game');
+    $retrying = [];
+    foreach (array_keys($changes) as $gid) {
+        if (isset($pending[$gid])) {
+            $retrying[] = [
+                'id'           => $gid,
+                'attempts'     => $pending[$gid]['attempts'],
+                'max_attempts' => $pending[$gid]['max_attempts'],
+                'last_error'   => $pending[$gid]['last_error'],
+            ];
+        }
+    }
+
+    $userId = Auth::check()['id'] ?? null;
+    DB::auditLog('game-unpause-all', 'games_unpause_all', $userId, [
+        'total'           => $total,
+        'attempted'       => count($changes),
+        'unpaused'        => $unpaused,
+        'failed'          => $failed,
+        'already_enabled' => $alreadyEnabled,
+        'out_of_service'  => $outOfService,
+    ], $success, $success ? null : ($patchError ?? ($failed . ' game(s) failed; queued for retry')));
+
+    if ($patchError !== null) {
+        http_response_code(502);
+    }
+    echo json_encode([
+        'success'         => $success,
+        'asset'           => 'game',
+        'total'           => $total,
+        'attempted'       => count($changes),
+        'unpaused'        => $unpaused,
+        'failed'          => $failed,
+        'already_enabled' => $alreadyEnabled,
+        'out_of_service'  => $outOfService,
+        'retrying'        => $retrying,
+        'errors'          => $errors,
+        'error'           => $patchError,   // non-null only on a hard PATCH failure
+        'sync_warning'    => $syncWarning,
+    ]);
 }
 
 // -----------------------------------------------
