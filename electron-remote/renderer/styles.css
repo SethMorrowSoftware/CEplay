@@ -281,6 +281,32 @@ body {
 .status-title { font-size: clamp(24px, 3vw, 36px); }
 .status-synced { font-size: 12px; color: var(--muted); margin-left: auto; white-space: nowrap; }
 .btn-sm { padding: 8px 14px; font-size: 13px; }
+.status-shell { overflow: auto; padding: 2px 4px 8px; }
+.status-tools {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.filter-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 8px 11px;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+.filter-btn:hover { background: rgba(255, 255, 255, 0.075); border-color: var(--border-strong); transform: translateY(-1px); }
+.filter-btn.active { background: linear-gradient(180deg, var(--panel-3), var(--panel-2)); color: var(--text); border-color: var(--border-strong); }
 
 /* Shared status badge (group monitor + asset rows) */
 .state-badge {
@@ -333,7 +359,36 @@ body {
 .chip-dot.empty, .chip-dot.unknown { background: var(--muted); color: var(--muted); }
 .chip-meta { color: var(--muted); font-weight: 700; }
 
-/* Asset rows (used inside group sections) */
+/* Individual controls */
+.individual-panel {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.024)), var(--panel);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+.individual-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.individual-head h2 { margin: 0; font-size: 22px; letter-spacing: -0.025em; }
+.individual-count { color: var(--muted); font-size: 12px; font-weight: 800; white-space: nowrap; }
+.individual-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 8px;
+  max-height: min(42vh, 520px);
+  overflow: auto;
+  padding: 12px;
+}
+.individual-list .asset-row { background: rgba(0, 0, 0, 0.16); }
+.section-head-compact { margin-top: 2px; }
+
+/* Asset rows (used inside group sections and individual controls) */
 .asset-empty { color: var(--muted); font-size: 14px; text-align: center; padding: 42px 16px; }
 .asset-row {
   display: grid;
@@ -359,7 +414,7 @@ body {
 .asset-btn.oos:hover:not(:disabled)     { border-color: var(--error); color: #ff8b8f; }
 
 /* Per-group sections (Status page is organized by group) */
-.group-sections { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); align-content: start; gap: 14px; padding: 2px 4px 8px; }
+.group-sections { flex: 0 0 auto; min-height: 0; overflow: visible; display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); align-content: start; gap: 14px; padding: 2px 0 8px; }
 .gsection { border: 1px solid var(--border); border-radius: 18px; background: var(--panel); overflow: hidden; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18); }
 .gsection-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 10px; padding: 15px 15px 12px; border-bottom: 1px solid var(--border); }
 .gsection-name { font-size: 16px; font-weight: 900; letter-spacing: -0.015em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -472,7 +527,9 @@ body {
   .hero-brand { min-height: 96px; }
   .section-head { align-items: start; flex-direction: column; }
   .section-note { text-align: left; }
-  .groups, .group-sections { grid-template-columns: 1fr; }
+  .status-tools { grid-template-columns: 1fr; }
+  .filter-tabs { justify-content: flex-start; }
+  .groups, .group-sections, .individual-list { grid-template-columns: 1fr; }
   .status-head { align-items: start; flex-wrap: wrap; }
   .status-synced { margin-left: 0; }
   .asset-row { grid-template-columns: 1fr; align-items: start; }
@@ -484,6 +541,9 @@ body {
   #main-view { padding: 14px; }
   .group-row-actions { grid-template-columns: 1fr; }
   .big-btn { min-height: 82px; }
+  .individual-head { align-items: start; flex-direction: column; }
+  .individual-list { max-height: none; }
+  .filter-tabs { display: grid; grid-template-columns: 1fr 1fr; }
   .panel-actions { flex-wrap: wrap; }
   .panel-actions .spacer { display: none; }
   .panel-actions button { flex: 1; }

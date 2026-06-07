@@ -64,10 +64,39 @@
 
         <div class="status-chips" id="status-chips"></div>
 
-        <label class="search-wrap" for="asset-search">
-          <span>Search</span>
-          <input type="text" id="asset-search" class="asset-search" placeholder="Game, kiosk, or reader name…" autocomplete="off" />
-        </label>
+        <div class="status-tools">
+          <label class="search-wrap" for="asset-search">
+            <span>Search</span>
+            <input type="text" id="asset-search" class="asset-search" placeholder="Game, kiosk, ride, reader, or group name…" autocomplete="off" />
+          </label>
+
+          <div class="filter-tabs" id="asset-filters" aria-label="Reader status filter">
+            <button class="filter-btn active" type="button" data-filter="all" aria-pressed="true">All</button>
+            <button class="filter-btn" type="button" data-filter="problems" aria-pressed="false">Needs attention</button>
+            <button class="filter-btn" type="button" data-filter="enabled" aria-pressed="false">Running</button>
+            <button class="filter-btn" type="button" data-filter="paused" aria-pressed="false">Paused</button>
+            <button class="filter-btn" type="button" data-filter="outOfService" aria-pressed="false">OOS</button>
+          </div>
+        </div>
+
+        <section class="individual-panel" aria-labelledby="individual-title">
+          <div class="individual-head">
+            <div>
+              <p class="eyebrow">Individual controls</p>
+              <h2 id="individual-title">Games, rides, and kiosks</h2>
+            </div>
+            <span class="individual-count" id="individual-count"></span>
+          </div>
+          <div class="individual-list" id="individual-list"></div>
+        </section>
+
+        <div class="section-head section-head-compact">
+          <div>
+            <p class="eyebrow">Pause groups</p>
+            <h2>Group status</h2>
+          </div>
+          <p class="section-note">Groups stay visible for bulk context; individual controls above can change one reader at a time.</p>
+        </div>
 
         <div class="group-sections" id="group-sections"></div>
       </div>

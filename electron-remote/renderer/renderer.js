@@ -19,6 +19,9 @@ const el = {
   statusRefresh: document.getElementById('status-refresh'),
   statusChips: document.getElementById('status-chips'),
   assetSearch: document.getElementById('asset-search'),
+  assetFilters: document.getElementById('asset-filters'),
+  individualCount: document.getElementById('individual-count'),
+  individualList: document.getElementById('individual-list'),
   groupSections: document.getElementById('group-sections'),
   // settings
   settingsBtn: document.getElementById('settings-btn'),
@@ -48,6 +51,7 @@ let currentView = 'controls';
 let statusData = { games: [], kiosks: [], groups: [], kioskPauseSupported: false };
 let statusLoaded = false; // a getStatus has completed at least once
 let assetSearch = '';
+let assetFilter = 'all';
 let assetActionInFlight = false;
 let statusPollCleanup = null;
 
@@ -326,7 +330,7 @@ function assetActions(a) {
   const wrap = makeEl('div', 'asset-actions');
   const controllable = a.type === 'game' || (statusData.kioskPauseSupported && a.status !== 'unknown');
   if (!controllable) {
-    wrap.appendChild(makeEl('span', 'asset-note', a.type === 'kiosk' ? 'no control' : '—'));
+    wrap.appendChild(makeEl('span', 'asset-note', a.type === 'kiosk' ? 'Read-only' : '—'));
     return wrap;
   }
   [['enabled', 'Unpause', 'unpause'], ['paused', 'Pause', 'pause'], ['outOfService', 'OOS', 'oos']].forEach((t) => {
@@ -334,10 +338,24 @@ function assetActions(a) {
     const btn = makeEl('button', 'asset-btn ' + t[2], t[1]);
     btn.type = 'button';
     btn.disabled = !(ready && !assetActionInFlight);
+    btn.title = t[1] + ' ' + a.name;
     btn.addEventListener('click', () => onAssetAction(a, t[0], t[1]));
     wrap.appendChild(btn);
   });
   return wrap;
+}
+
+function assetGroupNames(a) {
+  const id = String(a.id);
+  const names = (statusData.groups || [])
+    .filter((g) => (a.type === 'kiosk' ? (g.kioskIds || []) : (g.gameIds || [])).map(String).includes(id))
+    .map((g) => g.name || ('Group #' + g.id));
+  return names.length ? names.join(', ') : 'No pause group';
+}
+
+function assetMetaText(a) {
+  const kind = a.type === 'kiosk' ? 'Kiosk' : 'Game / ride';
+  return kind + ' · ' + assetGroupNames(a);
 }
 
 function renderAssetRow(a) {
@@ -345,12 +363,63 @@ function renderAssetRow(a) {
   row.setAttribute('data-asset', a.type + ':' + a.id);
   const info = makeEl('div', 'asset-info');
   info.appendChild(makeEl('div', 'asset-name', a.name));
-  info.appendChild(makeEl('div', 'asset-meta', a.type === 'kiosk' ? 'Kiosk' : 'Game'));
+  info.appendChild(makeEl('div', 'asset-meta', assetMetaText(a)));
   row.appendChild(info);
   const badge = statusBadge(a.status);
   row.appendChild(makeEl('span', 'state-badge ' + badge.cls + ' asset-badge', badge.label));
   row.appendChild(assetActions(a));
   return row;
+}
+
+function allAssets() {
+  const games = (statusData.games || []).map((a) => ({ type: 'game', id: a.id, name: a.name, status: a.status }));
+  const kiosks = (statusData.kiosks || []).map((a) => ({ type: 'kiosk', id: a.id, name: a.name, status: a.status }));
+  return games.concat(kiosks);
+}
+
+function assetMatchesSearch(a, q) {
+  if (!q) return true;
+  return (a.name || '').toLowerCase().indexOf(q) !== -1
+    || assetMetaText(a).toLowerCase().indexOf(q) !== -1;
+}
+
+function assetMatchesFilter(a) {
+  if (assetFilter === 'all') return true;
+  if (assetFilter === 'problems') return a.status === 'paused' || a.status === 'outOfService' || a.status === 'unknown';
+  return a.status === assetFilter;
+}
+
+function renderIndividualAssets() {
+  if (!el.individualList) return;
+  clearEl(el.individualList);
+  el.individualCount.textContent = '';
+
+  if (!ready) {
+    el.individualList.appendChild(makeEl('div', 'asset-empty', 'Connect to the server to control individual games, rides, and kiosks.'));
+    return;
+  }
+  if (!statusLoaded) {
+    el.individualList.appendChild(makeEl('div', 'asset-empty', 'Loading individual readers…'));
+    return;
+  }
+
+  const q = assetSearch.trim().toLowerCase();
+  const assets = allAssets().filter((a) => assetMatchesSearch(a, q) && assetMatchesFilter(a));
+  assets.sort((a, b) => {
+    const r = statusRank(a.status) - statusRank(b.status);
+    if (r !== 0) return r;
+    const t = a.type.localeCompare(b.type);
+    return t !== 0 ? t : a.name.localeCompare(b.name);
+  });
+
+  const total = allAssets().length;
+  el.individualCount.textContent = assets.length + ' shown · ' + total + ' total';
+
+  if (assets.length === 0) {
+    el.individualList.appendChild(makeEl('div', 'asset-empty', 'No individual readers match the current search/filter.'));
+    return;
+  }
+  assets.forEach((a) => el.individualList.appendChild(renderAssetRow(a)));
 }
 
 // Short, glanceable summary for a chip: surface problems, else "all running".
@@ -394,6 +463,7 @@ function jumpToGroup(id) {
 
 function renderGroupSections() {
   renderStatusChips();
+  renderIndividualAssets();
   const top = el.groupSections.scrollTop;
   clearEl(el.groupSections);
 
@@ -425,7 +495,7 @@ function renderGroupSections() {
     (g.kioskIds || []).forEach((id) => { const m = kiosksById[String(id)]; if (m) members.push({ type: 'kiosk', id: m.id, name: m.name, status: m.status }); });
 
     let shown = members;
-    if (q) shown = members.filter((a) => a.name.toLowerCase().indexOf(q) !== -1);
+    if (q) shown = members.filter((a) => assetMatchesSearch(a, q));
     if (q && shown.length === 0) return; // hide non-matching groups while searching
     anyShown = true;
     shown.sort((a, b) => {
@@ -540,6 +610,19 @@ function stopStatusPolling() {
 
 el.statusRefresh.addEventListener('click', () => { if (ready) loadStatus(); });
 el.assetSearch.addEventListener('input', () => { assetSearch = el.assetSearch.value; renderGroupSections(); });
+if (el.assetFilters) {
+  el.assetFilters.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-filter]') : null;
+    if (!btn) return;
+    assetFilter = btn.getAttribute('data-filter') || 'all';
+    Array.from(el.assetFilters.querySelectorAll('.filter-btn')).forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    renderGroupSections();
+  });
+}
 
 // --------------------------------------------------------------------------
 // Connection check
