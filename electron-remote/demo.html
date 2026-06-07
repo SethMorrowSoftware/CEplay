@@ -521,7 +521,7 @@ body {
           : (e > 0 || p > 0 || o > 0) ? 'mixed' : 'empty';
         return {
           id: def.id, name: def.name, state: state, total: def.members.length,
-          enabled: e, paused: p, oos: o, gameIds: gameIds, kioskIds: kioskIds
+          enabled: e, paused: p, oos: o, active: def.is_active, gameIds: gameIds, kioskIds: kioskIds
         };
       }
 
@@ -673,6 +673,7 @@ let currentView = 'controls';
 
 // Status view state
 let statusData = { games: [], kiosks: [], groups: [], kioskPauseSupported: false };
+let statusLoaded = false; // a getStatus has completed at least once
 let assetSearch = '';
 let assetActionInFlight = false;
 let statusPollCleanup = null;
@@ -983,32 +984,29 @@ function renderGroupSections() {
     el.groupSections.appendChild(makeEl('div', 'asset-empty', 'Connect to the server to see live status.'));
     return;
   }
-
-  const configured = configuredGroups();
-  if (configured.length === 0) {
-    const empty = makeEl('div', 'groups-empty');
-    empty.appendChild(makeEl('p', 'groups-empty-text', 'No groups yet. Add one in Settings to see its games and kiosks here.'));
-    const btn = makeEl('button', 'btn-secondary', 'Open Settings');
-    btn.type = 'button';
-    btn.addEventListener('click', openSettings);
-    empty.appendChild(btn);
-    el.groupSections.appendChild(empty);
+  if (!statusLoaded) {
+    el.groupSections.appendChild(makeEl('div', 'asset-empty', 'Loading status…'));
     return;
   }
 
-  const gById = {}; (statusData.groups || []).forEach((g) => { gById[String(g.id)] = g; });
+  // Monitor EVERY pause group the server reports — not just the ones that have
+  // Controls buttons — so staff see all groups at a glance.
+  const groups = (statusData.groups || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (groups.length === 0) {
+    el.groupSections.appendChild(makeEl('div', 'asset-empty', 'No pause groups found on the server. Create them in the main CEplay app.'));
+    return;
+  }
+
   const gamesById = {}; (statusData.games || []).forEach((a) => { gamesById[String(a.id)] = a; });
   const kiosksById = {}; (statusData.kiosks || []).forEach((a) => { kiosksById[String(a.id)] = a; });
   const q = assetSearch.trim().toLowerCase();
   let anyShown = false;
 
-  configured.forEach((cg) => {
-    const g = gById[String(cg.id)];
+  groups.forEach((g) => {
     const members = [];
-    if (g) {
-      (g.gameIds || []).forEach((id) => { const m = gamesById[String(id)]; if (m) members.push({ type: 'game', id: m.id, name: m.name, status: m.status }); });
-      (g.kioskIds || []).forEach((id) => { const m = kiosksById[String(id)]; if (m) members.push({ type: 'kiosk', id: m.id, name: m.name, status: m.status }); });
-    }
+    (g.gameIds || []).forEach((id) => { const m = gamesById[String(id)]; if (m) members.push({ type: 'game', id: m.id, name: m.name, status: m.status }); });
+    (g.kioskIds || []).forEach((id) => { const m = kiosksById[String(id)]; if (m) members.push({ type: 'kiosk', id: m.id, name: m.name, status: m.status }); });
+
     let shown = members;
     if (q) shown = members.filter((a) => a.name.toLowerCase().indexOf(q) !== -1);
     if (q && shown.length === 0) return; // hide non-matching groups while searching
@@ -1020,17 +1018,15 @@ function renderGroupSections() {
 
     const sec = makeEl('section', 'gsection');
     const head = makeEl('div', 'gsection-head');
-    head.appendChild(makeEl('span', 'gsection-name', cg.name || ('Group #' + cg.id)));
-    const st = g ? groupBadge(g.state) : { label: '?', cls: 'unknown' };
+    head.appendChild(makeEl('span', 'gsection-name', (g.name || ('Group #' + g.id)) + (g.active === 0 ? ' (inactive)' : '')));
+    const st = groupBadge(g.state);
     head.appendChild(makeEl('span', 'state-badge ' + st.cls, st.label));
-    head.appendChild(makeEl('span', 'gsection-count', g ? memberCountText(g) : 'unavailable'));
+    head.appendChild(makeEl('span', 'gsection-count', memberCountText(g)));
     sec.appendChild(head);
 
     const body = makeEl('div', 'gsection-body');
-    if (!g) {
-      body.appendChild(makeEl('div', 'gsection-empty', 'This group was not found on the server.'));
-    } else if (shown.length === 0) {
-      body.appendChild(makeEl('div', 'gsection-empty', 'No games or kiosks in this group yet.'));
+    if (shown.length === 0) {
+      body.appendChild(makeEl('div', 'gsection-empty', 'No games or kiosks in this group.'));
     } else {
       shown.forEach((a) => body.appendChild(renderAssetRow(a)));
     }
@@ -1099,6 +1095,7 @@ async function loadStatus() {
   if (currentView !== 'status') return;
   if (res && res.ok) {
     statusData = res;
+    statusLoaded = true;
     el.statusSynced.textContent = 'Updated ' + new Date().toLocaleTimeString();
     renderGroupSections();
   } else {
