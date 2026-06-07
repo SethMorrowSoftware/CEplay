@@ -1,12 +1,12 @@
 # CEplay Remote
 
 A tiny standalone desktop app (Electron) with **four buttons** — unpause
-everything in the morning, pause it again at night:
+everything in the morning, pause it again at night. The buttons drive **two
+CEplay pause groups you choose in Settings** (e.g. an "Arcade games" group and
+an "Arcade kiosks" group):
 
-- **Unpause All Arcade Readers** — sets every paused arcade game to `enabled`.
-- **Unpause All Kiosks** — sets every paused kiosk to `enabled`.
-- **Pause All Arcade Readers** — sets every enabled arcade game to `paused`.
-- **Pause All Kiosks** — sets every enabled kiosk to `paused`.
+- **Unpause / Pause — games group** — flips your chosen "games" pause group.
+- **Unpause / Pause — kiosks group** — flips your chosen "kiosks" pause group.
 
 It is meant to live on a **different PC** than the main CEplay project (e.g. a
 front‑desk machine) and talks to CEplay over the network using the project's
@@ -16,17 +16,19 @@ to CenterEdge directly — CEplay handles all of that.
 ## How it works
 
 The app logs in to CEplay (`POST /api/auth/login`), keeps the session cookie +
-CSRF token in the Electron **main process**, and calls these endpoints:
+CSRF token in the Electron **main process**, and drives the two pause groups you
+select in Settings:
 
-| Button                     | Endpoint                       |
-| -------------------------- | ------------------------------ |
-| Unpause All Arcade Readers | `POST /api/games/unpause-all`  |
-| Pause All Arcade Readers   | `POST /api/games/pause-all`    |
-| Unpause All Kiosks         | `POST /api/kiosks/unpause-all` |
-| Pause All Kiosks           | `POST /api/kiosks/pause-all`   |
+| Button (slot)          | Endpoint                              |
+| ---------------------- | ------------------------------------- |
+| Unpause — games group  | `POST /api/groups/{gamesId}/unpause`  |
+| Pause — games group    | `POST /api/groups/{gamesId}/pause`    |
+| Unpause — kiosks group | `POST /api/groups/{kiosksId}/unpause` |
+| Pause — kiosks group   | `POST /api/groups/{kiosksId}/pause`   |
 
-Each endpoint refreshes state from CenterEdge, flips every eligible asset to the
-target state (unpause: `paused → enabled`; pause: `enabled → paused`), and skips
+These are the same endpoints the CEplay web dashboard's group Pause/Unpause
+buttons use, so any CEplay server supports them. A pause group can contain games
+**and** kiosks; CEplay flips every eligible member to the target state and skips
 anything `outOfService` (and kiosks with unknown status, which the API spec says
 must not be controlled). **Per-asset failures (e.g. a unit that is in use) are
 queued into the exact same retry table the main CEplay app uses**
@@ -37,11 +39,11 @@ pause/unpause inside the main app.
 Because all network requests run in the main process (not the browser window),
 there are no CORS/CSP issues and no backend CORS changes are required.
 
-> Note: this is intended for arcade games/kiosks that are **not** on a pause
-> schedule (you drive them manually — on in the morning, off at night). If you
-> point it at assets governed by an active pause window, the scheduler may
-> re‑pause them on its next cycle (it has no way to know a manual change was
-> intentional). For scheduled groups, use an override in the main app instead.
+> Note: point the buttons at groups you drive **manually** (on in the morning,
+> off at night). If a group is also governed by an active pause schedule, the
+> scheduler may re‑pause it on its next cycle (it has no way to know a manual
+> change was intentional). For scheduled groups, use an override in the main app
+> instead.
 
 ## Prerequisites
 
@@ -65,7 +67,10 @@ On first launch, click the **⚙ Settings** button and enter:
 - **Username** / **Password** — the dedicated CEplay account
 - **Allow self-signed TLS** — only if your LAN server uses a self‑signed cert
 
-Click **Test connection** to verify, then **Save**.
+Click **Test connection** to verify — this also loads your pause groups into the
+two dropdowns. Pick the **Arcade games group** and **Kiosks group** the buttons
+should control, then **Save**. (Create those groups first in the main CEplay app
+under *Pause Groups* if you haven't already.)
 
 ## Build an installer
 

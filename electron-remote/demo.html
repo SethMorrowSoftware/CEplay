@@ -6,12 +6,13 @@
   <!--
     CEplay Remote — single-file UI/UX demo.
 
-    This is a browser-runnable showcase of the Electron "CEplay Remote" app
+    A browser-runnable showcase of the Electron "CEplay Remote" app
     (electron-remote/renderer/*). It uses the app's real markup, real styles,
     and real renderer logic verbatim. The only difference: the Electron IPC
     bridge (window.ceplay) is replaced with an in-memory mock that simulates a
-    venue's arcade readers + kiosks — so the buttons, arm-to-confirm flow,
-    status messages, and settings panel all work with NO server and NO backend.
+    venue's CEplay pause groups — so the four buttons, the confirmation dialog,
+    the connection dot, the status messages, and the Settings panel (including
+    the group pickers) all work with NO server and NO backend.
 
     Just open this file in any browser. Nothing leaves your machine.
 
@@ -168,12 +169,12 @@ body {
 .panel label.checkbox {
   display: flex; align-items: center; gap: 8px; color: var(--text); margin-top: 16px;
 }
-.panel input[type="url"], .panel input[type="text"], .panel input[type="password"] {
+.panel input[type="url"], .panel input[type="text"], .panel input[type="password"], .panel select {
   width: 100%; padding: 10px 12px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   font-size: 14px;
 }
-.panel input:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
+.panel input:focus, .panel select:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
 
 .hint { font-size: 12px; color: var(--muted); margin: 14px 0 0; }
 
@@ -265,25 +266,25 @@ body {
     <div class="buttons">
       <button class="big-btn unpause" id="btn-games-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
-        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-title">Arcade games</span>
         <span class="big-btn-sub" id="games-unpause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn unpause" id="btn-kiosks-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
-        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-title">Arcade kiosks</span>
         <span class="big-btn-sub" id="kiosks-unpause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn pause" id="btn-games-pause" disabled>
         <span class="big-btn-verb">Pause</span>
-        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-title">Arcade games</span>
         <span class="big-btn-sub" id="games-pause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn pause" id="btn-kiosks-pause" disabled>
         <span class="big-btn-verb">Pause</span>
-        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-title">Arcade kiosks</span>
         <span class="big-btn-sub" id="kiosks-pause-sub">Tap to start</span>
       </button>
     </div>
@@ -293,8 +294,9 @@ body {
     </section>
 
     <p class="demo-note">
-      Simulated demo &mdash; no CEplay server is contacted. Each button arms on the first
-      tap, then runs on a second tap within 3 seconds. Use &#8635; to reset the venue state.
+      Simulated demo &mdash; no CEplay server is contacted. The four buttons pause/unpause
+      two pause groups you pick in Settings (&#9881;); tapping one opens a confirmation
+      dialog. Use &#8635; to reset the demo.
     </p>
   </main>
 
@@ -311,6 +313,12 @@ body {
 
       <label for="cfg-pass">Password</label>
       <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
+
+      <label for="cfg-games-group">Arcade games group</label>
+      <select id="cfg-games-group"></select>
+
+      <label for="cfg-kiosks-group">Kiosks group</label>
+      <select id="cfg-kiosks-group"></select>
 
       <label class="checkbox">
         <input type="checkbox" id="cfg-insecure" />
@@ -332,41 +340,14 @@ body {
 
   <!-- ================================================================== -->
   <!-- Mock IPC bridge: stands in for the Electron preload `window.ceplay` -->
-  <!-- (electron-remote/preload.js). Keeps an in-memory venue of arcade    -->
-  <!-- readers + kiosks so the four actions return realistic summaries.    -->
+  <!-- (electron-remote/preload.js). Keeps an in-memory set of CEplay pause -->
+  <!-- groups so the four buttons + group pickers return realistic results. -->
   <!-- ================================================================== -->
   <script>
     window.ceplay = (function () {
       'use strict';
 
-      var MAX_ATTEMPTS = 10;
-      var GAME_NAMES = [
-        'Skee-Ball', 'Air Hockey', 'Whac-A-Mole', 'Pac-Man', 'Hoop Fever',
-        'Dance Stage', 'Crane Claw', 'Ticket Blaster', 'Jurassic Smash',
-        'Race Kart', 'Pinball', 'Coin Pusher'
-      ];
-      var KIOSK_NAMES = ['Kiosk 1', 'Kiosk 2', 'Kiosk 3', 'Kiosk 4', 'Kiosk 5'];
       var ERRORS = ['unit in use', 'active play in progress', 'reader busy', 'timed out'];
-
-      function shuffle(arr) {
-        var a = arr.slice();
-        for (var i = a.length - 1; i > 0; i--) {
-          var j = Math.floor(Math.random() * (i + 1));
-          var t = a[i]; a[i] = a[j]; a[j] = t;
-        }
-        return a;
-      }
-
-      // Expand a base name list to `n` entries: "Skee-Ball", ..., "Skee-Ball 2".
-      function expandNames(base, n) {
-        var out = [];
-        for (var i = 0; i < n; i++) {
-          var name = base[i % base.length];
-          var dup = Math.floor(i / base.length);
-          out.push(dup === 0 ? name : name + ' ' + (dup + 1));
-        }
-        return out;
-      }
 
       function statusList(counts) {
         var list = [];
@@ -378,18 +359,19 @@ body {
         return list;
       }
 
-      function buildAssets(names, statuses) {
-        return statuses.map(function (st, i) { return { id: names[i], status: st }; });
-      }
+      // The demo's pause groups. Each has a member-status distribution that the
+      // pause/unpause actions flip. Opening-time scenario: mostly paused.
+      var GROUP_DEFS = [
+        { id: 1, name: 'Arcade Games',         is_active: 1, dist: { paused: 20, enabled: 3, outOfService: 1 } },
+        { id: 2, name: 'Arcade Kiosks',        is_active: 1, dist: { paused: 4,  enabled: 0, unknown: 1 } },
+        { id: 3, name: 'Redemption Center',    is_active: 1, dist: { paused: 6,  enabled: 2 } },
+        { id: 4, name: 'Laser Tag (seasonal)', is_active: 0, dist: { paused: 3 } }
+      ];
 
-      // Opening-time scenario: most things still paused from last night.
-      function freshState() {
-        var gameStatuses = shuffle(statusList({ paused: 20, enabled: 3, outOfService: 1 }));
-        var kioskStatuses = statusList({ paused: 4, enabled: 0, unknown: 1 });
-        return {
-          games: buildAssets(expandNames(GAME_NAMES, gameStatuses.length), gameStatuses),
-          kiosks: buildAssets(KIOSK_NAMES, kioskStatuses)
-        };
+      function freshGroups() {
+        return GROUP_DEFS.map(function (g) {
+          return { id: g.id, name: g.name, is_active: g.is_active, members: statusList(g.dist) };
+        });
       }
 
       var config = {
@@ -397,50 +379,85 @@ body {
         username: 'frontdesk',
         hasPassword: true,
         insecureTLS: false,
-        encryptionAvailable: true
+        encryptionAvailable: true,
+        // Pre-selected so the buttons work out of the box in the demo.
+        gamesGroupId: 1,
+        gamesGroupName: 'Arcade Games',
+        kiosksGroupId: 2,
+        kiosksGroupName: 'Arcade Kiosks'
       };
-      var state = freshState();
+      var groups = freshGroups();
+
+      function findGroup(id) {
+        for (var i = 0; i < groups.length; i++) {
+          if (String(groups[i].id) === String(id)) return groups[i];
+        }
+        return null;
+      }
 
       function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-      // Mirrors the server's pause-all / unpause-all behaviour: flip eligible
-      // assets to the target state, skip outOfService + unknown, and queue a
-      // few "busy" units into a retry list.
-      function applyAction(assets, action) {
+      // Mirrors the server's group pause/unpause: flip eligible members to the
+      // target state, skip outOfService + unknown, and queue a few "busy" ones
+      // as errors (the real server retries them via its watchdog).
+      function applyGroupAction(group, action) {
         var target = action === 'pause' ? 'paused' : 'enabled';
         var from = action === 'pause' ? 'enabled' : 'paused';
-        var s = {
-          action: action, attempted: 0, changed: 0, already: 0,
-          out_of_service: 0, unknown: 0, failed: 0, retrying: []
-        };
-        assets.forEach(function (a) {
-          if (a.status === 'outOfService') { s.out_of_service++; return; }
-          if (a.status === 'unknown') { s.unknown++; return; }
-          if (a.status === target) { s.already++; return; }
-          if (a.status === from) {
-            s.attempted++;
+        var changed = 0, skipped = 0, errors = 0;
+        var details = { changed: [], skipped: [], errors: [] };
+        group.members.forEach(function (m, idx) {
+          if (m === 'outOfService' || m === 'unknown') { skipped++; details.skipped.push(group.name + ' #' + (idx + 1)); return; }
+          if (m === target) return; // already in the target state
+          if (m === from) {
             if (Math.random() < 0.1) {
-              s.failed++;
-              s.retrying.push({
-                id: a.id, attempts: 1, max_attempts: MAX_ATTEMPTS,
-                last_error: ERRORS[Math.floor(Math.random() * ERRORS.length)]
-              });
+              errors++;
+              details.errors.push({ id: group.name + ' #' + (idx + 1), error: ERRORS[Math.floor(Math.random() * ERRORS.length)] });
             } else {
-              a.status = target;
-              s.changed++;
+              group.members[idx] = target;
+              changed++;
+              details.changed.push(group.name + ' #' + (idx + 1));
             }
           }
         });
-        return s;
+        return {
+          success: errors === 0,
+          action: action,
+          group_id: group.id,
+          group_name: group.name,
+          changed: changed,
+          skipped: skipped,
+          errors: errors,
+          details: details
+        };
+      }
+
+      function groupActionBySlot(slot, action) {
+        var id = slot === 'games' ? config.gamesGroupId : config.kiosksGroupId;
+        if (!id) {
+          return Promise.resolve({ ok: false, error: 'No pause group selected for this button. Open Settings (⚙) and choose one.' });
+        }
+        var g = findGroup(id);
+        if (!g) {
+          return Promise.resolve({ ok: false, error: 'Selected group no longer exists.' });
+        }
+        return delay(slot === 'kiosks' ? 750 : 950).then(function () {
+          var summary = applyGroupAction(g, action);
+          return { ok: summary.success !== false, summary: summary };
+        });
       }
 
       return {
         getConfig: function () { return Promise.resolve(Object.assign({}, config)); },
         setConfig: function (cfg) {
-          if (cfg && cfg.baseUrl !== undefined) config.baseUrl = cfg.baseUrl;
-          if (cfg && cfg.username !== undefined) config.username = cfg.username;
-          if (cfg && cfg.password) config.hasPassword = true;
-          if (cfg && cfg.insecureTLS !== undefined) config.insecureTLS = cfg.insecureTLS;
+          if (!cfg) return Promise.resolve({ ok: true });
+          if (cfg.baseUrl !== undefined) config.baseUrl = cfg.baseUrl;
+          if (cfg.username !== undefined) config.username = cfg.username;
+          if (cfg.password) config.hasPassword = true;
+          if (cfg.insecureTLS !== undefined) config.insecureTLS = cfg.insecureTLS;
+          if (cfg.gamesGroupId !== undefined) config.gamesGroupId = (cfg.gamesGroupId === '' || cfg.gamesGroupId == null) ? null : parseInt(cfg.gamesGroupId, 10);
+          if (cfg.gamesGroupName !== undefined) config.gamesGroupName = cfg.gamesGroupName || '';
+          if (cfg.kiosksGroupId !== undefined) config.kiosksGroupId = (cfg.kiosksGroupId === '' || cfg.kiosksGroupId == null) ? null : parseInt(cfg.kiosksGroupId, 10);
+          if (cfg.kiosksGroupName !== undefined) config.kiosksGroupName = cfg.kiosksGroupName || '';
           return Promise.resolve({ ok: true });
         },
         test: function () {
@@ -451,13 +468,18 @@ body {
             return { ok: false, error: 'Missing server URL or credentials.' };
           });
         },
-        unpauseGames: function () { return delay(950).then(function () { return { ok: true, summary: applyAction(state.games, 'unpause') }; }); },
-        pauseGames: function () { return delay(950).then(function () { return { ok: true, summary: applyAction(state.games, 'pause') }; }); },
-        unpauseKiosks: function () { return delay(750).then(function () { return { ok: true, summary: applyAction(state.kiosks, 'unpause') }; }); },
-        pauseKiosks: function () { return delay(750).then(function () { return { ok: true, summary: applyAction(state.kiosks, 'pause') }; }); },
+        getGroups: function () {
+          return delay(300).then(function () {
+            return { ok: true, groups: groups.map(function (g) { return { id: g.id, name: g.name, is_active: g.is_active }; }) };
+          });
+        },
+        unpauseGames: function () { return groupActionBySlot('games', 'unpause'); },
+        pauseGames: function () { return groupActionBySlot('games', 'pause'); },
+        unpauseKiosks: function () { return groupActionBySlot('kiosks', 'unpause'); },
+        pauseKiosks: function () { return groupActionBySlot('kiosks', 'pause'); },
 
         // Demo-only helper used by the reset button.
-        __reset: function () { state = freshState(); }
+        __reset: function () { groups = freshGroups(); }
       };
     })();
   </script>
@@ -483,6 +505,8 @@ const el = {
   cfgUser: document.getElementById('cfg-user'),
   cfgPass: document.getElementById('cfg-pass'),
   cfgInsecure: document.getElementById('cfg-insecure'),
+  cfgGamesGroup: document.getElementById('cfg-games-group'),
+  cfgKiosksGroup: document.getElementById('cfg-kiosks-group'),
   cfgSave: document.getElementById('cfg-save'),
   cfgCancel: document.getElementById('cfg-cancel'),
   cfgTest: document.getElementById('cfg-test'),
@@ -490,8 +514,10 @@ const el = {
   encHint: document.getElementById('enc-hint'),
 };
 
-let busy = false;
-let configured = false;
+let busy = false;        // an action is in flight
+let configured = false;  // server URL + login are set
+let ready = false;       // connection test passed
+let currentCfg = {};     // last config read from the main process
 
 // --------------------------------------------------------------------------
 // Status helpers
@@ -516,18 +542,61 @@ function setStatus(text, cls, detail) {
 }
 
 // --------------------------------------------------------------------------
+// Buttons — each maps to one configurable pause group + an action.
+//   "games"  slot  -> the group chosen as "Arcade games group" in Settings
+//   "kiosks" slot  -> the group chosen as "Kiosks group" in Settings
+// Both pause and unpause for a slot target the same group, so the 2x2 grid is
+// Unpause/Pause for each of the two groups.
+// --------------------------------------------------------------------------
+
+const controls = [
+  { btn: document.getElementById('btn-games-unpause'),  sub: document.getElementById('games-unpause-sub'),  slot: 'games',  action: 'unpause', run: () => api.unpauseGames() },
+  { btn: document.getElementById('btn-kiosks-unpause'), sub: document.getElementById('kiosks-unpause-sub'), slot: 'kiosks', action: 'unpause', run: () => api.unpauseKiosks() },
+  { btn: document.getElementById('btn-games-pause'),    sub: document.getElementById('games-pause-sub'),    slot: 'games',  action: 'pause',   run: () => api.pauseGames() },
+  { btn: document.getElementById('btn-kiosks-pause'),   sub: document.getElementById('kiosks-pause-sub'),   slot: 'kiosks', action: 'pause',   run: () => api.pauseKiosks() },
+];
+for (const c of controls) c.title = c.btn.querySelector('.big-btn-title');
+
+function slotGroupId(slot) {
+  return slot === 'games' ? currentCfg.gamesGroupId : currentCfg.kiosksGroupId;
+}
+function slotGroupName(slot) {
+  return (slot === 'games' ? currentCfg.gamesGroupName : currentCfg.kiosksGroupName) || '';
+}
+
+// A button is live only when we're connected, not mid-action, and its slot has
+// a pause group selected.
+function updateButtonsEnabled() {
+  for (const c of controls) {
+    c.btn.disabled = !(ready && !busy && !!slotGroupId(c.slot));
+  }
+}
+
+// Reflect the configured group names on the button faces + idle sub-labels.
+function applyConfigToButtons() {
+  for (const c of controls) {
+    const id = slotGroupId(c.slot);
+    if (c.title) c.title.textContent = id ? (slotGroupName(c.slot) || ('Group #' + id)) : 'No group selected';
+    if (!busy) c.sub.textContent = id ? 'Tap to start' : 'Pick a group in Settings';
+  }
+  updateButtonsEnabled();
+}
+
+// --------------------------------------------------------------------------
 // Connection check
 // --------------------------------------------------------------------------
 
 async function refreshConnection() {
-  // Never run a connection check on top of an in-flight unpause — its async
+  // Never run a connection check on top of an in-flight action — its async
   // result would re-enable buttons and overwrite the operation's status line.
   if (busy) return;
-  const cfg = await api.getConfig();
-  configured = !!(cfg.baseUrl && cfg.username && cfg.hasPassword);
+  currentCfg = await api.getConfig();
+  configured = !!(currentCfg.baseUrl && currentCfg.username && currentCfg.hasPassword);
+  applyConfigToButtons();
   if (!configured) {
+    ready = false;
     setConn('unknown');
-    setButtonsEnabled(false);
+    updateButtonsEnabled();
     setStatus('Not configured yet. Open Settings (⚙) to enter the server URL and login.', 'warn');
     return;
   }
@@ -537,37 +606,25 @@ async function refreshConnection() {
   const res = await api.test();
   if (busy) return; // an operation started while the test was in flight
   if (res.ok) {
+    ready = true;
     setConn('ok');
-    setButtonsEnabled(true);
+    applyConfigToButtons();
     const who = res.user && res.user.display_name ? res.user.display_name : (res.user && res.user.username) || '';
-    setStatus('Connected' + (who ? ' as ' + who : '') + '. Ready.', 'ok');
+    const haveGroups = slotGroupId('games') || slotGroupId('kiosks');
+    setStatus('Connected' + (who ? ' as ' + who : '') + '.' +
+      (haveGroups ? ' Ready.' : ' Open Settings (⚙) to pick your pause groups.'),
+      haveGroups ? 'ok' : 'warn');
   } else {
+    ready = false;
     setConn('error');
-    setButtonsEnabled(false);
+    updateButtonsEnabled();
     setStatus('Cannot connect: ' + res.error, 'error');
   }
-}
-
-// The four action buttons, each with its sub-label, the IPC call it triggers,
-// the noun for messages, and the present-tense verb shown while it runs.
-const controls = [
-  { btn: document.getElementById('btn-games-unpause'),  sub: document.getElementById('games-unpause-sub'),  run: () => api.unpauseGames(),  noun: 'arcade readers', verb: 'Unpausing' },
-  { btn: document.getElementById('btn-kiosks-unpause'), sub: document.getElementById('kiosks-unpause-sub'), run: () => api.unpauseKiosks(), noun: 'kiosks',         verb: 'Unpausing' },
-  { btn: document.getElementById('btn-games-pause'),    sub: document.getElementById('games-pause-sub'),    run: () => api.pauseGames(),    noun: 'arcade readers', verb: 'Pausing' },
-  { btn: document.getElementById('btn-kiosks-pause'),   sub: document.getElementById('kiosks-pause-sub'),   run: () => api.pauseKiosks(),   noun: 'kiosks',         verb: 'Pausing' },
-];
-
-function setButtonsEnabled(on) {
-  for (const c of controls) c.btn.disabled = !on;
 }
 
 // --------------------------------------------------------------------------
 // Confirmation dialog (guards against accidental presses)
 // --------------------------------------------------------------------------
-
-function singular(noun) {
-  return noun.endsWith('s') ? noun.slice(0, -1) : noun;
-}
 
 // Modal confirm built from the same .overlay/.panel styling as Settings.
 // Resolves true (confirmed) or false (cancelled / dismissed).
@@ -632,7 +689,7 @@ function confirmAction(opts) {
 async function withBusy(subEl, workingText, fn) {
   busy = true;
   setConn('working');
-  setButtonsEnabled(false);
+  updateButtonsEnabled();
   subEl.textContent = workingText;
   try {
     await fn();
@@ -644,55 +701,44 @@ async function withBusy(subEl, workingText, fn) {
   } finally {
     busy = false;
     subEl.textContent = 'Tap to start';
-    // The run callback sets the connection dot from the actual result;
-    // here we just restore button availability.
-    setButtonsEnabled(configured);
+    // The run callback sets the connection dot from the actual result; here we
+    // just restore button availability.
+    updateButtonsEnabled();
   }
 }
 
 // --------------------------------------------------------------------------
-// Result formatting
+// Result formatting (group pause/unpause response)
+//   { success, action, group_name, changed, skipped, errors, details }
 // --------------------------------------------------------------------------
 
-function summarize(noun, res) {
+function summarizeGroup(name, isPause, res) {
   if (!res.ok && !res.summary) {
     return { cls: 'error', text: 'Failed: ' + (res.error || 'unknown error'), detail: null };
   }
   const s = res.summary || {};
   if (s.error) {
-    return { cls: 'error', text: noun + ': ' + s.error, detail: null };
+    return { cls: 'error', text: '"' + name + '": ' + s.error, detail: null };
   }
 
-  const isPause = s.action === 'pause';
+  const changed = s.changed || 0;
+  const skipped = s.skipped || 0;
+  const errors = s.errors || 0;
   const didVerb = isPause ? 'Paused' : 'Unpaused';
-  const alreadyWord = isPause ? 'already paused' : 'already running';
+  const stateWord = isPause ? 'paused' : 'running';
 
   const lines = [];
-  if (typeof s.already === 'number' && s.already > 0) lines.push(`${s.already} ${alreadyWord}`);
-  if (typeof s.out_of_service === 'number' && s.out_of_service > 0) lines.push(`${s.out_of_service} out of service (skipped)`);
-  if (typeof s.unknown === 'number' && s.unknown > 0) lines.push(`${s.unknown} unknown status (skipped)`);
+  if (skipped > 0) lines.push(skipped + ' skipped (out of service / unknown status).');
 
   let cls = 'ok';
   let head;
-  if ((s.attempted || 0) === 0) {
-    head = isPause
-      ? `All ${noun} already paused. Nothing to pause.`
-      : `All ${noun} already running. Nothing to unpause.`;
-  } else if ((s.failed || 0) === 0) {
-    head = `${didVerb} ${s.changed} ${noun}.`;
-  } else {
+  if (errors > 0) {
     cls = 'warn';
-    head = `${didVerb} ${s.changed} of ${s.attempted} ${noun}. ${s.failed} busy — the server will keep retrying.`;
-    const r = (s.retrying || []).slice(0, 6).map((x) => {
-      const a = `attempt ${x.attempts}/${x.max_attempts}`;
-      return `• ${x.id} (${a})${x.last_error ? ' — ' + x.last_error : ''}`;
-    });
-    if (r.length) lines.push('Retrying:\n' + r.join('\n'));
-  }
-
-  if (s.sync_warning) {
-    if (cls === 'ok') cls = 'warn';
-    lines.push('Note: could not refresh state first (' + s.sync_warning + '); acted on last-known state.');
+    head = didVerb + ' ' + changed + ' in "' + name + '". ' + errors + ' busy — the server will keep retrying.';
+  } else if (changed === 0) {
+    head = '"' + name + '" already ' + stateWord + ' — nothing to change.';
+  } else {
+    head = didVerb + ' ' + changed + ' ' + (changed === 1 ? 'item' : 'items') + ' in "' + name + '".';
   }
 
   return { cls, text: head, detail: lines.length ? lines.join('\n') : null };
@@ -706,21 +752,28 @@ for (const c of controls) {
   c.btn.addEventListener('click', async () => {
     if (busy || c.btn.disabled) return;
 
-    const isPause = c.verb === 'Pausing';
+    const id = slotGroupId(c.slot);
+    if (!id) {
+      setStatus('No group selected for this button. Open Settings (⚙) and pick one.', 'warn');
+      return;
+    }
+    const name = slotGroupName(c.slot) || ('Group #' + id);
+    const isPause = c.action === 'pause';
+
     const ok = await confirmAction({
-      title: (isPause ? 'Pause all ' : 'Unpause all ') + c.noun + '?',
+      title: (isPause ? 'Pause ' : 'Unpause ') + '"' + name + '"?',
       message: isPause
-        ? `This sets every running ${singular(c.noun)} to paused. Anything in active use is skipped and retried by the server.`
-        : `This sets every paused ${singular(c.noun)} to running.`,
-      confirmLabel: (isPause ? 'Pause ' : 'Unpause ') + c.noun,
+        ? 'This pauses every running game and kiosk in "' + name + '". Anything in active use is skipped and retried by the server.'
+        : 'This unpauses every paused game and kiosk in "' + name + '".',
+      confirmLabel: isPause ? 'Pause' : 'Unpause',
       tone: isPause ? 'pause' : 'unpause',
     });
     if (!ok) return;
 
-    await withBusy(c.sub, c.verb + '…', async () => {
-      setStatus(`${c.verb} all ${c.noun}…`, null);
+    await withBusy(c.sub, (isPause ? 'Pausing' : 'Unpausing') + '…', async () => {
+      setStatus((isPause ? 'Pausing' : 'Unpausing') + ' "' + name + '"…', null);
       const res = await c.run();
-      const out = summarize(c.noun, res);
+      const out = summarizeGroup(name, isPause, res);
       setStatus(out.text, out.cls, out.detail);
       setConn(out.cls === 'error' ? 'error' : 'ok');
     });
@@ -731,20 +784,79 @@ for (const c of controls) {
 // Settings panel
 // --------------------------------------------------------------------------
 
+// (Re)fill a group <select> with a "none" choice + the live group list, keeping
+// the stored selection visible even if the live list can't be loaded yet.
+function fillGroupSelect(sel, groups, selectedId, selectedName) {
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '— none —';
+  sel.appendChild(none);
+
+  let matched = false;
+  (groups || []).forEach((g) => {
+    const o = document.createElement('option');
+    o.value = String(g.id);
+    o.textContent = g.name + (g.is_active ? '' : ' (inactive)');
+    if (selectedId != null && selectedId !== '' && String(g.id) === String(selectedId)) {
+      o.selected = true;
+      matched = true;
+    }
+    sel.appendChild(o);
+  });
+
+  // Preserve a stored selection that isn't in the (possibly empty) live list.
+  if (!matched && selectedId != null && selectedId !== '') {
+    const o = document.createElement('option');
+    o.value = String(selectedId);
+    o.textContent = (selectedName || ('Group #' + selectedId)) + ' (current)';
+    o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+function readGroupSelection(sel) {
+  const id = sel.value ? parseInt(sel.value, 10) : null;
+  let name = '';
+  if (id != null && sel.selectedIndex >= 0) {
+    name = (sel.options[sel.selectedIndex].textContent || '').replace(/\s*\(.*\)\s*$/, '');
+  }
+  return { id, name };
+}
+
+async function loadGroupsIntoSelects() {
+  const res = await api.getGroups();
+  if (res && res.ok) {
+    fillGroupSelect(el.cfgGamesGroup, res.groups, el.cfgGamesGroup.value || currentCfg.gamesGroupId, currentCfg.gamesGroupName);
+    fillGroupSelect(el.cfgKiosksGroup, res.groups, el.cfgKiosksGroup.value || currentCfg.kiosksGroupId, currentCfg.kiosksGroupName);
+  } else if (!el.cfgMsg.textContent) {
+    el.cfgMsg.className = 'panel-msg';
+    el.cfgMsg.textContent = 'Enter the server URL + login and click "Test connection" to load your pause groups.';
+  }
+}
+
 async function openSettings() {
-  const cfg = await api.getConfig();
-  el.cfgUrl.value = cfg.baseUrl || '';
-  el.cfgUser.value = cfg.username || '';
+  currentCfg = await api.getConfig();
+  el.cfgUrl.value = currentCfg.baseUrl || '';
+  el.cfgUser.value = currentCfg.username || '';
   el.cfgPass.value = '';
-  el.cfgPass.placeholder = cfg.hasPassword ? '(unchanged)' : 'password';
-  el.cfgInsecure.checked = !!cfg.insecureTLS;
-  el.encHint.textContent = cfg.encryptionAvailable
+  el.cfgPass.placeholder = currentCfg.hasPassword ? '(unchanged)' : 'password';
+  el.cfgInsecure.checked = !!currentCfg.insecureTLS;
+  el.encHint.textContent = currentCfg.encryptionAvailable
     ? 'Password is stored encrypted via the OS keychain.'
     : 'Warning: no OS keychain available — the password is stored in plain text in this app’s config folder. Use a dedicated low-privilege CEplay account.';
   el.cfgMsg.textContent = '';
   el.cfgMsg.className = 'panel-msg';
+
+  // Seed the group dropdowns with the stored selections, then try to load the
+  // live list (needs a working connection).
+  fillGroupSelect(el.cfgGamesGroup, [], currentCfg.gamesGroupId, currentCfg.gamesGroupName);
+  fillGroupSelect(el.cfgKiosksGroup, [], currentCfg.kiosksGroupId, currentCfg.kiosksGroupName);
+
   el.overlay.classList.remove('hidden');
   el.cfgUrl.focus();
+  loadGroupsIntoSelects();
 }
 
 function closeSettings() {
@@ -758,11 +870,17 @@ el.overlay.addEventListener('click', (e) => { if (e.target === el.overlay) close
 el.cfgSave.addEventListener('click', async () => {
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Saving…';
+  const games = readGroupSelection(el.cfgGamesGroup);
+  const kiosks = readGroupSelection(el.cfgKiosksGroup);
   await api.setConfig({
     baseUrl: el.cfgUrl.value,
     username: el.cfgUser.value,
     password: el.cfgPass.value, // blank = keep existing
     insecureTLS: el.cfgInsecure.checked,
+    gamesGroupId: games.id,
+    gamesGroupName: games.name,
+    kiosksGroupId: kiosks.id,
+    kiosksGroupName: kiosks.name,
   });
   el.cfgMsg.className = 'panel-msg ok';
   el.cfgMsg.textContent = 'Saved.';
@@ -771,7 +889,8 @@ el.cfgSave.addEventListener('click', async () => {
 });
 
 el.cfgTest.addEventListener('click', async () => {
-  // Persist first so the test uses exactly what's on screen.
+  // Persist first so the test uses exactly what's on screen. Group selections
+  // are preserved by the main process even though we don't send them here.
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Testing…';
   await api.setConfig({
@@ -785,7 +904,9 @@ el.cfgTest.addEventListener('click', async () => {
   if (res.ok) {
     const who = res.user && (res.user.display_name || res.user.username);
     el.cfgMsg.className = 'panel-msg ok';
-    el.cfgMsg.textContent = 'Connected' + (who ? ' as ' + who : '') + '.';
+    el.cfgMsg.textContent = 'Connected' + (who ? ' as ' + who : '') + '. Loading groups…';
+    currentCfg = await api.getConfig();
+    loadGroupsIntoSelects();
   } else {
     el.cfgMsg.className = 'panel-msg error';
     el.cfgMsg.textContent = res.error;
@@ -810,7 +931,7 @@ if (brandLogo) {
 refreshConnection();
 
 // --------------------------------------------------------------------------
-// Demo-only: reset the simulated venue back to the opening-time scenario.
+// Demo-only: reset the simulated pause groups to the opening-time scenario.
 // (Not present in the real Electron renderer.)
 // --------------------------------------------------------------------------
 const demoResetBtn = document.getElementById('demo-reset-btn');
@@ -819,7 +940,7 @@ if (demoResetBtn) {
     if (busy) return;
     api.__reset();
     setConn('ok');
-    setStatus('Demo state reset — opening scenario (most assets paused). Tap a button to begin.', 'ok');
+    setStatus('Demo reset — groups back to the opening scenario (most members paused). Tap a button to begin.', 'ok');
   });
 }
   </script>

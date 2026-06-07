@@ -25,25 +25,25 @@
     <div class="buttons">
       <button class="big-btn unpause" id="btn-games-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
-        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-title">Arcade games</span>
         <span class="big-btn-sub" id="games-unpause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn unpause" id="btn-kiosks-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
-        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-title">Arcade kiosks</span>
         <span class="big-btn-sub" id="kiosks-unpause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn pause" id="btn-games-pause" disabled>
         <span class="big-btn-verb">Pause</span>
-        <span class="big-btn-title">All Arcade Readers</span>
+        <span class="big-btn-title">Arcade games</span>
         <span class="big-btn-sub" id="games-pause-sub">Tap to start</span>
       </button>
 
       <button class="big-btn pause" id="btn-kiosks-pause" disabled>
         <span class="big-btn-verb">Pause</span>
-        <span class="big-btn-title">All Kiosks</span>
+        <span class="big-btn-title">Arcade kiosks</span>
         <span class="big-btn-sub" id="kiosks-pause-sub">Tap to start</span>
       </button>
     </div>
@@ -66,6 +66,12 @@
 
       <label for="cfg-pass">Password</label>
       <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
+
+      <label for="cfg-games-group">Arcade games group</label>
+      <select id="cfg-games-group"></select>
+
+      <label for="cfg-kiosks-group">Kiosks group</label>
+      <select id="cfg-kiosks-group"></select>
 
       <label class="checkbox">
         <input type="checkbox" id="cfg-insecure" />
