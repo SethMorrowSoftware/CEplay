@@ -370,6 +370,91 @@ ipcMain.handle('ceplay:groupAction', async (_event, groupId, action) => {
 });
 
 // ---------------------------------------------------------------------------
+// Live status console: list every game + kiosk with its current
+// operationStatus + the configured groups' live state, and change a single
+// asset's status (pause / unpause / out of service).
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ceplay:getStatus', async () => {
+  try {
+    await ensureAuth();
+    const [gamesRes, kiosksRes, capsRes, groupsRes] = await Promise.all([
+      apiRequest('GET', '/api/games').catch(() => ({ games: [] })),
+      apiRequest('GET', '/api/kiosks').catch(() => ({ kiosks: [] })),
+      apiRequest('GET', '/api/capabilities').catch(() => null),
+      apiRequest('GET', '/api/groups').catch(() => ({ groups: [] })),
+    ]);
+    const games = (gamesRes.games || []).map((g) => ({
+      id: String(g.game_id),
+      name: g.game_name || ('Game ' + g.game_id),
+      status: g.operation_status || 'unknown',
+    }));
+    const kiosks = (kiosksRes.kiosks || []).map((k) => ({
+      id: String(k.id),
+      name: k.name || ('Kiosk ' + k.id),
+      status: k.operationStatus || 'unknown',
+    }));
+    const kioskPauseSupported = !!(capsRes && capsRes.kiosks && capsRes.kiosks.operationStatus === true);
+    const groups = (groupsRes.groups || []).map((g) => {
+      const c = g.combined_stats || g.game_stats || {};
+      return {
+        id: g.id,
+        name: g.name,
+        state: g.effective_state || 'empty',
+        total: c.total || 0,
+        enabled: c.enabled || 0,
+        paused: c.paused || 0,
+        oos: c.out_of_service || 0,
+      };
+    });
+    return {
+      ok: true,
+      games,
+      kiosks,
+      kioskPauseSupported,
+      groups,
+      lastSynced: gamesRes.last_synced || kiosksRes.last_synced || null,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Change one game's status via the JSON-Patch games endpoint. A per-asset
+// failure (e.g. busy) is queued server-side for retry exactly like the bulk
+// path, so we report it as "busy — will retry" rather than a hard error.
+async function setGameStatus(id, status) {
+  const body = { games: {} };
+  body.games[String(id)] = [{ op: 'replace', path: '/operationStatus', value: status }];
+  const res = await apiRequest('PATCH', '/api/games', body);
+  const confirmed = Array.isArray(res.games) && res.games.some((g) => String(g.id) === String(id));
+  const errored = res.errors && (res.errors[id] || res.errors[String(id)]);
+  if (confirmed && !errored) return { ok: true, status };
+  const e = errored && (errored.message || errored);
+  return { ok: false, busy: true, error: e ? String(e) : 'not confirmed — the server will retry' };
+}
+
+async function setKioskStatus(id, status) {
+  const action = status === 'paused' ? 'pause' : (status === 'outOfService' ? 'out-of-service' : 'unpause');
+  const res = await apiRequest('POST', '/api/kiosks/' + encodeURIComponent(id) + '/' + action, {});
+  if (res && res.success) return { ok: true, status };
+  return { ok: false, error: (res && res.error) || 'failed' };
+}
+
+ipcMain.handle('ceplay:setAssetStatus', async (_event, type, id, status) => {
+  if (status !== 'enabled' && status !== 'paused' && status !== 'outOfService') {
+    return { ok: false, error: 'Invalid status.' };
+  }
+  try {
+    await ensureAuth();
+    return type === 'kiosk' ? await setKioskStatus(id, status) : await setGameStatus(id, status);
+  } catch (err) {
+    if (err.data && err.data.error) return { ok: false, error: err.data.error };
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 

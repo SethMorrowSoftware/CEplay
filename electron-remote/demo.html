@@ -10,9 +10,9 @@
     (electron-remote/renderer/*). It uses the app's real markup, real styles,
     and real renderer logic verbatim. The only difference: the Electron IPC
     bridge (window.ceplay) is replaced with an in-memory mock that simulates a
-    venue's CEplay pause groups — so adding/removing group buttons, the
-    confirmation dialog, the connection dot, the status messages, and the
-    Settings panel all work with NO server and NO backend.
+    venue's games, kiosks, and pause groups — so the Controls view, the Status
+    console (per-asset pause/unpause/OOS + group monitor), the confirmation
+    dialog, and the Settings panel all work with NO server and NO backend.
 
     Just open this file in any browser. Nothing leaves your machine.
 
@@ -98,6 +98,18 @@ body {
   gap: 20px;
 }
 
+/* View nav (Controls / Status) + view containers ------------------------- */
+.viewnav { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.viewnav-btn {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+}
+.viewnav-btn:hover { color: var(--text); }
+.viewnav-btn.active { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
+
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 16px; }
+.view.hidden { display: none; }
+
 /* Hero logo above the action buttons ------------------------------------- */
 .hero { display: flex; align-items: center; justify-content: center; padding: 4px 0 0; }
 .hero-logo { max-height: 80px; max-width: 74%; height: auto; width: auto; object-fit: contain; }
@@ -154,12 +166,83 @@ body {
 .big-btn.unpause { background: linear-gradient(160deg, var(--unpause-hi), var(--unpause)); }
 .big-btn.pause   { background: linear-gradient(160deg, var(--pause-hi), var(--pause)); }
 
+/* ====================================================================== */
+/* === Status console ==================================================== */
+/* ====================================================================== */
+.status-head { display: flex; align-items: center; gap: 10px; }
+.status-title { font-size: 15px; font-weight: 700; letter-spacing: 0.2px; }
+.status-synced { font-size: 12px; color: var(--muted); margin-left: auto; }
+.btn-sm { padding: 6px 12px; font-size: 13px; }
+
+/* Shared status badge (group monitor + asset rows) */
+.state-badge {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.state-badge.running { color: var(--ok); background: rgba(43, 182, 115, 0.14); }
+.state-badge.paused  { color: var(--warn); background: rgba(224, 163, 46, 0.16); }
+.state-badge.oos     { color: var(--error); background: rgba(229, 72, 77, 0.14); }
+.state-badge.mixed   { color: var(--kiosks); background: rgba(91, 141, 239, 0.16); }
+.state-badge.unknown, .state-badge.empty { color: var(--muted); background: rgba(139, 147, 167, 0.14); }
+
+/* Group monitor chips */
+.group-monitor { display: flex; flex-wrap: wrap; gap: 8px; }
+.group-monitor:empty { display: none; }
+.gm-chip {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel); min-width: 132px;
+}
+.gm-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.gm-name { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-counts { font-size: 11px; color: var(--muted); }
+
+/* Toolbar: search + filter pills */
+.asset-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.asset-search {
+  flex: 1; min-width: 150px; padding: 8px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px;
+}
+.asset-search:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
+.filter-pills { display: flex; gap: 4px; }
+.filter-pill {
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+}
+.filter-pill:hover { color: var(--text); }
+.filter-pill.active { background: var(--panel-2); color: var(--text); }
+
+/* Asset list + rows */
+.asset-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.asset-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 12px; }
+.asset-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+}
+.asset-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.asset-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-meta { font-size: 11px; color: var(--muted); }
+.asset-badge { flex: 0 0 auto; }
+.asset-actions { display: flex; gap: 5px; flex: 0 0 auto; }
+.asset-note { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.asset-btn {
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  font-size: 12px; font-weight: 600; padding: 5px 9px; border-radius: 7px; cursor: pointer;
+  transition: filter 0.12s ease, background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.asset-btn:disabled { opacity: 0.45; cursor: default; }
+.asset-btn.unpause:hover:not(:disabled) { border-color: var(--unpause); color: var(--unpause-hi); }
+.asset-btn.pause:hover:not(:disabled)   { border-color: var(--pause); color: var(--pause-hi); }
+.asset-btn.oos:hover:not(:disabled)     { border-color: var(--error); color: var(--error); }
+
 /* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
 .confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
 .btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }
 .btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
 .btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
 .btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
+.btn-primary.confirm-go.oos     { background: var(--error); border-color: var(--error); }
+.btn-primary.confirm-go.oos:hover     { filter: brightness(1.08); }
 
 /* Status ----------------------------------------------------------------- */
 .status {
@@ -268,23 +351,9 @@ body {
 }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .demo-chip {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1.4px;
-  color: var(--warn);
-  border: 1px solid var(--warn);
-  border-radius: 999px;
-  padding: 2px 8px;
-  margin-left: 2px;
-  text-transform: uppercase;
-  opacity: 0.9;
-}
-.demo-note {
-  text-align: center;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--muted);
-  margin: 0;
+  font-size: 10px; font-weight: 800; letter-spacing: 1.4px;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 999px;
+  padding: 2px 8px; margin-left: 2px; text-transform: uppercase; opacity: 0.9;
 }
 @media (max-width: 540px) {
   html { padding: 0; }
@@ -299,6 +368,10 @@ body {
       <span class="brand-text">CEplay Remote</span>
       <span class="demo-chip">Demo</span>
     </div>
+    <nav class="viewnav" id="viewnav" aria-label="Views">
+      <button class="viewnav-btn active" id="nav-controls" type="button" data-view="controls">Controls</button>
+      <button class="viewnav-btn" id="nav-status" type="button" data-view="status">Status</button>
+    </nav>
     <div class="topbar-actions">
       <button id="demo-reset-btn" class="icon-btn" title="Reset demo state" aria-label="Reset demo state">&#8635;</button>
       <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
@@ -306,21 +379,31 @@ body {
   </header>
 
   <main id="main-view">
-    <div class="hero">
-      <img class="hero-logo" id="brand-logo" src="renderer/logo.png" alt="CEplay" />
-    </div>
+    <section class="view" id="view-controls">
+      <div class="hero">
+        <img class="hero-logo" id="brand-logo" src="renderer/logo.png" alt="CEplay" />
+      </div>
+      <div class="groups" id="groups"></div>
+    </section>
 
-    <!-- One .group-row card per configured pause group, built by renderer.js -->
-    <div class="groups" id="groups"></div>
+    <section class="view hidden" id="view-status">
+      <div class="status-head">
+        <span class="status-title">Live status</span>
+        <span class="status-synced" id="status-synced"></span>
+        <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
+      </div>
+      <div class="group-monitor" id="group-monitor"></div>
+      <div class="asset-toolbar">
+        <input type="text" id="asset-search" class="asset-search" placeholder="Search games &amp; kiosks…" autocomplete="off" />
+        <div class="filter-pills" id="asset-type-filters" role="group" aria-label="Filter by type"></div>
+        <div class="filter-pills" id="asset-status-filters" role="group" aria-label="Filter by status"></div>
+      </div>
+      <div class="asset-list" id="asset-list"></div>
+    </section>
 
     <section class="status" id="status" aria-live="polite">
       <p class="status-line" id="status-line">Checking connection&hellip;</p>
     </section>
-
-    <p class="demo-note">
-      Simulated demo &mdash; no CEplay server is contacted. Add or remove pause-group buttons
-      in Settings (&#9881;); tapping one opens a confirmation dialog. Use &#8635; to reset the demo.
-    </p>
   </main>
 
   <!-- Settings panel -->
@@ -338,7 +421,7 @@ body {
       <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
 
       <label>Pause-group buttons</label>
-      <p class="hint hint-tight">Each group you add gets an Unpause and a Pause button on the main screen.</p>
+      <p class="hint hint-tight">Each group you add gets an Unpause and a Pause button on the Controls screen.</p>
       <div class="group-list" id="group-list"></div>
       <div class="group-add">
         <select id="group-add-select"></select>
@@ -365,8 +448,9 @@ body {
 
   <!-- ================================================================== -->
   <!-- Mock IPC bridge: stands in for the Electron preload `window.ceplay` -->
-  <!-- (electron-remote/preload.js). Keeps an in-memory set of CEplay pause -->
-  <!-- groups + a configurable button list so add/remove + the actions work. -->
+  <!-- (electron-remote/preload.js). Simulates a venue of games + kiosks   -->
+  <!-- grouped into pause groups, so Controls, the Status console, and the -->
+  <!-- Settings editor all work with no server.                            -->
   <!-- ================================================================== -->
   <script>
     window.ceplay = (function () {
@@ -374,39 +458,49 @@ body {
 
       var ERRORS = ['unit in use', 'active play in progress', 'reader busy', 'timed out'];
 
-      function statusList(counts) {
-        var list = [];
-        function push(status, count) { for (var i = 0; i < (count || 0); i++) list.push(status); }
-        push('paused', counts.paused);
-        push('enabled', counts.enabled);
-        push('outOfService', counts.outOfService);
-        push('unknown', counts.unknown);
-        return list;
-      }
-
-      // The venue's pause groups (with member states the actions flip).
-      var GROUP_DEFS = [
-        { id: 1, name: 'Arcade Games',         is_active: 1, dist: { paused: 20, enabled: 3, outOfService: 1 } },
-        { id: 2, name: 'Arcade Kiosks',        is_active: 1, dist: { paused: 4,  enabled: 0, unknown: 1 } },
-        { id: 3, name: 'Outdoor Attractions',  is_active: 1, dist: { paused: 5,  enabled: 1, outOfService: 1 } },
-        { id: 4, name: 'Redemption Center',    is_active: 1, dist: { paused: 6,  enabled: 2 } },
-        { id: 5, name: 'Laser Tag (seasonal)', is_active: 0, dist: { paused: 3 } }
+      // 16 arcade games (group 1) + 8 outdoor attractions (group 3).
+      var GAME_NAMES = [
+        'Skee-Ball', 'Air Hockey', 'Whac-A-Mole', 'Pac-Man', 'Hoop Fever', 'Dance Stage',
+        'Crane Claw', 'Ticket Blaster', 'Jurassic Smash', 'Race Kart', 'Pinball', 'Coin Pusher',
+        'Basketball', 'Whack Attack', 'Spin Zone', 'Token Toss',
+        'Go-Karts', 'Mini Golf', 'Bumper Boats', 'Zip Line', 'Ropes Course', 'Batting Cage',
+        'Carousel', 'Ferris Wheel'
       ];
 
-      function freshGroups() {
-        return GROUP_DEFS.map(function (g) {
-          return { id: g.id, name: g.name, is_active: g.is_active, members: statusList(g.dist) };
+      function gameRange(a, b) { var o = []; for (var i = a; i <= b; i++) o.push({ type: 'game', id: 'g' + i }); return o; }
+      function kioskRange(a, b) { var o = []; for (var i = a; i <= b; i++) o.push({ type: 'kiosk', id: 'k' + i }); return o; }
+
+      var GROUP_DEFS = [
+        { id: 1, name: 'Arcade Games',         is_active: 1, members: gameRange(1, 16) },
+        { id: 2, name: 'Arcade Kiosks',        is_active: 1, members: kioskRange(1, 5) },
+        { id: 3, name: 'Outdoor Attractions',  is_active: 1, members: gameRange(17, 24) },
+        { id: 4, name: 'Redemption Center',    is_active: 1, members: gameRange(7, 12) },
+        { id: 5, name: 'Laser Tag (seasonal)', is_active: 0, members: gameRange(13, 15) }
+      ];
+
+      // Opening-time scenario: mostly paused, a couple running, one OOS, one
+      // kiosk with unknown status (not controllable).
+      function freshAssets() {
+        var games = GAME_NAMES.map(function (n, i) {
+          var id = 'g' + (i + 1);
+          var status = 'paused';
+          if (id === 'g3' || id === 'g7' || id === 'g18') status = 'enabled';
+          if (id === 'g5') status = 'outOfService';
+          return { id: id, name: n, status: status };
         });
+        var kiosks = [1, 2, 3, 4, 5].map(function (n) {
+          return { id: 'k' + n, name: 'Kiosk ' + n, status: n === 5 ? 'unknown' : 'paused' };
+        });
+        return { games: games, kiosks: kiosks };
       }
 
-      var available = freshGroups();
+      var assets = freshAssets();
       var config = {
         baseUrl: 'https://ceplay.demo.local',
         username: 'frontdesk',
         hasPassword: true,
         insecureTLS: false,
         encryptionAvailable: true,
-        // The configured button list (pre-seeded so the demo opens populated).
         groups: [
           { id: 1, name: 'Arcade Games' },
           { id: 2, name: 'Arcade Kiosks' },
@@ -414,46 +508,55 @@ body {
         ]
       };
 
-      function findGroup(id) {
-        for (var i = 0; i < available.length; i++) {
-          if (String(available[i].id) === String(id)) return available[i];
-        }
+      function findAsset(type, id) {
+        var arr = type === 'kiosk' ? assets.kiosks : assets.games;
+        for (var i = 0; i < arr.length; i++) if (String(arr[i].id) === String(id)) return arr[i];
         return null;
       }
-
+      function findDef(id) {
+        for (var i = 0; i < GROUP_DEFS.length; i++) if (String(GROUP_DEFS[i].id) === String(id)) return GROUP_DEFS[i];
+        return null;
+      }
       function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-      // Mirrors the server's group pause/unpause: flip eligible members to the
-      // target state, skip outOfService + unknown, and queue a few "busy" ones
-      // as errors (the real server retries them via its watchdog).
-      function applyGroupAction(group, action) {
+      function deriveGroup(def) {
+        var e = 0, p = 0, o = 0;
+        def.members.forEach(function (m) {
+          var as = findAsset(m.type, m.id);
+          if (!as) return;
+          if (as.status === 'enabled') e++;
+          else if (as.status === 'paused') p++;
+          else if (as.status === 'outOfService') o++;
+        });
+        var state = def.members.length === 0 ? 'empty'
+          : (e > 0 && p === 0 && o === 0) ? 'enabled'
+          : (p > 0 && e === 0 && o === 0) ? 'paused'
+          : (e > 0 || p > 0 || o > 0) ? 'mixed' : 'empty';
+        return { id: def.id, name: def.name, state: state, total: def.members.length, enabled: e, paused: p, oos: o };
+      }
+
+      function applyGroupAction(def, action) {
         var target = action === 'pause' ? 'paused' : 'enabled';
         var from = action === 'pause' ? 'enabled' : 'paused';
         var changed = 0, skipped = 0, errors = 0;
         var details = { changed: [], skipped: [], errors: [] };
-        group.members.forEach(function (m, idx) {
-          if (m === 'outOfService' || m === 'unknown') { skipped++; details.skipped.push(group.name + ' #' + (idx + 1)); return; }
-          if (m === target) return; // already in the target state
-          if (m === from) {
+        def.members.forEach(function (m) {
+          var as = findAsset(m.type, m.id);
+          if (!as) return;
+          if (as.status === 'outOfService' || as.status === 'unknown') { skipped++; details.skipped.push(as.name); return; }
+          if (as.status === target) return;
+          if (as.status === from) {
             if (Math.random() < 0.1) {
               errors++;
-              details.errors.push({ id: group.name + ' #' + (idx + 1), error: ERRORS[Math.floor(Math.random() * ERRORS.length)] });
+              details.errors.push({ id: as.name, error: ERRORS[Math.floor(Math.random() * ERRORS.length)] });
             } else {
-              group.members[idx] = target;
-              changed++;
-              details.changed.push(group.name + ' #' + (idx + 1));
+              as.status = target; changed++; details.changed.push(as.name);
             }
           }
         });
         return {
-          success: errors === 0,
-          action: action,
-          group_id: group.id,
-          group_name: group.name,
-          changed: changed,
-          skipped: skipped,
-          errors: errors,
-          details: details
+          success: errors === 0, action: action, group_id: def.id, group_name: def.name,
+          changed: changed, skipped: skipped, errors: errors, details: details
         };
       }
 
@@ -474,13 +577,12 @@ body {
           return Promise.resolve({ ok: true });
         },
         test: function () {
-          return delay(650).then(function () {
+          return delay(600).then(function () {
             if (config.baseUrl && config.username && config.hasPassword) {
               return {
                 ok: true,
                 user: { display_name: 'Front Desk (Demo)', username: config.username },
                 status: 'ok',
-                // Healthy watchdog so the demo doesn't show a retry warning.
                 health: { status: 'ok', watchdogHealthy: true, retriesPending: 0, retriesGaveUp: 0 }
               };
             }
@@ -488,21 +590,43 @@ body {
           });
         },
         getGroups: function () {
-          return delay(300).then(function () {
-            return { ok: true, groups: available.map(function (g) { return { id: g.id, name: g.name, is_active: g.is_active }; }) };
+          return delay(250).then(function () {
+            return { ok: true, groups: GROUP_DEFS.map(function (g) { return { id: g.id, name: g.name, is_active: g.is_active }; }) };
           });
         },
         groupAction: function (groupId, action) {
-          var g = findGroup(groupId);
-          if (!g) return Promise.resolve({ ok: false, error: 'Selected group no longer exists.' });
+          var def = findDef(groupId);
+          if (!def) return Promise.resolve({ ok: false, error: 'Selected group no longer exists.' });
           return delay(850).then(function () {
-            var summary = applyGroupAction(g, action);
+            var summary = applyGroupAction(def, action);
             return { ok: summary.success !== false, summary: summary };
+          });
+        },
+        getStatus: function () {
+          return delay(250).then(function () {
+            return {
+              ok: true,
+              games: assets.games.map(function (g) { return { id: g.id, name: g.name, status: g.status }; }),
+              kiosks: assets.kiosks.map(function (k) { return { id: k.id, name: k.name, status: k.status }; }),
+              kioskPauseSupported: true,
+              groups: GROUP_DEFS.map(deriveGroup),
+              lastSynced: new Date().toISOString()
+            };
+          });
+        },
+        setAssetStatus: function (type, id, status) {
+          return delay(450).then(function () {
+            var as = findAsset(type, id);
+            if (!as) return { ok: false, error: 'Asset not found.' };
+            // Occasionally a game is busy (in active play) — server will retry.
+            if (type === 'game' && Math.random() < 0.08) return { ok: false, busy: true, error: 'unit in use' };
+            as.status = status;
+            return { ok: true, status: status };
           });
         },
 
         // Demo-only helper used by the reset button.
-        __reset: function () { available = freshGroups(); }
+        __reset: function () { assets = freshAssets(); }
       };
     })();
   </script>
@@ -522,7 +646,21 @@ const el = {
   connDot: document.getElementById('conn-dot'),
   statusLine: document.getElementById('status-line'),
   status: document.getElementById('status'),
+  // views + nav
+  navControls: document.getElementById('nav-controls'),
+  navStatus: document.getElementById('nav-status'),
+  viewControls: document.getElementById('view-controls'),
+  viewStatus: document.getElementById('view-status'),
   groups: document.getElementById('groups'),
+  // status view
+  statusSynced: document.getElementById('status-synced'),
+  statusRefresh: document.getElementById('status-refresh'),
+  groupMonitor: document.getElementById('group-monitor'),
+  assetSearch: document.getElementById('asset-search'),
+  assetTypeFilters: document.getElementById('asset-type-filters'),
+  assetStatusFilters: document.getElementById('asset-status-filters'),
+  assetList: document.getElementById('asset-list'),
+  // settings
   settingsBtn: document.getElementById('settings-btn'),
   overlay: document.getElementById('settings-overlay'),
   cfgUrl: document.getElementById('cfg-url'),
@@ -539,24 +677,31 @@ const el = {
   encHint: document.getElementById('enc-hint'),
 };
 
-let busy = false;        // an action is in flight
+let busy = false;        // a group action is in flight (Controls view)
 let configured = false;  // server URL + login are set
 let ready = false;       // connection test passed
 let currentCfg = {};     // last config read from the main process
-let controls = [];       // live button controls: [{ id, name, action, btn, sub }]
+let controls = [];       // live group-button controls: [{ id, name, action, btn, sub }]
+let currentView = 'controls';
+
+// Status view state
+let statusData = { games: [], kiosks: [], groups: [], kioskPauseSupported: false };
+let assetType = 'all';
+let assetStatus = 'all';
+let assetSearch = '';
+let assetActionInFlight = false;
+let statusPollCleanup = null;
 
 // Settings working state
-let editGroups = [];     // working copy of the configured group buttons
-let allGroups = [];      // live pause-group list from the server
+let editGroups = [];
+let allGroups = [];
 let groupsLoaded = false;
 
 // --------------------------------------------------------------------------
 // Small DOM helpers
 // --------------------------------------------------------------------------
 
-function clearEl(node) {
-  while (node.firstChild) node.removeChild(node.firstChild);
-}
+function clearEl(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
 function makeEl(tag, className, text) {
   const e = document.createElement(tag);
@@ -574,12 +719,10 @@ function makeOption(value, text, disabled) {
 }
 
 // --------------------------------------------------------------------------
-// Status helpers
+// Status helpers (shared bottom status line)
 // --------------------------------------------------------------------------
 
-function setConn(state) {
-  el.connDot.dataset.state = state; // ok | error | working | unknown
-}
+function setConn(state) { el.connDot.dataset.state = state; }
 
 function setStatus(text, cls, detail) {
   el.statusLine.className = 'status-line' + (cls ? ' ' + cls : '');
@@ -594,9 +737,30 @@ function setStatus(text, cls, detail) {
 }
 
 // --------------------------------------------------------------------------
-// Main view — one card per configured pause group, each with Unpause/Pause.
-// The configured list is dynamic (managed in Settings), so the cards and their
-// click handlers are rebuilt from currentCfg.groups whenever it changes.
+// View switching
+// --------------------------------------------------------------------------
+
+function switchView(name) {
+  currentView = name;
+  el.viewControls.classList.toggle('hidden', name !== 'controls');
+  el.viewStatus.classList.toggle('hidden', name !== 'status');
+  el.navControls.classList.toggle('active', name === 'controls');
+  el.navStatus.classList.toggle('active', name === 'status');
+  if (name === 'status') {
+    renderFilters();
+    renderGroupMonitor();
+    renderAssetList();
+    if (ready) { loadStatus(); startStatusPolling(); }
+  } else {
+    stopStatusPolling();
+  }
+}
+
+el.navControls.addEventListener('click', () => switchView('controls'));
+el.navStatus.addEventListener('click', () => switchView('status'));
+
+// --------------------------------------------------------------------------
+// Controls view — one card per configured pause group, each Unpause/Pause.
 // --------------------------------------------------------------------------
 
 function configuredGroups() {
@@ -649,135 +813,9 @@ function renderGroupCards() {
   updateButtonsEnabled();
 }
 
-// Buttons are live only when connected and not mid-action.
 function updateButtonsEnabled() {
   for (const c of controls) c.btn.disabled = !(ready && !busy);
 }
-
-// --------------------------------------------------------------------------
-// Connection check
-// --------------------------------------------------------------------------
-
-async function refreshConnection() {
-  // Never run a connection check on top of an in-flight action — its async
-  // result would re-enable buttons and overwrite the operation's status line.
-  if (busy) return;
-  currentCfg = await api.getConfig();
-  configured = !!(currentCfg.baseUrl && currentCfg.username && currentCfg.hasPassword);
-  renderGroupCards();
-  if (!configured) {
-    ready = false;
-    setConn('unknown');
-    updateButtonsEnabled();
-    setStatus('Not configured yet. Open Settings (⚙) to enter the server URL and login.', 'warn');
-    return;
-  }
-  if (busy) return;
-  setConn('working');
-  setStatus('Checking connection…', null);
-  const res = await api.test();
-  if (busy) return; // an operation started while the test was in flight
-  if (res.ok) {
-    ready = true;
-    setConn('ok');
-    updateButtonsEnabled();
-    const who = res.user && res.user.display_name ? res.user.display_name : (res.user && res.user.username) || '';
-    const haveGroups = configuredGroups().length > 0;
-    setStatus('Connected' + (who ? ' as ' + who : '') + '.' +
-      (haveGroups ? ' Ready.' : ' Open Settings (⚙) to add a pause group.'),
-      haveGroups ? 'ok' : 'warn');
-    maybeWarnWatchdog(res);
-  } else {
-    ready = false;
-    setConn('error');
-    updateButtonsEnabled();
-    setStatus('Cannot connect: ' + res.error, 'error');
-  }
-}
-
-// If the server's health check says the per-minute watchdog is stalled, warn —
-// that's the process that actually retries busy assets. Without it, the "the
-// server will keep retrying" promise can't be kept.
-function maybeWarnWatchdog(res) {
-  const h = res && res.health;
-  if (!h) return;
-  if (h.watchdogHealthy === false) {
-    setStatus(el.statusLine.textContent, 'warn',
-      'Heads up: the server’s per-minute watchdog hasn’t run recently, so retries of busy assets may not process. Check the cron_watchdog cron on the CEplay server.');
-  } else if (typeof h.retriesGaveUp === 'number' && h.retriesGaveUp > 0) {
-    setStatus(el.statusLine.textContent, 'warn',
-      h.retriesGaveUp + ' asset(s) on the server gave up after exhausting retries. They’ll be re-tried after a cooldown, or on the next action.');
-  }
-}
-
-// --------------------------------------------------------------------------
-// Confirmation dialog (guards against accidental presses)
-// --------------------------------------------------------------------------
-
-// Modal confirm built from the same .overlay/.panel styling as Settings.
-// Resolves true (confirmed) or false (cancelled / dismissed).
-function confirmAction(opts) {
-  return new Promise((resolve) => {
-    const overlay = makeEl('div', 'overlay confirm-overlay');
-    const panel = makeEl('div', 'panel confirm-panel');
-    panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-modal', 'true');
-
-    panel.appendChild(makeEl('h2', null, opts.title));
-    panel.appendChild(makeEl('p', 'confirm-message', opts.message));
-
-    const actions = makeEl('div', 'panel-actions');
-    actions.appendChild(makeEl('span', 'spacer'));
-
-    const cancelBtn = makeEl('button', 'btn-secondary', 'Cancel');
-    const confirmBtn = makeEl('button', 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : ''), opts.confirmLabel || 'Confirm');
-    actions.appendChild(cancelBtn);
-    actions.appendChild(confirmBtn);
-    panel.appendChild(actions);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-
-    function close(result) {
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-      resolve(result);
-    }
-    function onKey(e) {
-      if (e.key === 'Escape') close(false);
-      else if (e.key === 'Enter') close(true);
-    }
-
-    cancelBtn.addEventListener('click', () => close(false));
-    confirmBtn.addEventListener('click', () => close(true));
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
-    document.addEventListener('keydown', onKey);
-
-    requestAnimationFrame(() => confirmBtn.focus());
-  });
-}
-
-async function withBusy(subEl, workingText, fn) {
-  busy = true;
-  setConn('working');
-  updateButtonsEnabled();
-  subEl.textContent = workingText;
-  try {
-    await fn();
-  } catch (e) {
-    // fn (the IPC call + summarize) normally resolves with {ok:false} rather
-    // than throwing, but guard anyway so the dot can't get stuck on 'working'.
-    setStatus('Unexpected error: ' + (e && e.message ? e.message : String(e)), 'error');
-    setConn('error');
-  } finally {
-    busy = false;
-    subEl.textContent = 'Tap to start';
-    updateButtonsEnabled();
-  }
-}
-
-// --------------------------------------------------------------------------
-// Action click → confirm → run group pause/unpause
-// --------------------------------------------------------------------------
 
 async function onActionClick(ctrl) {
   if (busy || ctrl.btn.disabled) return;
@@ -803,18 +841,69 @@ async function onActionClick(ctrl) {
 }
 
 // --------------------------------------------------------------------------
-// Result formatting (group pause/unpause response)
-//   { success, action, group_name, changed, skipped, errors, details }
+// Confirmation dialog (guards group "pause all" / "unpause all" presses)
 // --------------------------------------------------------------------------
+
+function confirmAction(opts) {
+  return new Promise((resolve) => {
+    const overlay = makeEl('div', 'overlay confirm-overlay');
+    const panel = makeEl('div', 'panel confirm-panel');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+
+    panel.appendChild(makeEl('h2', null, opts.title));
+    panel.appendChild(makeEl('p', 'confirm-message', opts.message));
+
+    const actions = makeEl('div', 'panel-actions');
+    actions.appendChild(makeEl('span', 'spacer'));
+    const cancelBtn = makeEl('button', 'btn-secondary', 'Cancel');
+    const confirmBtn = makeEl('button', 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : ''), opts.confirmLabel || 'Confirm');
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    panel.appendChild(actions);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close(false);
+      else if (e.key === 'Enter') close(true);
+    }
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey);
+    requestAnimationFrame(() => confirmBtn.focus());
+  });
+}
+
+async function withBusy(subEl, workingText, fn) {
+  busy = true;
+  setConn('working');
+  updateButtonsEnabled();
+  subEl.textContent = workingText;
+  try {
+    await fn();
+  } catch (e) {
+    setStatus('Unexpected error: ' + (e && e.message ? e.message : String(e)), 'error');
+    setConn('error');
+  } finally {
+    busy = false;
+    subEl.textContent = 'Tap to start';
+    updateButtonsEnabled();
+  }
+}
 
 function summarizeGroup(name, isPause, res) {
   if (!res.ok && !res.summary) {
     return { cls: 'error', text: 'Failed: ' + (res.error || 'unknown error'), detail: null };
   }
   const s = res.summary || {};
-  if (s.error) {
-    return { cls: 'error', text: '"' + name + '": ' + s.error, detail: null };
-  }
+  if (s.error) return { cls: 'error', text: '"' + name + '": ' + s.error, detail: null };
 
   const changed = s.changed || 0;
   const skipped = s.skipped || 0;
@@ -836,12 +925,293 @@ function summarizeGroup(name, isPause, res) {
   } else {
     head = didVerb + ' ' + changed + ' ' + (changed === 1 ? 'item' : 'items') + ' in "' + name + '".';
   }
-
   return { cls, text: head, detail: lines.length ? lines.join('\n') : null };
 }
 
 // --------------------------------------------------------------------------
-// Settings panel — server/login fields + a dynamic editor for the group buttons
+// Status view — live per-asset status + individual pause/unpause/OOS
+// --------------------------------------------------------------------------
+
+function statusBadge(status) {
+  if (status === 'enabled') return { label: 'Running', cls: 'running' };
+  if (status === 'paused') return { label: 'Paused', cls: 'paused' };
+  if (status === 'outOfService') return { label: 'OOS', cls: 'oos' };
+  return { label: 'Unknown', cls: 'unknown' };
+}
+
+function groupBadge(state) {
+  if (state === 'enabled') return { label: 'Running', cls: 'running' };
+  if (state === 'paused') return { label: 'Paused', cls: 'paused' };
+  if (state === 'mixed') return { label: 'Mixed', cls: 'mixed' };
+  if (state === 'empty') return { label: 'Empty', cls: 'empty' };
+  return { label: 'Unknown', cls: 'unknown' };
+}
+
+function mergedAssets() {
+  const list = [];
+  (statusData.games || []).forEach((g) => list.push({ type: 'game', id: g.id, name: g.name, status: g.status }));
+  (statusData.kiosks || []).forEach((k) => list.push({ type: 'kiosk', id: k.id, name: k.name, status: k.status }));
+  return list;
+}
+
+// Surface problems first: Out of service, then Paused, then Unknown, then
+// Running — alphabetical within each tier.
+function statusRank(s) {
+  const order = { outOfService: 0, paused: 1, unknown: 2, enabled: 3 };
+  return order[s] != null ? order[s] : 9;
+}
+
+function filteredAssets() {
+  const q = assetSearch.trim().toLowerCase();
+  return mergedAssets().filter((a) => {
+    if (assetType !== 'all' && a.type !== assetType) return false;
+    if (assetStatus !== 'all' && a.status !== assetStatus) return false;
+    if (q && a.name.toLowerCase().indexOf(q) === -1) return false;
+    return true;
+  }).sort((a, b) => {
+    const r = statusRank(a.status) - statusRank(b.status);
+    return r !== 0 ? r : a.name.localeCompare(b.name);
+  });
+}
+
+function filterPill(value, label, count, activeVal, onClick) {
+  const b = makeEl('button', 'filter-pill' + (value === activeVal ? ' active' : ''), label + ' (' + count + ')');
+  b.type = 'button';
+  b.addEventListener('click', () => onClick(value));
+  return b;
+}
+
+function renderFilters() {
+  const games = (statusData.games || []).length;
+  const kiosks = (statusData.kiosks || []).length;
+  clearEl(el.assetTypeFilters);
+  [['all', 'All', games + kiosks], ['game', 'Games', games], ['kiosk', 'Kiosks', kiosks]].forEach((t) => {
+    el.assetTypeFilters.appendChild(filterPill(t[0], t[1], t[2], assetType, (v) => { assetType = v; renderFilters(); renderAssetList(); }));
+  });
+
+  const base = mergedAssets().filter((a) => assetType === 'all' || a.type === assetType);
+  const c = (s) => base.filter((a) => a.status === s).length;
+  clearEl(el.assetStatusFilters);
+  [['all', 'All', base.length], ['enabled', 'Running', c('enabled')], ['paused', 'Paused', c('paused')], ['outOfService', 'OOS', c('outOfService')]].forEach((t) => {
+    el.assetStatusFilters.appendChild(filterPill(t[0], t[1], t[2], assetStatus, (v) => { assetStatus = v; renderFilters(); renderAssetList(); }));
+  });
+}
+
+function assetActions(a) {
+  const wrap = makeEl('div', 'asset-actions');
+  const controllable = a.type === 'game' || (statusData.kioskPauseSupported && a.status !== 'unknown');
+  if (!controllable) {
+    wrap.appendChild(makeEl('span', 'asset-note', a.type === 'kiosk' ? 'no control' : '—'));
+    return wrap;
+  }
+  [['enabled', 'Unpause', 'unpause'], ['paused', 'Pause', 'pause'], ['outOfService', 'OOS', 'oos']].forEach((t) => {
+    if (a.status === t[0]) return;
+    const btn = makeEl('button', 'asset-btn ' + t[2], t[1]);
+    btn.type = 'button';
+    btn.disabled = !(ready && !assetActionInFlight);
+    btn.addEventListener('click', () => onAssetAction(a, t[0], t[1]));
+    wrap.appendChild(btn);
+  });
+  return wrap;
+}
+
+function renderAssetRow(a) {
+  const row = makeEl('div', 'asset-row');
+  row.setAttribute('data-asset', a.type + ':' + a.id);
+  const info = makeEl('div', 'asset-info');
+  info.appendChild(makeEl('div', 'asset-name', a.name));
+  info.appendChild(makeEl('div', 'asset-meta', a.type === 'kiosk' ? 'Kiosk' : 'Game'));
+  row.appendChild(info);
+  const badge = statusBadge(a.status);
+  row.appendChild(makeEl('span', 'state-badge ' + badge.cls + ' asset-badge', badge.label));
+  row.appendChild(assetActions(a));
+  return row;
+}
+
+function renderAssetList() {
+  const top = el.assetList.scrollTop;
+  clearEl(el.assetList);
+  if (!ready) {
+    el.assetList.appendChild(makeEl('div', 'asset-empty', 'Connect to the server to see live status.'));
+    return;
+  }
+  const items = filteredAssets();
+  if (items.length === 0) {
+    el.assetList.appendChild(makeEl('div', 'asset-empty', 'No matching games or kiosks.'));
+    return;
+  }
+  items.forEach((a) => el.assetList.appendChild(renderAssetRow(a)));
+  el.assetList.scrollTop = top;
+}
+
+function renderGroupMonitor() {
+  clearEl(el.groupMonitor);
+  if (!ready) return;
+  const configured = configuredGroups();
+  if (configured.length === 0) return;
+  const byId = {};
+  (statusData.groups || []).forEach((g) => { byId[String(g.id)] = g; });
+  configured.forEach((cg) => {
+    const g = byId[String(cg.id)];
+    const chip = makeEl('div', 'gm-chip');
+    const top = makeEl('div', 'gm-top');
+    top.appendChild(makeEl('span', 'gm-name', cg.name || ('Group #' + cg.id)));
+    const st = g ? groupBadge(g.state) : { label: '?', cls: 'unknown' };
+    top.appendChild(makeEl('span', 'state-badge ' + st.cls, st.label));
+    chip.appendChild(top);
+    if (g) {
+      const parts = [g.enabled + ' running', g.paused + ' paused'];
+      if (g.oos > 0) parts.push(g.oos + ' OOS');
+      chip.appendChild(makeEl('div', 'gm-counts', parts.join(' · ')));
+    } else {
+      chip.appendChild(makeEl('div', 'gm-counts', 'unavailable'));
+    }
+    el.groupMonitor.appendChild(chip);
+  });
+}
+
+function updateLocalAsset(a) {
+  const arr = a.type === 'kiosk' ? statusData.kiosks : statusData.games;
+  const m = (arr || []).find((x) => String(x.id) === String(a.id));
+  if (m) m.status = a.status;
+}
+
+async function onAssetAction(a, target, label) {
+  if (assetActionInFlight || !ready) return;
+
+  // Tagging an asset out of service is more consequential than a quick
+  // pause/unpause, so confirm that one (pause/unpause stay one-tap).
+  if (target === 'outOfService') {
+    const ok = await confirmAction({
+      title: 'Tag "' + a.name + '" out of service?',
+      message: '"' + a.name + '" will be marked Out of Service in CEplay and stop accepting plays until you set it back to Running.',
+      confirmLabel: 'Out of service',
+      tone: 'oos',
+    });
+    if (!ok) return;
+  }
+
+  assetActionInFlight = true;
+  renderAssetList(); // disables action buttons while in flight
+  setStatus('Setting "' + a.name + '" to ' + label + '…', null);
+
+  let res;
+  try {
+    res = await api.setAssetStatus(a.type, a.id, target);
+  } catch (e) {
+    res = { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+
+  if (res && res.ok) {
+    a.status = target;
+    updateLocalAsset(a);
+    setStatus('"' + a.name + '" → ' + label + '.', 'ok');
+  } else if (res && res.busy) {
+    setStatus('"' + a.name + '" is busy — the server will keep retrying.', 'warn');
+  } else {
+    setStatus('Failed to update "' + a.name + '": ' + ((res && res.error) || 'unknown error'), 'error');
+  }
+
+  assetActionInFlight = false;
+  renderFilters();
+  renderAssetList();
+  setTimeout(() => { if (currentView === 'status' && !assetActionInFlight) loadStatus(); }, 1600);
+}
+
+async function loadStatus() {
+  if (!ready) { renderGroupMonitor(); renderAssetList(); return; }
+  if (assetActionInFlight) return;
+  const res = await api.getStatus();
+  if (currentView !== 'status') return;
+  if (res && res.ok) {
+    statusData = res;
+    el.statusSynced.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    renderGroupMonitor();
+    renderFilters();
+    renderAssetList();
+  } else {
+    el.statusSynced.textContent = '';
+    clearEl(el.assetList);
+    el.assetList.appendChild(makeEl('div', 'asset-empty', 'Could not load status: ' + ((res && res.error) || 'unknown error')));
+  }
+}
+
+function startStatusPolling() {
+  stopStatusPolling();
+  const tick = () => {
+    if (currentView === 'status' && ready && !document.hidden && !assetActionInFlight) loadStatus();
+  };
+  const iv = setInterval(tick, 12000);
+  const vis = () => { if (!document.hidden) tick(); };
+  document.addEventListener('visibilitychange', vis);
+  statusPollCleanup = () => { clearInterval(iv); document.removeEventListener('visibilitychange', vis); };
+}
+
+function stopStatusPolling() {
+  if (statusPollCleanup) { statusPollCleanup(); statusPollCleanup = null; }
+}
+
+el.statusRefresh.addEventListener('click', () => { if (ready) loadStatus(); });
+el.assetSearch.addEventListener('input', () => { assetSearch = el.assetSearch.value; renderAssetList(); });
+
+// --------------------------------------------------------------------------
+// Connection check
+// --------------------------------------------------------------------------
+
+async function refreshConnection() {
+  if (busy) return;
+  currentCfg = await api.getConfig();
+  configured = !!(currentCfg.baseUrl && currentCfg.username && currentCfg.hasPassword);
+  renderGroupCards();
+  if (currentView === 'status') { renderGroupMonitor(); renderAssetList(); }
+  if (!configured) {
+    ready = false;
+    stopStatusPolling();
+    setConn('unknown');
+    updateButtonsEnabled();
+    setStatus('Not configured yet. Open Settings (⚙) to enter the server URL and login.', 'warn');
+    return;
+  }
+  if (busy) return;
+  setConn('working');
+  setStatus('Checking connection…', null);
+  const res = await api.test();
+  if (busy) return;
+  if (res.ok) {
+    ready = true;
+    setConn('ok');
+    updateButtonsEnabled();
+    const who = res.user && res.user.display_name ? res.user.display_name : (res.user && res.user.username) || '';
+    const haveGroups = configuredGroups().length > 0;
+    setStatus('Connected' + (who ? ' as ' + who : '') + '.' +
+      (haveGroups ? ' Ready.' : ' Open Settings (⚙) to add a pause group.'),
+      haveGroups ? 'ok' : 'warn');
+    maybeWarnWatchdog(res);
+    if (currentView === 'status') { loadStatus(); startStatusPolling(); }
+  } else {
+    ready = false;
+    stopStatusPolling();
+    setConn('error');
+    updateButtonsEnabled();
+    if (currentView === 'status') { renderGroupMonitor(); renderAssetList(); }
+    setStatus('Cannot connect: ' + res.error, 'error');
+  }
+}
+
+function maybeWarnWatchdog(res) {
+  const h = res && res.health;
+  if (!h) return;
+  if (h.watchdogHealthy === false) {
+    setStatus(el.statusLine.textContent, 'warn',
+      'Heads up: the server’s per-minute watchdog hasn’t run recently, so retries of busy assets may not process. Check the cron_watchdog cron on the CEplay server.');
+  } else if (typeof h.retriesGaveUp === 'number' && h.retriesGaveUp > 0) {
+    setStatus(el.statusLine.textContent, 'warn',
+      h.retriesGaveUp + ' asset(s) on the server gave up after exhausting retries. They’ll be re-tried after a cooldown, or on the next action.');
+  }
+}
+
+// --------------------------------------------------------------------------
+// Settings panel — server/login + the dynamic group-button editor
 // --------------------------------------------------------------------------
 
 function renderGroupEditor() {
@@ -870,22 +1240,18 @@ function renderGroupEditor() {
 function refreshAddSelect() {
   const sel = el.groupAddSelect;
   clearEl(sel);
-
   if (!groupsLoaded) {
     sel.appendChild(makeOption('', 'Connect to load groups…', true));
     el.groupAddBtn.disabled = true;
     return;
   }
-
   const added = new Set(editGroups.map((g) => String(g.id)));
   const available = allGroups.filter((g) => !added.has(String(g.id)));
-
   if (available.length === 0) {
     sel.appendChild(makeOption('', allGroups.length ? 'All groups added' : 'No pause groups found', true));
     el.groupAddBtn.disabled = true;
     return;
   }
-
   const placeholder = makeOption('', 'Choose a group to add…', true);
   placeholder.selected = true;
   sel.appendChild(placeholder);
@@ -908,7 +1274,6 @@ async function loadGroupsForAdd() {
   if (res && res.ok) {
     allGroups = res.groups || [];
     groupsLoaded = true;
-    // Refresh stored names to the current server names (in case of renames).
     editGroups.forEach((g) => {
       const m = allGroups.find((x) => String(x.id) === String(g.id));
       if (m) g.name = m.name;
@@ -949,9 +1314,7 @@ async function openSettings() {
   loadGroupsForAdd();
 }
 
-function closeSettings() {
-  el.overlay.classList.add('hidden');
-}
+function closeSettings() { el.overlay.classList.add('hidden'); }
 
 el.settingsBtn.addEventListener('click', openSettings);
 el.cfgCancel.addEventListener('click', closeSettings);
@@ -975,8 +1338,6 @@ el.cfgSave.addEventListener('click', async () => {
 });
 
 el.cfgTest.addEventListener('click', async () => {
-  // Persist the server/login fields first so the test uses exactly what's on
-  // screen. The group list is preserved by the main process (not sent here).
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Testing…';
   await api.setConfig({
@@ -1006,8 +1367,6 @@ document.addEventListener('keydown', (e) => {
 // Boot
 // --------------------------------------------------------------------------
 
-// Hide the logo gracefully if logo.png hasn't been dropped in yet, so the
-// brand falls back to the wordmark instead of a broken-image icon.
 const brandLogo = document.getElementById('brand-logo');
 if (brandLogo) {
   brandLogo.addEventListener('error', () => brandLogo.classList.add('hero-logo--hidden'));
@@ -1016,16 +1375,17 @@ if (brandLogo) {
 refreshConnection();
 
 // --------------------------------------------------------------------------
-// Demo-only: reset the simulated pause groups to the opening-time scenario.
+// Demo-only: reset the simulated venue to the opening-time scenario.
 // (Not present in the real Electron renderer.)
 // --------------------------------------------------------------------------
 const demoResetBtn = document.getElementById('demo-reset-btn');
 if (demoResetBtn) {
   demoResetBtn.addEventListener('click', () => {
-    if (busy) return;
+    if (busy || assetActionInFlight) return;
     api.__reset();
     setConn('ok');
-    setStatus('Demo reset — groups back to the opening scenario (most members paused). Tap a button to begin.', 'ok');
+    setStatus('Demo reset — venue back to the opening scenario (most assets paused).', 'ok');
+    if (currentView === 'status') loadStatus();
   });
 }
   </script>

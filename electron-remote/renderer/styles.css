@@ -71,6 +71,18 @@ body {
   gap: 20px;
 }
 
+/* View nav (Controls / Status) + view containers ------------------------- */
+.viewnav { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.viewnav-btn {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+}
+.viewnav-btn:hover { color: var(--text); }
+.viewnav-btn.active { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
+
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 16px; }
+.view.hidden { display: none; }
+
 /* Hero logo above the action buttons ------------------------------------- */
 .hero { display: flex; align-items: center; justify-content: center; padding: 4px 0 0; }
 .hero-logo { max-height: 80px; max-width: 74%; height: auto; width: auto; object-fit: contain; }
@@ -127,12 +139,83 @@ body {
 .big-btn.unpause { background: linear-gradient(160deg, var(--unpause-hi), var(--unpause)); }
 .big-btn.pause   { background: linear-gradient(160deg, var(--pause-hi), var(--pause)); }
 
+/* ====================================================================== */
+/* === Status console ==================================================== */
+/* ====================================================================== */
+.status-head { display: flex; align-items: center; gap: 10px; }
+.status-title { font-size: 15px; font-weight: 700; letter-spacing: 0.2px; }
+.status-synced { font-size: 12px; color: var(--muted); margin-left: auto; }
+.btn-sm { padding: 6px 12px; font-size: 13px; }
+
+/* Shared status badge (group monitor + asset rows) */
+.state-badge {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.state-badge.running { color: var(--ok); background: rgba(43, 182, 115, 0.14); }
+.state-badge.paused  { color: var(--warn); background: rgba(224, 163, 46, 0.16); }
+.state-badge.oos     { color: var(--error); background: rgba(229, 72, 77, 0.14); }
+.state-badge.mixed   { color: var(--kiosks); background: rgba(91, 141, 239, 0.16); }
+.state-badge.unknown, .state-badge.empty { color: var(--muted); background: rgba(139, 147, 167, 0.14); }
+
+/* Group monitor chips */
+.group-monitor { display: flex; flex-wrap: wrap; gap: 8px; }
+.group-monitor:empty { display: none; }
+.gm-chip {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel); min-width: 132px;
+}
+.gm-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.gm-name { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-counts { font-size: 11px; color: var(--muted); }
+
+/* Toolbar: search + filter pills */
+.asset-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.asset-search {
+  flex: 1; min-width: 150px; padding: 8px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px;
+}
+.asset-search:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
+.filter-pills { display: flex; gap: 4px; }
+.filter-pill {
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+}
+.filter-pill:hover { color: var(--text); }
+.filter-pill.active { background: var(--panel-2); color: var(--text); }
+
+/* Asset list + rows */
+.asset-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.asset-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 12px; }
+.asset-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+}
+.asset-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.asset-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-meta { font-size: 11px; color: var(--muted); }
+.asset-badge { flex: 0 0 auto; }
+.asset-actions { display: flex; gap: 5px; flex: 0 0 auto; }
+.asset-note { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.asset-btn {
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  font-size: 12px; font-weight: 600; padding: 5px 9px; border-radius: 7px; cursor: pointer;
+  transition: filter 0.12s ease, background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.asset-btn:disabled { opacity: 0.45; cursor: default; }
+.asset-btn.unpause:hover:not(:disabled) { border-color: var(--unpause); color: var(--unpause-hi); }
+.asset-btn.pause:hover:not(:disabled)   { border-color: var(--pause); color: var(--pause-hi); }
+.asset-btn.oos:hover:not(:disabled)     { border-color: var(--error); color: var(--error); }
+
 /* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
 .confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
 .btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }
 .btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
 .btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
 .btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
+.btn-primary.confirm-go.oos     { background: var(--error); border-color: var(--error); }
+.btn-primary.confirm-go.oos:hover     { filter: brightness(1.08); }
 
 /* Status ----------------------------------------------------------------- */
 .status {
