@@ -24,25 +24,53 @@
   <main id="main-view">
     <!-- Controls view: one card per configured pause group -->
     <section class="view" id="view-controls">
-      <div class="hero">
-        <img class="hero-logo" id="brand-logo" src="logo.png" alt="CEplay" />
+      <div class="view-shell controls-shell">
+        <section class="hero-card" aria-labelledby="controls-title">
+          <div class="hero-copy">
+            <p class="eyebrow">Front desk control center</p>
+            <h1 id="controls-title">Pause and resume attractions with confidence.</h1>
+            <p class="hero-text">Choose a pause group, confirm the action, and CEplay will handle retries for busy readers automatically.</p>
+          </div>
+          <div class="hero-brand">
+            <img class="hero-logo" id="brand-logo" src="logo.png" alt="CEplay" />
+            <div class="hero-brand-fallback" aria-hidden="true">CEplay</div>
+          </div>
+        </section>
+
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Configured groups</p>
+            <h2>Quick actions</h2>
+          </div>
+          <p class="section-note">Every action asks for confirmation before it runs.</p>
+        </div>
+
+        <div class="groups" id="groups"></div>
       </div>
-      <div class="groups" id="groups"></div>
     </section>
+
 
     <!-- Status view: each group, its readers, and individual pause/unpause/OOS -->
     <section class="view hidden" id="view-status">
-      <div class="status-head">
-        <span class="status-title">Live status</span>
-        <span class="status-synced" id="status-synced"></span>
-        <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
+      <div class="view-shell status-shell">
+        <div class="status-head">
+          <div>
+            <p class="eyebrow">Live operations</p>
+            <h1 class="status-title">Reader status</h1>
+          </div>
+          <span class="status-synced" id="status-synced"></span>
+          <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
+        </div>
+
+        <div class="status-chips" id="status-chips"></div>
+
+        <label class="search-wrap" for="asset-search">
+          <span>Search</span>
+          <input type="text" id="asset-search" class="asset-search" placeholder="Game, kiosk, or reader name…" autocomplete="off" />
+        </label>
+
+        <div class="group-sections" id="group-sections"></div>
       </div>
-
-      <div class="status-chips" id="status-chips"></div>
-
-      <input type="text" id="asset-search" class="asset-search" placeholder="Search for a game or kiosk…" autocomplete="off" />
-
-      <div class="group-sections" id="group-sections"></div>
     </section>
 
     <section class="status" id="status" aria-live="polite">

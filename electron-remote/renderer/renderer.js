@@ -146,7 +146,11 @@ function renderGroupCards() {
     row.setAttribute('data-group-id', String(g.id));
 
     const head = makeEl('div', 'group-row-head');
-    head.appendChild(makeEl('span', 'group-row-name', name));
+    const titleWrap = makeEl('div', 'group-row-title');
+    titleWrap.appendChild(makeEl('span', 'group-row-kicker', 'Pause group'));
+    titleWrap.appendChild(makeEl('span', 'group-row-name', name));
+    head.appendChild(titleWrap);
+    head.appendChild(makeEl('span', 'group-row-hint', 'Confirm required'));
     row.appendChild(head);
 
     const actions = makeEl('div', 'group-row-actions');
