@@ -7,6 +7,7 @@ an "Arcade kiosks" group):
 
 - **Unpause / Pause — games group** — flips your chosen "games" pause group.
 - **Unpause / Pause — kiosks group** — flips your chosen "kiosks" pause group.
+- **Unpause / Pause — outdoor group** — flips your chosen "outdoor attractions" pause group.
 
 It is meant to live on a **different PC** than the main CEplay project (e.g. a
 front‑desk machine) and talks to CEplay over the network using the project's
@@ -45,6 +46,31 @@ there are no CORS/CSP issues and no backend CORS changes are required.
 > change was intentional). For scheduled groups, use an override in the main app
 > instead.
 
+## Verifying retries (busy assets)
+
+When an asset is in use, the server can't flip it right away, so the result
+reports "N busy — the server will keep retrying." Those assets are queued in
+CEplay's `action_retries` table and re-attempted by **cron_watchdog.php** once a
+minute (`Scheduler::processRetries`), up to `max_attempts`; after that they give
+up and then self-heal after a cooldown. It's the same retry path the main app
+uses for manual pause/unpause.
+
+Two things make this work:
+
+1. **The per-minute watchdog cron must be running on the CEplay server** — it's
+   what drains the queue. If it isn't, busy assets never retry. The remote shows
+   a warning on connect if the server reports the watchdog as stalled.
+2. You can watch the queue drain with the bundled inspector (run on the server):
+
+   ```bash
+   php retry_status.php                 # one-shot snapshot
+   watch -n 5 'php retry_status.php'    # live view as it drains
+   ```
+
+   Trigger a pause/unpause that reports "N busy", then run it — you'll see the
+   rows with their attempt counts climbing each minute, and entries disappearing
+   as the watchdog succeeds.
+
 ## Prerequisites
 
 - A reachable CEplay server URL (e.g. `https://ceplay.yourvenue.local`).
@@ -68,9 +94,10 @@ On first launch, click the **⚙ Settings** button and enter:
 - **Allow self-signed TLS** — only if your LAN server uses a self‑signed cert
 
 Click **Test connection** to verify — this also loads your pause groups into the
-two dropdowns. Pick the **Arcade games group** and **Kiosks group** the buttons
-should control, then **Save**. (Create those groups first in the main CEplay app
-under *Pause Groups* if you haven't already.)
+dropdowns. Pick the **Arcade games**, **Kiosks**, and **Outdoor attractions**
+groups the buttons should control (leave any on "— none —" to keep that pair of
+buttons disabled), then **Save**. (Create those groups first in the main CEplay
+app under *Pause Groups* if you haven't already.)
 
 ## Build an installer
 

@@ -8,15 +8,13 @@
  * the web context. The renderer talks to us only over the IPC bridge defined
  * in preload.js.
  *
- * The four buttons drive two CEplay pause groups chosen in Settings (a "games"
- * slot and a "kiosks" slot), via the same group endpoints the web dashboard
- * uses — so any CEplay server supports them. The server applies the change
- * through the SAME retry queue the main app uses (Scheduler::queueRetry →
+ * The buttons drive CEplay pause groups chosen in Settings — one per slot
+ * ("games", "kiosks", "outdoor") — via the same group endpoints the web
+ * dashboard uses, so any CEplay server supports them. The server applies the
+ * change through the SAME retry queue the main app uses (Scheduler::queueRetry →
  * watchdog Scheduler::processRetries):
- *   POST /api/groups/{gamesGroupId}/unpause   — unpause the chosen "games" group
- *   POST /api/groups/{gamesGroupId}/pause     — pause the chosen "games" group
- *   POST /api/groups/{kiosksGroupId}/unpause  — unpause the chosen "kiosks" group
- *   POST /api/groups/{kiosksGroupId}/pause    — pause the chosen "kiosks" group
+ *   POST /api/groups/{slotGroupId}/unpause   — unpause the chosen group
+ *   POST /api/groups/{slotGroupId}/pause     — pause the chosen group
  * GET  /api/groups is used to populate the Settings group pickers.
  */
 
@@ -245,11 +243,13 @@ ipcMain.handle('ceplay:getConfig', () => {
     hasPassword: !!(cfg.passwordEnc || cfg.password),
     insecureTLS: !!cfg.insecureTLS,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
-    // Pause-group selections for the two button slots ("games" / "kiosks").
+    // Pause-group selections for the button slots ("games" / "kiosks" / "outdoor").
     gamesGroupId: cfg.gamesGroupId != null ? cfg.gamesGroupId : null,
     gamesGroupName: cfg.gamesGroupName || '',
     kiosksGroupId: cfg.kiosksGroupId != null ? cfg.kiosksGroupId : null,
     kiosksGroupName: cfg.kiosksGroupName || '',
+    outdoorGroupId: cfg.outdoorGroupId != null ? cfg.outdoorGroupId : null,
+    outdoorGroupName: cfg.outdoorGroupName || '',
   };
 });
 
@@ -278,10 +278,12 @@ ipcMain.handle('ceplay:setConfig', (_event, incoming) => {
   // stored when the caller doesn't send them — the "Test connection" path
   // calls setConfig with only the server/login fields and must not wipe them.
   const normId = (v) => (v === null || v === undefined || v === '') ? null : parseInt(v, 10);
-  next.gamesGroupId    = incoming.gamesGroupId    !== undefined ? normId(incoming.gamesGroupId)               : (cfg.gamesGroupId != null ? cfg.gamesGroupId : null);
-  next.gamesGroupName  = incoming.gamesGroupName  !== undefined ? String(incoming.gamesGroupName || '').trim() : (cfg.gamesGroupName || '');
-  next.kiosksGroupId   = incoming.kiosksGroupId   !== undefined ? normId(incoming.kiosksGroupId)              : (cfg.kiosksGroupId != null ? cfg.kiosksGroupId : null);
-  next.kiosksGroupName = incoming.kiosksGroupName !== undefined ? String(incoming.kiosksGroupName || '').trim(): (cfg.kiosksGroupName || '');
+  next.gamesGroupId     = incoming.gamesGroupId     !== undefined ? normId(incoming.gamesGroupId)                : (cfg.gamesGroupId != null ? cfg.gamesGroupId : null);
+  next.gamesGroupName   = incoming.gamesGroupName   !== undefined ? String(incoming.gamesGroupName || '').trim()  : (cfg.gamesGroupName || '');
+  next.kiosksGroupId    = incoming.kiosksGroupId    !== undefined ? normId(incoming.kiosksGroupId)               : (cfg.kiosksGroupId != null ? cfg.kiosksGroupId : null);
+  next.kiosksGroupName  = incoming.kiosksGroupName  !== undefined ? String(incoming.kiosksGroupName || '').trim() : (cfg.kiosksGroupName || '');
+  next.outdoorGroupId   = incoming.outdoorGroupId   !== undefined ? normId(incoming.outdoorGroupId)              : (cfg.outdoorGroupId != null ? cfg.outdoorGroupId : null);
+  next.outdoorGroupName = incoming.outdoorGroupName !== undefined ? String(incoming.outdoorGroupName || '').trim(): (cfg.outdoorGroupName || '');
 
   saveConfig(next);
   resetSession(); // force a fresh login with the new settings
@@ -296,7 +298,15 @@ ipcMain.handle('ceplay:test', async () => {
     const user = await login();
     let health = null;
     try { health = await apiRequest('GET', '/api/health'); } catch (e) { /* health is best-effort */ }
-    return { ok: true, user, status: health ? health.status : null };
+    // Surface the bits the UI cares about: is the per-minute watchdog (which
+    // processes retries of busy assets) alive, and did any retries give up?
+    const healthSummary = health ? {
+      status: health.status || null,
+      watchdogHealthy: health.watchdog ? !!health.watchdog.healthy : null,
+      retriesPending: health.retries && typeof health.retries.pending === 'number' ? health.retries.pending : null,
+      retriesGaveUp: health.retries && typeof health.retries.gave_up === 'number' ? health.retries.gave_up : null,
+    } : null;
+    return { ok: true, user, status: health ? health.status : null, health: healthSummary };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -324,7 +334,7 @@ ipcMain.handle('ceplay:getGroups', async () => {
 // (and queues busy assets into its own retry table).
 async function runGroup(slot, action) {
   const cfg = loadConfig();
-  const id = slot === 'games' ? cfg.gamesGroupId : cfg.kiosksGroupId;
+  const id = cfg[slot + 'GroupId'];
   if (!id) {
     return { ok: false, error: 'No pause group selected for this button. Open Settings (⚙) and choose one.' };
   }
@@ -346,6 +356,8 @@ ipcMain.handle('ceplay:unpauseGames', () => runGroup('games', 'unpause'));
 ipcMain.handle('ceplay:pauseGames', () => runGroup('games', 'pause'));
 ipcMain.handle('ceplay:unpauseKiosks', () => runGroup('kiosks', 'unpause'));
 ipcMain.handle('ceplay:pauseKiosks', () => runGroup('kiosks', 'pause'));
+ipcMain.handle('ceplay:unpauseOutdoor', () => runGroup('outdoor', 'unpause'));
+ipcMain.handle('ceplay:pauseOutdoor', () => runGroup('outdoor', 'pause'));
 
 // ---------------------------------------------------------------------------
 // Window
