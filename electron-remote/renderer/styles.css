@@ -71,6 +71,12 @@ body {
   gap: 20px;
 }
 
+/* Hero logo above the action buttons ------------------------------------- */
+.hero { display: flex; align-items: center; justify-content: center; padding: 6px 0 2px; }
+.hero-logo { max-height: 104px; max-width: 78%; height: auto; width: auto; object-fit: contain; }
+.hero-logo--hidden { display: none; }
+@media (max-height: 580px) { .hero-logo { max-height: 60px; } }
+
 .buttons {
   flex: 1;
   display: grid;
@@ -97,15 +103,12 @@ body {
 .big-btn.unpause { background: linear-gradient(160deg, var(--unpause-hi), var(--unpause)); }
 .big-btn.pause   { background: linear-gradient(160deg, var(--pause-hi), var(--pause)); }
 
-.big-btn[data-armed="1"] {
-  outline: 4px solid rgba(255, 255, 255, 0.85);
-  outline-offset: -4px;
-  animation: pulse 1s infinite;
-}
-@keyframes pulse {
-  0%, 100% { filter: brightness(1); }
-  50%      { filter: brightness(1.18); }
-}
+/* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
+.confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
+.btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }
+.btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
+.btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
+.btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
 
 /* Status ----------------------------------------------------------------- */
 .status {

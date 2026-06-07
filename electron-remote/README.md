@@ -94,7 +94,15 @@ low‑privilege account.
 
 ## Safety
 
-Each button must be tapped **twice** (tap to arm, tap again within 3 seconds to
-confirm) so it can't be triggered by an accidental click. The result line then
-reports how many were changed, how many were already in the target state, how
-many were skipped, and how many are busy and being retried by the server.
+Tapping a button opens a **confirmation dialog** (e.g. "Pause all arcade
+readers?") so it can't be triggered by an accidental click — confirm to run, or
+cancel/Esc to back out. The result line then reports how many were changed, how
+many were already in the target state, how many were skipped, and how many are
+busy and being retried by the server.
+
+## Branding
+
+A large `logo.png` is shown as a hero banner above the action buttons. Drop your
+own `logo.png` into the `renderer/` folder — a landscape/wide image works best;
+it's scaled to fit (up to ~104px tall). If the file is missing, the hero is
+hidden and the top-bar "CEplay Remote" wordmark still identifies the app.
