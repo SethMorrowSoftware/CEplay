@@ -463,11 +463,11 @@ ipcMain.handle('ceplay:setAssetStatus', async (_event, type, id, status) => {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 780,
-    height: 680,
-    minWidth: 480,
-    minHeight: 520,
-    backgroundColor: '#0b0e14',
+    width: 1100,
+    height: 780,
+    minWidth: 760,
+    minHeight: 620,
+    backgroundColor: '#090d14',
     title: 'CEplay Remote',
     autoHideMenuBar: true,
     webPreferences: {

@@ -121,7 +121,10 @@ under *Pause Groups* if you haven't already.)
 
 ## Build an installer
 
+If you already have Node.js/npm installed, build from `electron-remote/`:
+
 ```bash
+npm install
 npm run dist:win     # Windows (NSIS installer)  -> dist/
 npm run dist:mac     # macOS (dmg)
 npm run dist:linux   # Linux (AppImage)
@@ -129,6 +132,94 @@ npm run dist:linux   # Linux (AppImage)
 
 Output lands in `electron-remote/dist/`. Build on the target OS (electron‑builder
 does not cross‑compile reliably).
+
+### Windows build with only PowerShell/admin
+
+On a Windows PC that does not already have Git, Node.js, or npm, use the bundled
+PowerShell helper. It installs Node.js LTS if needed, installs the Electron build
+dependencies, and creates the NSIS `.exe` installer in `electron-remote\dist\`.
+
+1. Download this repository as a ZIP and extract it (Git is not required).
+2. Open **PowerShell as Administrator**.
+3. `cd` into the extracted repository folder.
+4. Run:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\electron-remote\scripts\build-windows-installer.ps1
+   ```
+
+If you want the helper to download the repository ZIP for you, save the script
+locally and pass a ZIP URL instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-windows-installer.ps1 -RepoZipUrl "https://github.com/OWNER/REPO/archive/refs/heads/main.zip"
+```
+
+After the build finishes, copy the newest `.exe` from `electron-remote\dist\` to
+the front-desk Windows machine and run it. On first launch, enter the CEplay
+server URL and the dedicated remote user in Settings, then use **Test
+connection** to load and save the pause-group buttons.
+
+### Windows: installing Git, Node.js, and npm
+
+If you prefer the normal developer workflow instead of downloading a ZIP, install
+Git and Node.js first. **npm comes with Node.js** on Windows; you do not install
+npm separately.
+
+#### Option A: one helper script
+
+If you already have this repository ZIP extracted, open **PowerShell as
+Administrator** in the extracted folder and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\electron-remote\scripts\install-windows-prereqs.ps1
+```
+
+This installs **Git for Windows** and **Node.js LTS** using `winget` when
+available, with official installer fallbacks. After it finishes, open a **new**
+PowerShell window so Windows refreshes `PATH`, then verify:
+
+```powershell
+git --version
+node --version
+npm --version
+```
+
+#### Option B: commands without the helper
+
+In **PowerShell as Administrator**:
+
+```powershell
+winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements
+winget install --id OpenJS.NodeJS.LTS --exact --silent --accept-package-agreements --accept-source-agreements
+```
+
+Open a **new** PowerShell window, then verify:
+
+```powershell
+git --version
+node --version
+npm --version
+```
+
+If `winget` is not available, download and install:
+
+- Git for Windows: <https://git-scm.com/download/win>
+- Node.js LTS: <https://nodejs.org/>
+
+#### Clone and build after the tools are installed
+
+Use your repository URL in place of `https://github.com/OWNER/REPO.git`:
+
+```powershell
+cd $env:USERPROFILE\Desktop
+git clone https://github.com/OWNER/REPO.git CEplay
+cd .\CEplay\electron-remote
+npm install
+npm run dist:win
+```
+
+The installer will be in `electron-remote\dist\`.
 
 ## Linux: sandbox & AppImage
 
