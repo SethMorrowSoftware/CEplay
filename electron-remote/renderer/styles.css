@@ -214,6 +214,8 @@ body {
 .btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
 .btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
 .btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
+.btn-primary.confirm-go.oos     { background: var(--error); border-color: var(--error); }
+.btn-primary.confirm-go.oos:hover     { filter: brightness(1.08); }
 
 /* Status ----------------------------------------------------------------- */
 .status {

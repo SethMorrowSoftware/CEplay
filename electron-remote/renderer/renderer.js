@@ -316,6 +316,13 @@ function mergedAssets() {
   return list;
 }
 
+// Surface problems first: Out of service, then Paused, then Unknown, then
+// Running — alphabetical within each tier.
+function statusRank(s) {
+  const order = { outOfService: 0, paused: 1, unknown: 2, enabled: 3 };
+  return order[s] != null ? order[s] : 9;
+}
+
 function filteredAssets() {
   const q = assetSearch.trim().toLowerCase();
   return mergedAssets().filter((a) => {
@@ -323,7 +330,10 @@ function filteredAssets() {
     if (assetStatus !== 'all' && a.status !== assetStatus) return false;
     if (q && a.name.toLowerCase().indexOf(q) === -1) return false;
     return true;
-  }).sort((a, b) => a.name.localeCompare(b.name));
+  }).sort((a, b) => {
+    const r = statusRank(a.status) - statusRank(b.status);
+    return r !== 0 ? r : a.name.localeCompare(b.name);
+  });
 }
 
 function filterPill(value, label, count, activeVal, onClick) {
@@ -430,6 +440,19 @@ function updateLocalAsset(a) {
 
 async function onAssetAction(a, target, label) {
   if (assetActionInFlight || !ready) return;
+
+  // Tagging an asset out of service is more consequential than a quick
+  // pause/unpause, so confirm that one (pause/unpause stay one-tap).
+  if (target === 'outOfService') {
+    const ok = await confirmAction({
+      title: 'Tag "' + a.name + '" out of service?',
+      message: '"' + a.name + '" will be marked Out of Service in CEplay and stop accepting plays until you set it back to Running.',
+      confirmLabel: 'Out of service',
+      tone: 'oos',
+    });
+    if (!ok) return;
+  }
+
   assetActionInFlight = true;
   renderAssetList(); // disables action buttons while in flight
   setStatus('Setting "' + a.name + '" to ' + label + '…', null);
