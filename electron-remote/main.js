@@ -23,6 +23,20 @@ const path = require('path');
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
 
+// Linux: AppImages mount read-only under /tmp, so their bundled chrome-sandbox
+// helper can't be owned root / setuid (mode 4755), and many locked-down distros
+// (Ubuntu 23.10+/24.04 via AppArmor, hardened Debian) also disable unprivileged
+// user namespaces — leaving Chromium with no way to initialize its sandbox, so
+// it aborts on launch. This window only ever renders trusted, local UI (no
+// remote/untrusted web content), with contextIsolation on and all network I/O
+// in the main process, so running without the OS-level sandbox is an acceptable
+// trade-off here. To run *with* the sandbox instead, enable unprivileged user
+// namespaces on the machine (see the README "Linux: sandbox & AppImage"
+// section) and remove this switch. Windows and macOS keep the sandbox.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+}
+
 // In-memory session state. Re-established automatically on 401/403.
 let cookieJar = {};      // cookie name -> value
 let csrfToken = null;

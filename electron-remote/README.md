@@ -78,6 +78,43 @@ npm run dist:linux   # Linux (AppImage)
 Output lands in `electron-remote/dist/`. Build on the target OS (electron‑builder
 does not cross‑compile reliably).
 
+## Linux: sandbox & AppImage
+
+Chromium normally runs each renderer inside an OS sandbox. On Linux that needs
+either a setuid `chrome-sandbox` helper **or** unprivileged user namespaces.
+AppImages mount read‑only under `/tmp`, so the bundled helper can't be
+setuid‑root, and several distros (Ubuntu 23.10+/24.04 via AppArmor, hardened
+Debian) disable unprivileged user namespaces — so a stock AppImage would abort
+on launch with:
+
+```
+FATAL:setuid_sandbox_host.cc … chrome-sandbox is owned by root and has mode 4755
+```
+
+Because this window only renders trusted, local UI (no remote/untrusted web
+content), **the app launches with `--no-sandbox` on Linux by default** so it
+works out of the box. Windows and macOS are unaffected and keep the sandbox.
+
+### Prefer to keep the sandbox on Linux?
+
+Enable unprivileged user namespaces on each machine, then remove the
+`--no-sandbox` switch in `main.js` (the `if (process.platform === 'linux')`
+block):
+
+```bash
+# Ubuntu 23.10+/24.04 (AppArmor gate):
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-userns.conf
+
+# Debian / older kernels:
+echo 'kernel.unprivileged_userns_clone=1' | sudo tee -a /etc/sysctl.d/60-userns.conf
+
+sudo sysctl --system   # apply now (persists across reboots)
+```
+
+To test a single run without editing config: `sudo sysctl -w
+kernel.apparmor_restrict_unprivileged_userns=0` then launch normally. (You can
+also force a one‑off either way with `./CEplay\ Remote-*.AppImage --no-sandbox`.)
+
 ## Where settings are stored
 
 Configuration lives in the per‑user Electron `userData` folder (not in this
