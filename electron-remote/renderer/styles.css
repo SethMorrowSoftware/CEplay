@@ -142,12 +142,12 @@ body {
 .panel label.checkbox {
   display: flex; align-items: center; gap: 8px; color: var(--text); margin-top: 16px;
 }
-.panel input[type="url"], .panel input[type="text"], .panel input[type="password"] {
+.panel input[type="url"], .panel input[type="text"], .panel input[type="password"], .panel select {
   width: 100%; padding: 10px 12px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   font-size: 14px;
 }
-.panel input:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
+.panel input:focus, .panel select:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
 
 .hint { font-size: 12px; color: var(--muted); margin: 14px 0 0; }
 

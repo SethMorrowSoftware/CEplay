@@ -8,13 +8,16 @@
  * the web context. The renderer talks to us only over the IPC bridge defined
  * in preload.js.
  *
- * The four buttons map to four CEplay endpoints, which apply the change through
- * the SAME retry queue the main CEplay app uses (Scheduler::queueRetry →
+ * The four buttons drive two CEplay pause groups chosen in Settings (a "games"
+ * slot and a "kiosks" slot), via the same group endpoints the web dashboard
+ * uses — so any CEplay server supports them. The server applies the change
+ * through the SAME retry queue the main app uses (Scheduler::queueRetry →
  * watchdog Scheduler::processRetries):
- *   POST /api/games/unpause-all    — unpause every paused arcade reader
- *   POST /api/games/pause-all      — pause every enabled arcade reader
- *   POST /api/kiosks/unpause-all   — unpause every paused kiosk
- *   POST /api/kiosks/pause-all     — pause every enabled kiosk
+ *   POST /api/groups/{gamesGroupId}/unpause   — unpause the chosen "games" group
+ *   POST /api/groups/{gamesGroupId}/pause     — pause the chosen "games" group
+ *   POST /api/groups/{kiosksGroupId}/unpause  — unpause the chosen "kiosks" group
+ *   POST /api/groups/{kiosksGroupId}/pause    — pause the chosen "kiosks" group
+ * GET  /api/groups is used to populate the Settings group pickers.
  */
 
 const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
@@ -242,6 +245,11 @@ ipcMain.handle('ceplay:getConfig', () => {
     hasPassword: !!(cfg.passwordEnc || cfg.password),
     insecureTLS: !!cfg.insecureTLS,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    // Pause-group selections for the two button slots ("games" / "kiosks").
+    gamesGroupId: cfg.gamesGroupId != null ? cfg.gamesGroupId : null,
+    gamesGroupName: cfg.gamesGroupName || '',
+    kiosksGroupId: cfg.kiosksGroupId != null ? cfg.kiosksGroupId : null,
+    kiosksGroupName: cfg.kiosksGroupName || '',
   };
 });
 
@@ -266,6 +274,15 @@ ipcMain.handle('ceplay:setConfig', (_event, incoming) => {
     if (cfg.password) next.password = cfg.password;
   }
 
+  // Pause-group selections for the two button slots. Preserve whatever is
+  // stored when the caller doesn't send them — the "Test connection" path
+  // calls setConfig with only the server/login fields and must not wipe them.
+  const normId = (v) => (v === null || v === undefined || v === '') ? null : parseInt(v, 10);
+  next.gamesGroupId    = incoming.gamesGroupId    !== undefined ? normId(incoming.gamesGroupId)               : (cfg.gamesGroupId != null ? cfg.gamesGroupId : null);
+  next.gamesGroupName  = incoming.gamesGroupName  !== undefined ? String(incoming.gamesGroupName || '').trim() : (cfg.gamesGroupName || '');
+  next.kiosksGroupId   = incoming.kiosksGroupId   !== undefined ? normId(incoming.kiosksGroupId)              : (cfg.kiosksGroupId != null ? cfg.kiosksGroupId : null);
+  next.kiosksGroupName = incoming.kiosksGroupName !== undefined ? String(incoming.kiosksGroupName || '').trim(): (cfg.kiosksGroupName || '');
+
   saveConfig(next);
   resetSession(); // force a fresh login with the new settings
   // Apply the TLS choice to subsequent connections without needing a restart.
@@ -285,14 +302,39 @@ ipcMain.handle('ceplay:test', async () => {
   }
 });
 
-async function runBulk(endpoint) {
+// List the venue's pause groups so the renderer can populate the Settings
+// dropdowns. Trimmed to the fields the picker needs.
+ipcMain.handle('ceplay:getGroups', async () => {
   try {
     await ensureAuth();
-    const summary = await apiRequest('POST', endpoint, {});
-    return { ok: true, summary };
+    const data = await apiRequest('GET', '/api/groups');
+    const groups = (data.groups || []).map((g) => ({
+      id: g.id,
+      name: g.name,
+      is_active: g.is_active,
+    }));
+    return { ok: true, groups };
   } catch (err) {
-    // The pause/unpause-all endpoints return a structured summary even on a
-    // hard failure (HTTP 502) — surface it so the UI can explain what happened.
+    return { ok: false, error: err.message };
+  }
+});
+
+// Pause/unpause one of the two configured pause groups. `slot` selects which
+// stored group id to act on; CEplay flips every game AND kiosk in the group
+// (and queues busy assets into its own retry table).
+async function runGroup(slot, action) {
+  const cfg = loadConfig();
+  const id = slot === 'games' ? cfg.gamesGroupId : cfg.kiosksGroupId;
+  if (!id) {
+    return { ok: false, error: 'No pause group selected for this button. Open Settings (⚙) and choose one.' };
+  }
+  try {
+    await ensureAuth();
+    const summary = await apiRequest('POST', '/api/groups/' + encodeURIComponent(id) + '/' + action, {});
+    return { ok: summary.success !== false, summary };
+  } catch (err) {
+    // group pause/unpause returns a structured body even on failure — surface
+    // it so the UI can explain what happened.
     if (err.data && typeof err.data === 'object') {
       return { ok: false, summary: err.data, error: err.message };
     }
@@ -300,10 +342,10 @@ async function runBulk(endpoint) {
   }
 }
 
-ipcMain.handle('ceplay:unpauseGames', () => runBulk('/api/games/unpause-all'));
-ipcMain.handle('ceplay:pauseGames', () => runBulk('/api/games/pause-all'));
-ipcMain.handle('ceplay:unpauseKiosks', () => runBulk('/api/kiosks/unpause-all'));
-ipcMain.handle('ceplay:pauseKiosks', () => runBulk('/api/kiosks/pause-all'));
+ipcMain.handle('ceplay:unpauseGames', () => runGroup('games', 'unpause'));
+ipcMain.handle('ceplay:pauseGames', () => runGroup('games', 'pause'));
+ipcMain.handle('ceplay:unpauseKiosks', () => runGroup('kiosks', 'unpause'));
+ipcMain.handle('ceplay:pauseKiosks', () => runGroup('kiosks', 'pause'));
 
 // ---------------------------------------------------------------------------
 // Window
