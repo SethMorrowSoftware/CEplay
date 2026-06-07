@@ -45,6 +45,8 @@ body {
 
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .brand-text { font-size: 15px; letter-spacing: 0.2px; }
+.brand-logo { height: 26px; width: auto; display: block; border-radius: 6px; }
+.brand-logo--hidden { display: none; }
 
 .dot {
   width: 11px; height: 11px; border-radius: 50%;
@@ -97,15 +99,12 @@ body {
 .big-btn.unpause { background: linear-gradient(160deg, var(--unpause-hi), var(--unpause)); }
 .big-btn.pause   { background: linear-gradient(160deg, var(--pause-hi), var(--pause)); }
 
-.big-btn[data-armed="1"] {
-  outline: 4px solid rgba(255, 255, 255, 0.85);
-  outline-offset: -4px;
-  animation: pulse 1s infinite;
-}
-@keyframes pulse {
-  0%, 100% { filter: brightness(1); }
-  50%      { filter: brightness(1.18); }
-}
+/* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
+.confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
+.btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }
+.btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
+.btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
+.btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
 
 /* Status ----------------------------------------------------------------- */
 .status {

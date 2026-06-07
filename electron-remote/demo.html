@@ -71,6 +71,8 @@ body {
 
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .brand-text { font-size: 15px; letter-spacing: 0.2px; }
+.brand-logo { height: 26px; width: auto; display: block; border-radius: 6px; }
+.brand-logo--hidden { display: none; }
 
 .dot {
   width: 11px; height: 11px; border-radius: 50%;
@@ -123,15 +125,12 @@ body {
 .big-btn.unpause { background: linear-gradient(160deg, var(--unpause-hi), var(--unpause)); }
 .big-btn.pause   { background: linear-gradient(160deg, var(--pause-hi), var(--pause)); }
 
-.big-btn[data-armed="1"] {
-  outline: 4px solid rgba(255, 255, 255, 0.85);
-  outline-offset: -4px;
-  animation: pulse 1s infinite;
-}
-@keyframes pulse {
-  0%, 100% { filter: brightness(1); }
-  50%      { filter: brightness(1.18); }
-}
+/* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
+.confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
+.btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }
+.btn-primary.confirm-go.unpause:hover { background: var(--unpause-hi); }
+.btn-primary.confirm-go.pause   { background: var(--pause); border-color: var(--pause); }
+.btn-primary.confirm-go.pause:hover   { background: var(--pause-hi); }
 
 /* Status ----------------------------------------------------------------- */
 .status {
@@ -245,6 +244,7 @@ body {
   <header class="topbar">
     <div class="brand">
       <span class="dot" id="conn-dot" data-state="unknown"></span>
+      <img class="brand-logo" id="brand-logo" src="renderer/logo.png" alt="CEplay" />
       <span class="brand-text">CEplay Remote</span>
       <span class="demo-chip">Demo</span>
     </div>
@@ -256,25 +256,25 @@ body {
 
   <main id="main-view">
     <div class="buttons">
-      <button class="big-btn unpause" id="btn-games-unpause" data-armed="0" disabled>
+      <button class="big-btn unpause" id="btn-games-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
         <span class="big-btn-title">All Arcade Readers</span>
         <span class="big-btn-sub" id="games-unpause-sub">Tap to start</span>
       </button>
 
-      <button class="big-btn unpause" id="btn-kiosks-unpause" data-armed="0" disabled>
+      <button class="big-btn unpause" id="btn-kiosks-unpause" disabled>
         <span class="big-btn-verb">Unpause</span>
         <span class="big-btn-title">All Kiosks</span>
         <span class="big-btn-sub" id="kiosks-unpause-sub">Tap to start</span>
       </button>
 
-      <button class="big-btn pause" id="btn-games-pause" data-armed="0" disabled>
+      <button class="big-btn pause" id="btn-games-pause" disabled>
         <span class="big-btn-verb">Pause</span>
         <span class="big-btn-title">All Arcade Readers</span>
         <span class="big-btn-sub" id="games-pause-sub">Tap to start</span>
       </button>
 
-      <button class="big-btn pause" id="btn-kiosks-pause" data-armed="0" disabled>
+      <button class="big-btn pause" id="btn-kiosks-pause" disabled>
         <span class="big-btn-verb">Pause</span>
         <span class="big-btn-title">All Kiosks</span>
         <span class="big-btn-sub" id="kiosks-pause-sub">Tap to start</span>
@@ -483,7 +483,6 @@ const el = {
   encHint: document.getElementById('enc-hint'),
 };
 
-const ARM_TIMEOUT_MS = 3000;
 let busy = false;
 let configured = false;
 
@@ -556,33 +555,71 @@ function setButtonsEnabled(on) {
 }
 
 // --------------------------------------------------------------------------
-// Arm-to-confirm button behaviour (guards against accidental presses)
+// Confirmation dialog (guards against accidental presses)
 // --------------------------------------------------------------------------
 
-function makeButton(btn, subEl, idleText, run) {
-  let armTimer = null;
+function singular(noun) {
+  return noun.endsWith('s') ? noun.slice(0, -1) : noun;
+}
 
-  function disarm() {
-    btn.dataset.armed = '0';
-    subEl.textContent = idleText;
-    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
-  }
+// Modal confirm built from the same .overlay/.panel styling as Settings.
+// Resolves true (confirmed) or false (cancelled / dismissed).
+function confirmAction(opts) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay confirm-overlay';
 
-  btn.addEventListener('click', async () => {
-    if (busy || btn.disabled) return;
+    const panel = document.createElement('div');
+    panel.className = 'panel confirm-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
 
-    if (btn.dataset.armed !== '1') {
-      btn.dataset.armed = '1';
-      subEl.textContent = 'Tap again to confirm';
-      armTimer = setTimeout(disarm, ARM_TIMEOUT_MS);
-      return;
+    const heading = document.createElement('h2');
+    heading.textContent = opts.title;
+    panel.appendChild(heading);
+
+    const message = document.createElement('p');
+    message.className = 'confirm-message';
+    message.textContent = opts.message;
+    panel.appendChild(message);
+
+    const actions = document.createElement('div');
+    actions.className = 'panel-actions';
+    const spacer = document.createElement('span');
+    spacer.className = 'spacer';
+    actions.appendChild(spacer);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : '');
+    confirmBtn.textContent = opts.confirmLabel || 'Confirm';
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    panel.appendChild(actions);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close(false);
+      else if (e.key === 'Enter') close(true);
     }
 
-    disarm();
-    await run();
-  });
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey);
 
-  return { disarm };
+    requestAnimationFrame(() => confirmBtn.focus());
+  });
 }
 
 async function withBusy(subEl, workingText, fn) {
@@ -659,7 +696,20 @@ function summarize(noun, res) {
 // --------------------------------------------------------------------------
 
 for (const c of controls) {
-  makeButton(c.btn, c.sub, 'Tap to start', async () => {
+  c.btn.addEventListener('click', async () => {
+    if (busy || c.btn.disabled) return;
+
+    const isPause = c.verb === 'Pausing';
+    const ok = await confirmAction({
+      title: (isPause ? 'Pause all ' : 'Unpause all ') + c.noun + '?',
+      message: isPause
+        ? `This sets every running ${singular(c.noun)} to paused. Anything in active use is skipped and retried by the server.`
+        : `This sets every paused ${singular(c.noun)} to running.`,
+      confirmLabel: (isPause ? 'Pause ' : 'Unpause ') + c.noun,
+      tone: isPause ? 'pause' : 'unpause',
+    });
+    if (!ok) return;
+
     await withBusy(c.sub, c.verb + '…', async () => {
       setStatus(`${c.verb} all ${c.noun}…`, null);
       const res = await c.run();
@@ -742,6 +792,13 @@ document.addEventListener('keydown', (e) => {
 // --------------------------------------------------------------------------
 // Boot
 // --------------------------------------------------------------------------
+
+// Hide the logo gracefully if logo.png hasn't been dropped in yet, so the
+// brand falls back to the wordmark instead of a broken-image icon.
+const brandLogo = document.getElementById('brand-logo');
+if (brandLogo) {
+  brandLogo.addEventListener('error', () => brandLogo.classList.add('brand-logo--hidden'));
+}
 
 refreshConnection();
 

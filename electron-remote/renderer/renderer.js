@@ -21,7 +21,6 @@ const el = {
   encHint: document.getElementById('enc-hint'),
 };
 
-const ARM_TIMEOUT_MS = 3000;
 let busy = false;
 let configured = false;
 
@@ -94,33 +93,71 @@ function setButtonsEnabled(on) {
 }
 
 // --------------------------------------------------------------------------
-// Arm-to-confirm button behaviour (guards against accidental presses)
+// Confirmation dialog (guards against accidental presses)
 // --------------------------------------------------------------------------
 
-function makeButton(btn, subEl, idleText, run) {
-  let armTimer = null;
+function singular(noun) {
+  return noun.endsWith('s') ? noun.slice(0, -1) : noun;
+}
 
-  function disarm() {
-    btn.dataset.armed = '0';
-    subEl.textContent = idleText;
-    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
-  }
+// Modal confirm built from the same .overlay/.panel styling as Settings.
+// Resolves true (confirmed) or false (cancelled / dismissed).
+function confirmAction(opts) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay confirm-overlay';
 
-  btn.addEventListener('click', async () => {
-    if (busy || btn.disabled) return;
+    const panel = document.createElement('div');
+    panel.className = 'panel confirm-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
 
-    if (btn.dataset.armed !== '1') {
-      btn.dataset.armed = '1';
-      subEl.textContent = 'Tap again to confirm';
-      armTimer = setTimeout(disarm, ARM_TIMEOUT_MS);
-      return;
+    const heading = document.createElement('h2');
+    heading.textContent = opts.title;
+    panel.appendChild(heading);
+
+    const message = document.createElement('p');
+    message.className = 'confirm-message';
+    message.textContent = opts.message;
+    panel.appendChild(message);
+
+    const actions = document.createElement('div');
+    actions.className = 'panel-actions';
+    const spacer = document.createElement('span');
+    spacer.className = 'spacer';
+    actions.appendChild(spacer);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : '');
+    confirmBtn.textContent = opts.confirmLabel || 'Confirm';
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    panel.appendChild(actions);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close(false);
+      else if (e.key === 'Enter') close(true);
     }
 
-    disarm();
-    await run();
-  });
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey);
 
-  return { disarm };
+    requestAnimationFrame(() => confirmBtn.focus());
+  });
 }
 
 async function withBusy(subEl, workingText, fn) {
@@ -197,7 +234,20 @@ function summarize(noun, res) {
 // --------------------------------------------------------------------------
 
 for (const c of controls) {
-  makeButton(c.btn, c.sub, 'Tap to start', async () => {
+  c.btn.addEventListener('click', async () => {
+    if (busy || c.btn.disabled) return;
+
+    const isPause = c.verb === 'Pausing';
+    const ok = await confirmAction({
+      title: (isPause ? 'Pause all ' : 'Unpause all ') + c.noun + '?',
+      message: isPause
+        ? `This sets every running ${singular(c.noun)} to paused. Anything in active use is skipped and retried by the server.`
+        : `This sets every paused ${singular(c.noun)} to running.`,
+      confirmLabel: (isPause ? 'Pause ' : 'Unpause ') + c.noun,
+      tone: isPause ? 'pause' : 'unpause',
+    });
+    if (!ok) return;
+
     await withBusy(c.sub, c.verb + '…', async () => {
       setStatus(`${c.verb} all ${c.noun}…`, null);
       const res = await c.run();
@@ -280,5 +330,12 @@ document.addEventListener('keydown', (e) => {
 // --------------------------------------------------------------------------
 // Boot
 // --------------------------------------------------------------------------
+
+// Hide the logo gracefully if logo.png hasn't been dropped in yet, so the
+// brand falls back to the wordmark instead of a broken-image icon.
+const brandLogo = document.getElementById('brand-logo');
+if (brandLogo) {
+  brandLogo.addEventListener('error', () => brandLogo.classList.add('brand-logo--hidden'));
+}
 
 refreshConnection();
