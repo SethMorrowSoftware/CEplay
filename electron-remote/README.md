@@ -46,9 +46,11 @@ there are no CORS/CSP issues and no backend CORS changes are required.
 Switch to the **Status** tab (top of the window) for a live staff console,
 **organized by group** so a teenager can find a reader in seconds:
 
-- Each pause group you've added is its own **section** — a header showing the
-  group's overall state (Running / Paused / Mixed) and a running / paused / OOS
-  count, followed by **only that group's games and kiosks**.
+- **Every pause group on the server** gets its own **section** — independent of
+  which groups you've made Controls buttons for — so you can monitor them all.
+  Each header shows the group's overall state (Running / Paused / Mixed) and a
+  running / paused / OOS count, followed by **only that group's games and
+  kiosks**. Inactive groups are shown and marked.
 - Within a group, readers are **sorted problems-first** (Out of service, then
   Paused, then Running) with per-reader **Unpause / Pause / Out of service**
   buttons. Games use the JSON-Patch `operationStatus` endpoint; kiosks use
