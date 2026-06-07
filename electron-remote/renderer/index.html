@@ -14,16 +14,40 @@
       <span class="dot" id="conn-dot" data-state="unknown"></span>
       <span class="brand-text">CEplay Remote</span>
     </div>
+    <nav class="viewnav" id="viewnav" aria-label="Views">
+      <button class="viewnav-btn active" id="nav-controls" type="button" data-view="controls">Controls</button>
+      <button class="viewnav-btn" id="nav-status" type="button" data-view="status">Status</button>
+    </nav>
     <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
   </header>
 
   <main id="main-view">
-    <div class="hero">
-      <img class="hero-logo" id="brand-logo" src="logo.png" alt="CEplay" />
-    </div>
+    <!-- Controls view: one card per configured pause group -->
+    <section class="view" id="view-controls">
+      <div class="hero">
+        <img class="hero-logo" id="brand-logo" src="logo.png" alt="CEplay" />
+      </div>
+      <div class="groups" id="groups"></div>
+    </section>
 
-    <!-- One .group-row card per configured pause group, built by renderer.js -->
-    <div class="groups" id="groups"></div>
+    <!-- Status view: live per-asset status + individual pause/unpause/OOS -->
+    <section class="view hidden" id="view-status">
+      <div class="status-head">
+        <span class="status-title">Live status</span>
+        <span class="status-synced" id="status-synced"></span>
+        <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
+      </div>
+
+      <div class="group-monitor" id="group-monitor"></div>
+
+      <div class="asset-toolbar">
+        <input type="text" id="asset-search" class="asset-search" placeholder="Search games &amp; kiosks…" autocomplete="off" />
+        <div class="filter-pills" id="asset-type-filters" role="group" aria-label="Filter by type"></div>
+        <div class="filter-pills" id="asset-status-filters" role="group" aria-label="Filter by status"></div>
+      </div>
+
+      <div class="asset-list" id="asset-list"></div>
+    </section>
 
     <section class="status" id="status" aria-live="polite">
       <p class="status-line" id="status-line">Checking connection…</p>
@@ -45,7 +69,7 @@
       <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
 
       <label>Pause-group buttons</label>
-      <p class="hint hint-tight">Each group you add gets an Unpause and a Pause button on the main screen.</p>
+      <p class="hint hint-tight">Each group you add gets an Unpause and a Pause button on the Controls screen.</p>
       <div class="group-list" id="group-list"></div>
       <div class="group-add">
         <select id="group-add-select"></select>

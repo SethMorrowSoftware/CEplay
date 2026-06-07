@@ -14,4 +14,6 @@ contextBridge.exposeInMainWorld('ceplay', {
   test: () => ipcRenderer.invoke('ceplay:test'),
   getGroups: () => ipcRenderer.invoke('ceplay:getGroups'),
   groupAction: (groupId, action) => ipcRenderer.invoke('ceplay:groupAction', groupId, action),
+  getStatus: () => ipcRenderer.invoke('ceplay:getStatus'),
+  setAssetStatus: (type, id, status) => ipcRenderer.invoke('ceplay:setAssetStatus', type, id, status),
 });
