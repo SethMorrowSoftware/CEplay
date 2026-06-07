@@ -22,58 +22,8 @@
       <img class="hero-logo" id="brand-logo" src="logo.png" alt="CEplay" />
     </div>
 
-    <div class="groups">
-      <section class="group-row" data-slot="games">
-        <div class="group-row-head">
-          <span class="group-row-name" id="name-games">Arcade games</span>
-          <span class="group-row-hint" id="hint-games"></span>
-        </div>
-        <div class="group-row-actions">
-          <button class="big-btn unpause" id="btn-games-unpause" disabled>
-            <span class="big-btn-verb">Unpause</span>
-            <span class="big-btn-sub" id="games-unpause-sub">Tap to start</span>
-          </button>
-          <button class="big-btn pause" id="btn-games-pause" disabled>
-            <span class="big-btn-verb">Pause</span>
-            <span class="big-btn-sub" id="games-pause-sub">Tap to start</span>
-          </button>
-        </div>
-      </section>
-
-      <section class="group-row" data-slot="kiosks">
-        <div class="group-row-head">
-          <span class="group-row-name" id="name-kiosks">Arcade kiosks</span>
-          <span class="group-row-hint" id="hint-kiosks"></span>
-        </div>
-        <div class="group-row-actions">
-          <button class="big-btn unpause" id="btn-kiosks-unpause" disabled>
-            <span class="big-btn-verb">Unpause</span>
-            <span class="big-btn-sub" id="kiosks-unpause-sub">Tap to start</span>
-          </button>
-          <button class="big-btn pause" id="btn-kiosks-pause" disabled>
-            <span class="big-btn-verb">Pause</span>
-            <span class="big-btn-sub" id="kiosks-pause-sub">Tap to start</span>
-          </button>
-        </div>
-      </section>
-
-      <section class="group-row" data-slot="outdoor">
-        <div class="group-row-head">
-          <span class="group-row-name" id="name-outdoor">Outdoor attractions</span>
-          <span class="group-row-hint" id="hint-outdoor"></span>
-        </div>
-        <div class="group-row-actions">
-          <button class="big-btn unpause" id="btn-outdoor-unpause" disabled>
-            <span class="big-btn-verb">Unpause</span>
-            <span class="big-btn-sub" id="outdoor-unpause-sub">Tap to start</span>
-          </button>
-          <button class="big-btn pause" id="btn-outdoor-pause" disabled>
-            <span class="big-btn-verb">Pause</span>
-            <span class="big-btn-sub" id="outdoor-pause-sub">Tap to start</span>
-          </button>
-        </div>
-      </section>
-    </div>
+    <!-- One .group-row card per configured pause group, built by renderer.js -->
+    <div class="groups" id="groups"></div>
 
     <section class="status" id="status" aria-live="polite">
       <p class="status-line" id="status-line">Checking connection…</p>
@@ -94,14 +44,13 @@
       <label for="cfg-pass">Password</label>
       <input type="password" id="cfg-pass" placeholder="(unchanged)" autocomplete="off" />
 
-      <label for="cfg-games-group">Arcade games group</label>
-      <select id="cfg-games-group"></select>
-
-      <label for="cfg-kiosks-group">Kiosks group</label>
-      <select id="cfg-kiosks-group"></select>
-
-      <label for="cfg-outdoor-group">Outdoor attractions group</label>
-      <select id="cfg-outdoor-group"></select>
+      <label>Pause-group buttons</label>
+      <p class="hint hint-tight">Each group you add gets an Unpause and a Pause button on the main screen.</p>
+      <div class="group-list" id="group-list"></div>
+      <div class="group-add">
+        <select id="group-add-select"></select>
+        <button id="group-add-btn" class="btn-secondary" type="button">Add</button>
+      </div>
 
       <label class="checkbox">
         <input type="checkbox" id="cfg-insecure" />
