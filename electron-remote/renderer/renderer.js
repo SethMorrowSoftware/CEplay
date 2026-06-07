@@ -17,6 +17,7 @@ const el = {
   // status view
   statusSynced: document.getElementById('status-synced'),
   statusRefresh: document.getElementById('status-refresh'),
+  statusChips: document.getElementById('status-chips'),
   assetSearch: document.getElementById('asset-search'),
   groupSections: document.getElementById('group-sections'),
   // settings
@@ -348,7 +349,47 @@ function renderAssetRow(a) {
   return row;
 }
 
+// Short, glanceable summary for a chip: surface problems, else "all running".
+function chipMeta(g) {
+  if (g.oos > 0 && g.paused > 0) return g.oos + ' OOS · ' + g.paused + ' paused';
+  if (g.oos > 0) return g.oos + ' OOS';
+  if (g.paused > 0) return g.paused + ' paused';
+  if (!g.total) return 'empty';
+  return 'all running';
+}
+
+// One chip per group, color-coded by state, at the top of the Status page so
+// staff can see every group's health at a glance. Tapping a chip jumps to that
+// group's section.
+function renderStatusChips() {
+  if (!el.statusChips) return;
+  clearEl(el.statusChips);
+  if (!ready || !statusLoaded) return;
+  const groups = (statusData.groups || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  groups.forEach((g) => {
+    const tone = g.oos > 0 ? 'oos'
+      : g.state === 'paused' ? 'paused'
+      : g.state === 'mixed' ? 'mixed'
+      : g.state === 'enabled' ? 'running' : 'empty';
+    const chip = makeEl('button', 'status-chip');
+    chip.type = 'button';
+    chip.appendChild(makeEl('span', 'chip-dot ' + tone));
+    chip.appendChild(makeEl('span', 'chip-name', g.name || ('Group #' + g.id)));
+    chip.appendChild(makeEl('span', 'chip-meta', chipMeta(g)));
+    chip.addEventListener('click', () => jumpToGroup(g.id));
+    el.statusChips.appendChild(chip);
+  });
+}
+
+// Jump to a group's section (clearing any active search so it's visible).
+function jumpToGroup(id) {
+  if (assetSearch) { assetSearch = ''; el.assetSearch.value = ''; renderGroupSections(); }
+  const sec = el.groupSections.querySelector('[data-group-id="' + id + '"]');
+  if (sec && sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderGroupSections() {
+  renderStatusChips();
   const top = el.groupSections.scrollTop;
   clearEl(el.groupSections);
 
@@ -389,6 +430,7 @@ function renderGroupSections() {
     });
 
     const sec = makeEl('section', 'gsection');
+    sec.setAttribute('data-group-id', String(g.id));
     const head = makeEl('div', 'gsection-head');
     head.appendChild(makeEl('span', 'gsection-name', (g.name || ('Group #' + g.id)) + (g.active === 0 ? ' (inactive)' : '')));
     const st = groupBadge(g.state);

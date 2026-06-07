@@ -166,6 +166,24 @@ body {
 }
 .asset-search:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
 
+/* At-a-glance summary chips (one per group; tap to jump to its section) */
+.status-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; }
+.status-chips:empty { display: none; }
+.status-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel);
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.status-chip:hover { background: var(--panel-2); }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.chip-dot.running { background: var(--ok); }
+.chip-dot.paused  { background: var(--warn); }
+.chip-dot.oos     { background: var(--error); }
+.chip-dot.mixed   { background: var(--kiosks); }
+.chip-dot.empty, .chip-dot.unknown { background: var(--muted); }
+.chip-meta { color: var(--muted); font-weight: 600; }
+
 /* Asset rows (used inside group sections) */
 .asset-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 12px; }
 .asset-row {

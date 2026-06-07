@@ -193,6 +193,24 @@ body {
 }
 .asset-search:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
 
+/* At-a-glance summary chips (one per group; tap to jump to its section) */
+.status-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; }
+.status-chips:empty { display: none; }
+.status-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel);
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.status-chip:hover { background: var(--panel-2); }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.chip-dot.running { background: var(--ok); }
+.chip-dot.paused  { background: var(--warn); }
+.chip-dot.oos     { background: var(--error); }
+.chip-dot.mixed   { background: var(--kiosks); }
+.chip-dot.empty, .chip-dot.unknown { background: var(--muted); }
+.chip-meta { color: var(--muted); font-weight: 600; }
+
 /* Asset rows (used inside group sections) */
 .asset-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 12px; }
 .asset-row {
@@ -382,6 +400,7 @@ body {
         <span class="status-synced" id="status-synced"></span>
         <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
       </div>
+      <div class="status-chips" id="status-chips"></div>
       <input type="text" id="asset-search" class="asset-search" placeholder="Search for a game or kiosk…" autocomplete="off" />
       <div class="group-sections" id="group-sections"></div>
     </section>
@@ -645,6 +664,7 @@ const el = {
   // status view
   statusSynced: document.getElementById('status-synced'),
   statusRefresh: document.getElementById('status-refresh'),
+  statusChips: document.getElementById('status-chips'),
   assetSearch: document.getElementById('asset-search'),
   groupSections: document.getElementById('group-sections'),
   // settings
@@ -976,7 +996,47 @@ function renderAssetRow(a) {
   return row;
 }
 
+// Short, glanceable summary for a chip: surface problems, else "all running".
+function chipMeta(g) {
+  if (g.oos > 0 && g.paused > 0) return g.oos + ' OOS · ' + g.paused + ' paused';
+  if (g.oos > 0) return g.oos + ' OOS';
+  if (g.paused > 0) return g.paused + ' paused';
+  if (!g.total) return 'empty';
+  return 'all running';
+}
+
+// One chip per group, color-coded by state, at the top of the Status page so
+// staff can see every group's health at a glance. Tapping a chip jumps to that
+// group's section.
+function renderStatusChips() {
+  if (!el.statusChips) return;
+  clearEl(el.statusChips);
+  if (!ready || !statusLoaded) return;
+  const groups = (statusData.groups || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  groups.forEach((g) => {
+    const tone = g.oos > 0 ? 'oos'
+      : g.state === 'paused' ? 'paused'
+      : g.state === 'mixed' ? 'mixed'
+      : g.state === 'enabled' ? 'running' : 'empty';
+    const chip = makeEl('button', 'status-chip');
+    chip.type = 'button';
+    chip.appendChild(makeEl('span', 'chip-dot ' + tone));
+    chip.appendChild(makeEl('span', 'chip-name', g.name || ('Group #' + g.id)));
+    chip.appendChild(makeEl('span', 'chip-meta', chipMeta(g)));
+    chip.addEventListener('click', () => jumpToGroup(g.id));
+    el.statusChips.appendChild(chip);
+  });
+}
+
+// Jump to a group's section (clearing any active search so it's visible).
+function jumpToGroup(id) {
+  if (assetSearch) { assetSearch = ''; el.assetSearch.value = ''; renderGroupSections(); }
+  const sec = el.groupSections.querySelector('[data-group-id="' + id + '"]');
+  if (sec && sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderGroupSections() {
+  renderStatusChips();
   const top = el.groupSections.scrollTop;
   clearEl(el.groupSections);
 
@@ -1017,6 +1077,7 @@ function renderGroupSections() {
     });
 
     const sec = makeEl('section', 'gsection');
+    sec.setAttribute('data-group-id', String(g.id));
     const head = makeEl('div', 'gsection-head');
     head.appendChild(makeEl('span', 'gsection-name', (g.name || ('Group #' + g.id)) + (g.active === 0 ? ' (inactive)' : '')));
     const st = groupBadge(g.state);
