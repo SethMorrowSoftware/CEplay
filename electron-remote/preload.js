@@ -17,4 +17,6 @@ contextBridge.exposeInMainWorld('ceplay', {
   pauseGames: () => ipcRenderer.invoke('ceplay:pauseGames'),
   unpauseKiosks: () => ipcRenderer.invoke('ceplay:unpauseKiosks'),
   pauseKiosks: () => ipcRenderer.invoke('ceplay:pauseKiosks'),
+  unpauseOutdoor: () => ipcRenderer.invoke('ceplay:unpauseOutdoor'),
+  pauseOutdoor: () => ipcRenderer.invoke('ceplay:pauseOutdoor'),
 });

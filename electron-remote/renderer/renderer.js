@@ -16,6 +16,7 @@ const el = {
   cfgInsecure: document.getElementById('cfg-insecure'),
   cfgGamesGroup: document.getElementById('cfg-games-group'),
   cfgKiosksGroup: document.getElementById('cfg-kiosks-group'),
+  cfgOutdoorGroup: document.getElementById('cfg-outdoor-group'),
   cfgSave: document.getElementById('cfg-save'),
   cfgCancel: document.getElementById('cfg-cancel'),
   cfgTest: document.getElementById('cfg-test'),
@@ -27,6 +28,25 @@ let busy = false;        // an action is in flight
 let configured = false;  // server URL + login are set
 let ready = false;       // connection test passed
 let currentCfg = {};     // last config read from the main process
+
+// Each "slot" is one configurable pause group with its own row of
+// Unpause/Pause buttons. Add a slot here + matching markup/config to grow.
+const SLOTS = ['games', 'kiosks', 'outdoor'];
+const SLOT_DEFAULT_LABEL = {
+  games: 'Arcade games',
+  kiosks: 'Arcade kiosks',
+  outdoor: 'Outdoor attractions',
+};
+const slotEls = {
+  games: { name: document.getElementById('name-games'), hint: document.getElementById('hint-games') },
+  kiosks: { name: document.getElementById('name-kiosks'), hint: document.getElementById('hint-kiosks') },
+  outdoor: { name: document.getElementById('name-outdoor'), hint: document.getElementById('hint-outdoor') },
+};
+const cfgSelectForSlot = {
+  games: el.cfgGamesGroup,
+  kiosks: el.cfgKiosksGroup,
+  outdoor: el.cfgOutdoorGroup,
+};
 
 // --------------------------------------------------------------------------
 // Status helpers
@@ -51,26 +71,28 @@ function setStatus(text, cls, detail) {
 }
 
 // --------------------------------------------------------------------------
-// Buttons — each maps to one configurable pause group + an action.
-//   "games"  slot  -> the group chosen as "Arcade games group" in Settings
-//   "kiosks" slot  -> the group chosen as "Kiosks group" in Settings
-// Both pause and unpause for a slot target the same group, so the 2x2 grid is
-// Unpause/Pause for each of the two groups.
+// Buttons — each maps to one configurable pause group + an action. Both pause
+// and unpause for a slot target the same group; the group name is shown once
+// in the row header.
 // --------------------------------------------------------------------------
 
 const controls = [
-  { btn: document.getElementById('btn-games-unpause'),  sub: document.getElementById('games-unpause-sub'),  slot: 'games',  action: 'unpause', run: () => api.unpauseGames() },
-  { btn: document.getElementById('btn-kiosks-unpause'), sub: document.getElementById('kiosks-unpause-sub'), slot: 'kiosks', action: 'unpause', run: () => api.unpauseKiosks() },
-  { btn: document.getElementById('btn-games-pause'),    sub: document.getElementById('games-pause-sub'),    slot: 'games',  action: 'pause',   run: () => api.pauseGames() },
-  { btn: document.getElementById('btn-kiosks-pause'),   sub: document.getElementById('kiosks-pause-sub'),   slot: 'kiosks', action: 'pause',   run: () => api.pauseKiosks() },
+  { btn: document.getElementById('btn-games-unpause'),   sub: document.getElementById('games-unpause-sub'),   slot: 'games',   action: 'unpause', run: () => api.unpauseGames() },
+  { btn: document.getElementById('btn-games-pause'),     sub: document.getElementById('games-pause-sub'),     slot: 'games',   action: 'pause',   run: () => api.pauseGames() },
+  { btn: document.getElementById('btn-kiosks-unpause'),  sub: document.getElementById('kiosks-unpause-sub'),  slot: 'kiosks',  action: 'unpause', run: () => api.unpauseKiosks() },
+  { btn: document.getElementById('btn-kiosks-pause'),    sub: document.getElementById('kiosks-pause-sub'),    slot: 'kiosks',  action: 'pause',   run: () => api.pauseKiosks() },
+  { btn: document.getElementById('btn-outdoor-unpause'), sub: document.getElementById('outdoor-unpause-sub'), slot: 'outdoor', action: 'unpause', run: () => api.unpauseOutdoor() },
+  { btn: document.getElementById('btn-outdoor-pause'),   sub: document.getElementById('outdoor-pause-sub'),   slot: 'outdoor', action: 'pause',   run: () => api.pauseOutdoor() },
 ];
-for (const c of controls) c.title = c.btn.querySelector('.big-btn-title');
 
 function slotGroupId(slot) {
-  return slot === 'games' ? currentCfg.gamesGroupId : currentCfg.kiosksGroupId;
+  return currentCfg[slot + 'GroupId'];
 }
 function slotGroupName(slot) {
-  return (slot === 'games' ? currentCfg.gamesGroupName : currentCfg.kiosksGroupName) || '';
+  return currentCfg[slot + 'GroupName'] || '';
+}
+function anyGroupConfigured() {
+  return SLOTS.some((s) => !!slotGroupId(s));
 }
 
 // A button is live only when we're connected, not mid-action, and its slot has
@@ -81,12 +103,16 @@ function updateButtonsEnabled() {
   }
 }
 
-// Reflect the configured group names on the button faces + idle sub-labels.
+// Reflect the configured group names on the row headers + idle sub-labels.
 function applyConfigToButtons() {
-  for (const c of controls) {
-    const id = slotGroupId(c.slot);
-    if (c.title) c.title.textContent = id ? (slotGroupName(c.slot) || ('Group #' + id)) : 'No group selected';
-    if (!busy) c.sub.textContent = id ? 'Tap to start' : 'Pick a group in Settings';
+  SLOTS.forEach((slot) => {
+    const id = slotGroupId(slot);
+    const els = slotEls[slot];
+    if (els.name) els.name.textContent = id ? (slotGroupName(slot) || ('Group #' + id)) : SLOT_DEFAULT_LABEL[slot];
+    if (els.hint) els.hint.textContent = id ? '' : 'Pick a group in Settings';
+  });
+  if (!busy) {
+    for (const c of controls) c.sub.textContent = slotGroupId(c.slot) ? 'Tap to start' : '';
   }
   updateButtonsEnabled();
 }
@@ -119,15 +145,32 @@ async function refreshConnection() {
     setConn('ok');
     applyConfigToButtons();
     const who = res.user && res.user.display_name ? res.user.display_name : (res.user && res.user.username) || '';
-    const haveGroups = slotGroupId('games') || slotGroupId('kiosks');
+    const haveGroups = anyGroupConfigured();
     setStatus('Connected' + (who ? ' as ' + who : '') + '.' +
       (haveGroups ? ' Ready.' : ' Open Settings (⚙) to pick your pause groups.'),
       haveGroups ? 'ok' : 'warn');
+    maybeWarnWatchdog(res);
   } else {
     ready = false;
     setConn('error');
     updateButtonsEnabled();
     setStatus('Cannot connect: ' + res.error, 'error');
+  }
+}
+
+// If the server's health check says the per-minute watchdog is stalled, warn —
+// because that's the process that actually retries busy assets. Without it, the
+// "the server will keep retrying" promise can't be kept.
+function maybeWarnWatchdog(res) {
+  const h = res && res.health;
+  if (!h) return;
+  if (h.watchdogHealthy === false) {
+    setStatus(el.statusLine.textContent,
+      'warn',
+      'Heads up: the server’s per-minute watchdog hasn’t run recently, so retries of busy assets may not process. Check the cron_watchdog cron on the CEplay server.');
+  } else if (typeof h.retriesGaveUp === 'number' && h.retriesGaveUp > 0) {
+    setStatus(el.statusLine.textContent, 'warn',
+      h.retriesGaveUp + ' asset(s) on the server gave up after exhausting retries. They’ll be re-tried after a cooldown, or on the next action.');
   }
 }
 
@@ -244,6 +287,7 @@ function summarizeGroup(name, isPause, res) {
   if (errors > 0) {
     cls = 'warn';
     head = didVerb + ' ' + changed + ' in "' + name + '". ' + errors + ' busy — the server will keep retrying.';
+    lines.push('Busy items are queued on the server; its per-minute watchdog re-attempts them automatically.');
   } else if (changed === 0) {
     head = '"' + name + '" already ' + stateWord + ' — nothing to change.';
   } else {
@@ -337,8 +381,10 @@ function readGroupSelection(sel) {
 async function loadGroupsIntoSelects() {
   const res = await api.getGroups();
   if (res && res.ok) {
-    fillGroupSelect(el.cfgGamesGroup, res.groups, el.cfgGamesGroup.value || currentCfg.gamesGroupId, currentCfg.gamesGroupName);
-    fillGroupSelect(el.cfgKiosksGroup, res.groups, el.cfgKiosksGroup.value || currentCfg.kiosksGroupId, currentCfg.kiosksGroupName);
+    SLOTS.forEach((slot) => {
+      const sel = cfgSelectForSlot[slot];
+      fillGroupSelect(sel, res.groups, sel.value || currentCfg[slot + 'GroupId'], currentCfg[slot + 'GroupName']);
+    });
   } else if (!el.cfgMsg.textContent) {
     el.cfgMsg.className = 'panel-msg';
     el.cfgMsg.textContent = 'Enter the server URL + login and click "Test connection" to load your pause groups.';
@@ -360,8 +406,9 @@ async function openSettings() {
 
   // Seed the group dropdowns with the stored selections, then try to load the
   // live list (needs a working connection).
-  fillGroupSelect(el.cfgGamesGroup, [], currentCfg.gamesGroupId, currentCfg.gamesGroupName);
-  fillGroupSelect(el.cfgKiosksGroup, [], currentCfg.kiosksGroupId, currentCfg.kiosksGroupName);
+  SLOTS.forEach((slot) => {
+    fillGroupSelect(cfgSelectForSlot[slot], [], currentCfg[slot + 'GroupId'], currentCfg[slot + 'GroupName']);
+  });
 
   el.overlay.classList.remove('hidden');
   el.cfgUrl.focus();
@@ -379,18 +426,18 @@ el.overlay.addEventListener('click', (e) => { if (e.target === el.overlay) close
 el.cfgSave.addEventListener('click', async () => {
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Saving…';
-  const games = readGroupSelection(el.cfgGamesGroup);
-  const kiosks = readGroupSelection(el.cfgKiosksGroup);
-  await api.setConfig({
+  const payload = {
     baseUrl: el.cfgUrl.value,
     username: el.cfgUser.value,
     password: el.cfgPass.value, // blank = keep existing
     insecureTLS: el.cfgInsecure.checked,
-    gamesGroupId: games.id,
-    gamesGroupName: games.name,
-    kiosksGroupId: kiosks.id,
-    kiosksGroupName: kiosks.name,
+  };
+  SLOTS.forEach((slot) => {
+    const pick = readGroupSelection(cfgSelectForSlot[slot]);
+    payload[slot + 'GroupId'] = pick.id;
+    payload[slot + 'GroupName'] = pick.name;
   });
+  await api.setConfig(payload);
   el.cfgMsg.className = 'panel-msg ok';
   el.cfgMsg.textContent = 'Saved.';
   closeSettings();
