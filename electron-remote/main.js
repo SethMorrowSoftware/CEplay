@@ -35,6 +35,7 @@ const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
 // section) and remove this switch. Windows and macOS keep the sandbox.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-setuid-sandbox');
 }
 
 // In-memory session state. Re-established automatically on 401/403.
