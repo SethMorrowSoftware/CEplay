@@ -8,15 +8,16 @@ const el = {
   connDot: document.getElementById('conn-dot'),
   statusLine: document.getElementById('status-line'),
   status: document.getElementById('status'),
+  groups: document.getElementById('groups'),
   settingsBtn: document.getElementById('settings-btn'),
   overlay: document.getElementById('settings-overlay'),
   cfgUrl: document.getElementById('cfg-url'),
   cfgUser: document.getElementById('cfg-user'),
   cfgPass: document.getElementById('cfg-pass'),
   cfgInsecure: document.getElementById('cfg-insecure'),
-  cfgGamesGroup: document.getElementById('cfg-games-group'),
-  cfgKiosksGroup: document.getElementById('cfg-kiosks-group'),
-  cfgOutdoorGroup: document.getElementById('cfg-outdoor-group'),
+  groupList: document.getElementById('group-list'),
+  groupAddSelect: document.getElementById('group-add-select'),
+  groupAddBtn: document.getElementById('group-add-btn'),
   cfgSave: document.getElementById('cfg-save'),
   cfgCancel: document.getElementById('cfg-cancel'),
   cfgTest: document.getElementById('cfg-test'),
@@ -28,25 +29,35 @@ let busy = false;        // an action is in flight
 let configured = false;  // server URL + login are set
 let ready = false;       // connection test passed
 let currentCfg = {};     // last config read from the main process
+let controls = [];       // live button controls: [{ id, name, action, btn, sub }]
 
-// Each "slot" is one configurable pause group with its own row of
-// Unpause/Pause buttons. Add a slot here + matching markup/config to grow.
-const SLOTS = ['games', 'kiosks', 'outdoor'];
-const SLOT_DEFAULT_LABEL = {
-  games: 'Arcade games',
-  kiosks: 'Arcade kiosks',
-  outdoor: 'Outdoor attractions',
-};
-const slotEls = {
-  games: { name: document.getElementById('name-games'), hint: document.getElementById('hint-games') },
-  kiosks: { name: document.getElementById('name-kiosks'), hint: document.getElementById('hint-kiosks') },
-  outdoor: { name: document.getElementById('name-outdoor'), hint: document.getElementById('hint-outdoor') },
-};
-const cfgSelectForSlot = {
-  games: el.cfgGamesGroup,
-  kiosks: el.cfgKiosksGroup,
-  outdoor: el.cfgOutdoorGroup,
-};
+// Settings working state
+let editGroups = [];     // working copy of the configured group buttons
+let allGroups = [];      // live pause-group list from the server
+let groupsLoaded = false;
+
+// --------------------------------------------------------------------------
+// Small DOM helpers
+// --------------------------------------------------------------------------
+
+function clearEl(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function makeEl(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function makeOption(value, text, disabled) {
+  const o = document.createElement('option');
+  o.value = value;
+  o.textContent = text;
+  if (disabled) o.disabled = true;
+  return o;
+}
 
 // --------------------------------------------------------------------------
 // Status helpers
@@ -62,59 +73,71 @@ function setStatus(text, cls, detail) {
   const existing = document.getElementById('status-detail');
   if (existing) existing.remove();
   if (detail) {
-    const p = document.createElement('p');
+    const p = makeEl('p', 'status-detail', detail);
     p.id = 'status-detail';
-    p.className = 'status-detail';
-    p.textContent = detail;
     el.status.appendChild(p);
   }
 }
 
 // --------------------------------------------------------------------------
-// Buttons — each maps to one configurable pause group + an action. Both pause
-// and unpause for a slot target the same group; the group name is shown once
-// in the row header.
+// Main view — one card per configured pause group, each with Unpause/Pause.
+// The configured list is dynamic (managed in Settings), so the cards and their
+// click handlers are rebuilt from currentCfg.groups whenever it changes.
 // --------------------------------------------------------------------------
 
-const controls = [
-  { btn: document.getElementById('btn-games-unpause'),   sub: document.getElementById('games-unpause-sub'),   slot: 'games',   action: 'unpause', run: () => api.unpauseGames() },
-  { btn: document.getElementById('btn-games-pause'),     sub: document.getElementById('games-pause-sub'),     slot: 'games',   action: 'pause',   run: () => api.pauseGames() },
-  { btn: document.getElementById('btn-kiosks-unpause'),  sub: document.getElementById('kiosks-unpause-sub'),  slot: 'kiosks',  action: 'unpause', run: () => api.unpauseKiosks() },
-  { btn: document.getElementById('btn-kiosks-pause'),    sub: document.getElementById('kiosks-pause-sub'),    slot: 'kiosks',  action: 'pause',   run: () => api.pauseKiosks() },
-  { btn: document.getElementById('btn-outdoor-unpause'), sub: document.getElementById('outdoor-unpause-sub'), slot: 'outdoor', action: 'unpause', run: () => api.unpauseOutdoor() },
-  { btn: document.getElementById('btn-outdoor-pause'),   sub: document.getElementById('outdoor-pause-sub'),   slot: 'outdoor', action: 'pause',   run: () => api.pauseOutdoor() },
-];
-
-function slotGroupId(slot) {
-  return currentCfg[slot + 'GroupId'];
-}
-function slotGroupName(slot) {
-  return currentCfg[slot + 'GroupName'] || '';
-}
-function anyGroupConfigured() {
-  return SLOTS.some((s) => !!slotGroupId(s));
+function configuredGroups() {
+  return Array.isArray(currentCfg.groups) ? currentCfg.groups : [];
 }
 
-// A button is live only when we're connected, not mid-action, and its slot has
-// a pause group selected.
-function updateButtonsEnabled() {
-  for (const c of controls) {
-    c.btn.disabled = !(ready && !busy && !!slotGroupId(c.slot));
+function renderGroupCards() {
+  clearEl(el.groups);
+  controls = [];
+
+  const list = configuredGroups();
+  if (list.length === 0) {
+    const empty = makeEl('div', 'groups-empty');
+    empty.appendChild(makeEl('p', 'groups-empty-text', 'No pause-group buttons yet.'));
+    const btn = makeEl('button', 'btn-secondary', 'Open Settings');
+    btn.type = 'button';
+    btn.addEventListener('click', openSettings);
+    empty.appendChild(btn);
+    el.groups.appendChild(empty);
+    return;
   }
-}
 
-// Reflect the configured group names on the row headers + idle sub-labels.
-function applyConfigToButtons() {
-  SLOTS.forEach((slot) => {
-    const id = slotGroupId(slot);
-    const els = slotEls[slot];
-    if (els.name) els.name.textContent = id ? (slotGroupName(slot) || ('Group #' + id)) : SLOT_DEFAULT_LABEL[slot];
-    if (els.hint) els.hint.textContent = id ? '' : 'Pick a group in Settings';
+  list.forEach((g) => {
+    const name = g.name || ('Group #' + g.id);
+    const row = makeEl('section', 'group-row');
+    row.setAttribute('data-group-id', String(g.id));
+
+    const head = makeEl('div', 'group-row-head');
+    head.appendChild(makeEl('span', 'group-row-name', name));
+    row.appendChild(head);
+
+    const actions = makeEl('div', 'group-row-actions');
+    [['unpause', 'Unpause'], ['pause', 'Pause']].forEach(function (pair) {
+      const action = pair[0];
+      const btn = makeEl('button', 'big-btn ' + action);
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.appendChild(makeEl('span', 'big-btn-verb', pair[1]));
+      const sub = makeEl('span', 'big-btn-sub', 'Tap to start');
+      btn.appendChild(sub);
+      const ctrl = { id: g.id, name: name, action: action, btn: btn, sub: sub };
+      btn.addEventListener('click', function () { onActionClick(ctrl); });
+      actions.appendChild(btn);
+      controls.push(ctrl);
+    });
+    row.appendChild(actions);
+    el.groups.appendChild(row);
   });
-  if (!busy) {
-    for (const c of controls) c.sub.textContent = slotGroupId(c.slot) ? 'Tap to start' : '';
-  }
+
   updateButtonsEnabled();
+}
+
+// Buttons are live only when connected and not mid-action.
+function updateButtonsEnabled() {
+  for (const c of controls) c.btn.disabled = !(ready && !busy);
 }
 
 // --------------------------------------------------------------------------
@@ -127,7 +150,7 @@ async function refreshConnection() {
   if (busy) return;
   currentCfg = await api.getConfig();
   configured = !!(currentCfg.baseUrl && currentCfg.username && currentCfg.hasPassword);
-  applyConfigToButtons();
+  renderGroupCards();
   if (!configured) {
     ready = false;
     setConn('unknown');
@@ -143,11 +166,11 @@ async function refreshConnection() {
   if (res.ok) {
     ready = true;
     setConn('ok');
-    applyConfigToButtons();
+    updateButtonsEnabled();
     const who = res.user && res.user.display_name ? res.user.display_name : (res.user && res.user.username) || '';
-    const haveGroups = anyGroupConfigured();
+    const haveGroups = configuredGroups().length > 0;
     setStatus('Connected' + (who ? ' as ' + who : '') + '.' +
-      (haveGroups ? ' Ready.' : ' Open Settings (⚙) to pick your pause groups.'),
+      (haveGroups ? ' Ready.' : ' Open Settings (⚙) to add a pause group.'),
       haveGroups ? 'ok' : 'warn');
     maybeWarnWatchdog(res);
   } else {
@@ -159,14 +182,13 @@ async function refreshConnection() {
 }
 
 // If the server's health check says the per-minute watchdog is stalled, warn —
-// because that's the process that actually retries busy assets. Without it, the
-// "the server will keep retrying" promise can't be kept.
+// that's the process that actually retries busy assets. Without it, the "the
+// server will keep retrying" promise can't be kept.
 function maybeWarnWatchdog(res) {
   const h = res && res.health;
   if (!h) return;
   if (h.watchdogHealthy === false) {
-    setStatus(el.statusLine.textContent,
-      'warn',
+    setStatus(el.statusLine.textContent, 'warn',
       'Heads up: the server’s per-minute watchdog hasn’t run recently, so retries of busy assets may not process. Check the cron_watchdog cron on the CEplay server.');
   } else if (typeof h.retriesGaveUp === 'number' && h.retriesGaveUp > 0) {
     setStatus(el.statusLine.textContent, 'warn',
@@ -182,37 +204,19 @@ function maybeWarnWatchdog(res) {
 // Resolves true (confirmed) or false (cancelled / dismissed).
 function confirmAction(opts) {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay confirm-overlay';
-
-    const panel = document.createElement('div');
-    panel.className = 'panel confirm-panel';
+    const overlay = makeEl('div', 'overlay confirm-overlay');
+    const panel = makeEl('div', 'panel confirm-panel');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
 
-    const heading = document.createElement('h2');
-    heading.textContent = opts.title;
-    panel.appendChild(heading);
+    panel.appendChild(makeEl('h2', null, opts.title));
+    panel.appendChild(makeEl('p', 'confirm-message', opts.message));
 
-    const message = document.createElement('p');
-    message.className = 'confirm-message';
-    message.textContent = opts.message;
-    panel.appendChild(message);
+    const actions = makeEl('div', 'panel-actions');
+    actions.appendChild(makeEl('span', 'spacer'));
 
-    const actions = document.createElement('div');
-    actions.className = 'panel-actions';
-    const spacer = document.createElement('span');
-    spacer.className = 'spacer';
-    actions.appendChild(spacer);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn-secondary';
-    cancelBtn.textContent = 'Cancel';
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : '');
-    confirmBtn.textContent = opts.confirmLabel || 'Confirm';
-
+    const cancelBtn = makeEl('button', 'btn-secondary', 'Cancel');
+    const confirmBtn = makeEl('button', 'btn-primary confirm-go' + (opts.tone ? ' ' + opts.tone : ''), opts.confirmLabel || 'Confirm');
     actions.appendChild(cancelBtn);
     actions.appendChild(confirmBtn);
     panel.appendChild(actions);
@@ -253,10 +257,35 @@ async function withBusy(subEl, workingText, fn) {
   } finally {
     busy = false;
     subEl.textContent = 'Tap to start';
-    // The run callback sets the connection dot from the actual result; here we
-    // just restore button availability.
     updateButtonsEnabled();
   }
+}
+
+// --------------------------------------------------------------------------
+// Action click → confirm → run group pause/unpause
+// --------------------------------------------------------------------------
+
+async function onActionClick(ctrl) {
+  if (busy || ctrl.btn.disabled) return;
+  const isPause = ctrl.action === 'pause';
+
+  const ok = await confirmAction({
+    title: (isPause ? 'Pause ' : 'Unpause ') + '"' + ctrl.name + '"?',
+    message: isPause
+      ? 'This pauses every running game and kiosk in "' + ctrl.name + '". Anything in active use is skipped and retried by the server.'
+      : 'This unpauses every paused game and kiosk in "' + ctrl.name + '".',
+    confirmLabel: isPause ? 'Pause' : 'Unpause',
+    tone: isPause ? 'pause' : 'unpause',
+  });
+  if (!ok) return;
+
+  await withBusy(ctrl.sub, (isPause ? 'Pausing' : 'Unpausing') + '…', async () => {
+    setStatus((isPause ? 'Pausing' : 'Unpausing') + ' "' + ctrl.name + '"…', null);
+    const res = await api.groupAction(ctrl.id, ctrl.action);
+    const out = summarizeGroup(ctrl.name, isPause, res);
+    setStatus(out.text, out.cls, out.detail);
+    setConn(out.cls === 'error' ? 'error' : 'ok');
+  });
 }
 
 // --------------------------------------------------------------------------
@@ -298,96 +327,87 @@ function summarizeGroup(name, isPause, res) {
 }
 
 // --------------------------------------------------------------------------
-// Wire up buttons
+// Settings panel — server/login fields + a dynamic editor for the group buttons
 // --------------------------------------------------------------------------
 
-for (const c of controls) {
-  c.btn.addEventListener('click', async () => {
-    if (busy || c.btn.disabled) return;
-
-    const id = slotGroupId(c.slot);
-    if (!id) {
-      setStatus('No group selected for this button. Open Settings (⚙) and pick one.', 'warn');
-      return;
-    }
-    const name = slotGroupName(c.slot) || ('Group #' + id);
-    const isPause = c.action === 'pause';
-
-    const ok = await confirmAction({
-      title: (isPause ? 'Pause ' : 'Unpause ') + '"' + name + '"?',
-      message: isPause
-        ? 'This pauses every running game and kiosk in "' + name + '". Anything in active use is skipped and retried by the server.'
-        : 'This unpauses every paused game and kiosk in "' + name + '".',
-      confirmLabel: isPause ? 'Pause' : 'Unpause',
-      tone: isPause ? 'pause' : 'unpause',
+function renderGroupEditor() {
+  clearEl(el.groupList);
+  if (editGroups.length === 0) {
+    el.groupList.appendChild(makeEl('div', 'group-list-empty', 'No buttons yet — add a group below.'));
+    return;
+  }
+  editGroups.forEach((g, idx) => {
+    const row = makeEl('div', 'group-list-row');
+    row.appendChild(makeEl('span', 'group-list-name', g.name || ('Group #' + g.id)));
+    const rm = makeEl('button', 'group-remove-btn', '×');
+    rm.type = 'button';
+    rm.title = 'Remove';
+    rm.setAttribute('aria-label', 'Remove ' + (g.name || ('Group #' + g.id)));
+    rm.addEventListener('click', () => {
+      editGroups.splice(idx, 1);
+      renderGroupEditor();
+      refreshAddSelect();
     });
-    if (!ok) return;
-
-    await withBusy(c.sub, (isPause ? 'Pausing' : 'Unpausing') + '…', async () => {
-      setStatus((isPause ? 'Pausing' : 'Unpausing') + ' "' + name + '"…', null);
-      const res = await c.run();
-      const out = summarizeGroup(name, isPause, res);
-      setStatus(out.text, out.cls, out.detail);
-      setConn(out.cls === 'error' ? 'error' : 'ok');
-    });
+    row.appendChild(rm);
+    el.groupList.appendChild(row);
   });
 }
 
-// --------------------------------------------------------------------------
-// Settings panel
-// --------------------------------------------------------------------------
+function refreshAddSelect() {
+  const sel = el.groupAddSelect;
+  clearEl(sel);
 
-// (Re)fill a group <select> with a "none" choice + the live group list, keeping
-// the stored selection visible even if the live list can't be loaded yet.
-function fillGroupSelect(sel, groups, selectedId, selectedName) {
-  while (sel.firstChild) sel.removeChild(sel.firstChild);
-
-  const none = document.createElement('option');
-  none.value = '';
-  none.textContent = '— none —';
-  sel.appendChild(none);
-
-  let matched = false;
-  (groups || []).forEach((g) => {
-    const o = document.createElement('option');
-    o.value = String(g.id);
-    o.textContent = g.name + (g.is_active ? '' : ' (inactive)');
-    if (selectedId != null && selectedId !== '' && String(g.id) === String(selectedId)) {
-      o.selected = true;
-      matched = true;
-    }
-    sel.appendChild(o);
-  });
-
-  // Preserve a stored selection that isn't in the (possibly empty) live list.
-  if (!matched && selectedId != null && selectedId !== '') {
-    const o = document.createElement('option');
-    o.value = String(selectedId);
-    o.textContent = (selectedName || ('Group #' + selectedId)) + ' (current)';
-    o.selected = true;
-    sel.appendChild(o);
+  if (!groupsLoaded) {
+    sel.appendChild(makeOption('', 'Connect to load groups…', true));
+    el.groupAddBtn.disabled = true;
+    return;
   }
+
+  const added = new Set(editGroups.map((g) => String(g.id)));
+  const available = allGroups.filter((g) => !added.has(String(g.id)));
+
+  if (available.length === 0) {
+    sel.appendChild(makeOption('', allGroups.length ? 'All groups added' : 'No pause groups found', true));
+    el.groupAddBtn.disabled = true;
+    return;
+  }
+
+  const placeholder = makeOption('', 'Choose a group to add…', true);
+  placeholder.selected = true;
+  sel.appendChild(placeholder);
+  available.forEach((g) => sel.appendChild(makeOption(String(g.id), g.name + (g.is_active ? '' : ' (inactive)'))));
+  el.groupAddBtn.disabled = false;
 }
 
-function readGroupSelection(sel) {
-  const id = sel.value ? parseInt(sel.value, 10) : null;
-  let name = '';
-  if (id != null && sel.selectedIndex >= 0) {
-    name = (sel.options[sel.selectedIndex].textContent || '').replace(/\s*\(.*\)\s*$/, '');
-  }
-  return { id, name };
+function addSelectedGroup() {
+  const id = el.groupAddSelect.value ? parseInt(el.groupAddSelect.value, 10) : null;
+  if (!id) return;
+  if (editGroups.some((g) => String(g.id) === String(id))) return;
+  const match = allGroups.find((g) => String(g.id) === String(id));
+  editGroups.push({ id: id, name: match ? match.name : ('Group #' + id) });
+  renderGroupEditor();
+  refreshAddSelect();
 }
 
-async function loadGroupsIntoSelects() {
+async function loadGroupsForAdd() {
   const res = await api.getGroups();
   if (res && res.ok) {
-    SLOTS.forEach((slot) => {
-      const sel = cfgSelectForSlot[slot];
-      fillGroupSelect(sel, res.groups, sel.value || currentCfg[slot + 'GroupId'], currentCfg[slot + 'GroupName']);
+    allGroups = res.groups || [];
+    groupsLoaded = true;
+    // Refresh stored names to the current server names (in case of renames).
+    editGroups.forEach((g) => {
+      const m = allGroups.find((x) => String(x.id) === String(g.id));
+      if (m) g.name = m.name;
     });
-  } else if (!el.cfgMsg.textContent) {
-    el.cfgMsg.className = 'panel-msg';
-    el.cfgMsg.textContent = 'Enter the server URL + login and click "Test connection" to load your pause groups.';
+    renderGroupEditor();
+    refreshAddSelect();
+  } else {
+    groupsLoaded = false;
+    refreshAddSelect();
+    if (!el.cfgMsg.textContent) {
+      el.cfgMsg.className = 'panel-msg';
+      el.cfgMsg.textContent = 'Enter the server URL + login and click "Test connection" to load your pause groups.';
+    }
   }
 }
 
@@ -404,15 +424,15 @@ async function openSettings() {
   el.cfgMsg.textContent = '';
   el.cfgMsg.className = 'panel-msg';
 
-  // Seed the group dropdowns with the stored selections, then try to load the
-  // live list (needs a working connection).
-  SLOTS.forEach((slot) => {
-    fillGroupSelect(cfgSelectForSlot[slot], [], currentCfg[slot + 'GroupId'], currentCfg[slot + 'GroupName']);
-  });
+  editGroups = configuredGroups().map((g) => ({ id: g.id, name: g.name }));
+  allGroups = [];
+  groupsLoaded = false;
+  renderGroupEditor();
+  refreshAddSelect();
 
   el.overlay.classList.remove('hidden');
   el.cfgUrl.focus();
-  loadGroupsIntoSelects();
+  loadGroupsForAdd();
 }
 
 function closeSettings() {
@@ -422,22 +442,18 @@ function closeSettings() {
 el.settingsBtn.addEventListener('click', openSettings);
 el.cfgCancel.addEventListener('click', closeSettings);
 el.overlay.addEventListener('click', (e) => { if (e.target === el.overlay) closeSettings(); });
+el.groupAddBtn.addEventListener('click', addSelectedGroup);
 
 el.cfgSave.addEventListener('click', async () => {
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Saving…';
-  const payload = {
+  await api.setConfig({
     baseUrl: el.cfgUrl.value,
     username: el.cfgUser.value,
     password: el.cfgPass.value, // blank = keep existing
     insecureTLS: el.cfgInsecure.checked,
-  };
-  SLOTS.forEach((slot) => {
-    const pick = readGroupSelection(cfgSelectForSlot[slot]);
-    payload[slot + 'GroupId'] = pick.id;
-    payload[slot + 'GroupName'] = pick.name;
+    groups: editGroups.map((g) => ({ id: g.id, name: g.name })),
   });
-  await api.setConfig(payload);
   el.cfgMsg.className = 'panel-msg ok';
   el.cfgMsg.textContent = 'Saved.';
   closeSettings();
@@ -445,8 +461,8 @@ el.cfgSave.addEventListener('click', async () => {
 });
 
 el.cfgTest.addEventListener('click', async () => {
-  // Persist first so the test uses exactly what's on screen. Group selections
-  // are preserved by the main process even though we don't send them here.
+  // Persist the server/login fields first so the test uses exactly what's on
+  // screen. The group list is preserved by the main process (not sent here).
   el.cfgMsg.className = 'panel-msg';
   el.cfgMsg.textContent = 'Testing…';
   await api.setConfig({
@@ -461,8 +477,7 @@ el.cfgTest.addEventListener('click', async () => {
     const who = res.user && (res.user.display_name || res.user.username);
     el.cfgMsg.className = 'panel-msg ok';
     el.cfgMsg.textContent = 'Connected' + (who ? ' as ' + who : '') + '. Loading groups…';
-    currentCfg = await api.getConfig();
-    loadGroupsIntoSelects();
+    loadGroupsForAdd();
   } else {
     el.cfgMsg.className = 'panel-msg error';
     el.cfgMsg.textContent = res.error;

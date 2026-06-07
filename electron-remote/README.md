@@ -1,13 +1,10 @@
 # CEplay Remote
 
-A tiny standalone desktop app (Electron) with **four buttons** — unpause
-everything in the morning, pause it again at night. The buttons drive **two
-CEplay pause groups you choose in Settings** (e.g. an "Arcade games" group and
-an "Arcade kiosks" group):
-
-- **Unpause / Pause — games group** — flips your chosen "games" pause group.
-- **Unpause / Pause — kiosks group** — flips your chosen "kiosks" pause group.
-- **Unpause / Pause — outdoor group** — flips your chosen "outdoor attractions" pause group.
+A tiny standalone desktop app (Electron) for front-desk staff — unpause
+everything in the morning, pause it again at night. In Settings you **add a
+card for each CEplay pause group** you want to control, and each card gets an
+**Unpause** and a **Pause** button. Add as many as you need (arcade games,
+kiosks, outdoor attractions, redemption, …) and remove them any time.
 
 It is meant to live on a **different PC** than the main CEplay project (e.g. a
 front‑desk machine) and talks to CEplay over the network using the project's
@@ -17,18 +14,16 @@ to CenterEdge directly — CEplay handles all of that.
 ## How it works
 
 The app logs in to CEplay (`POST /api/auth/login`), keeps the session cookie +
-CSRF token in the Electron **main process**, and drives the two pause groups you
-select in Settings:
+CSRF token in the Electron **main process**, and drives each pause group you've
+added via the same endpoints the web dashboard's group Pause/Unpause buttons use:
 
-| Button (slot)          | Endpoint                              |
-| ---------------------- | ------------------------------------- |
-| Unpause — games group  | `POST /api/groups/{gamesId}/unpause`  |
-| Pause — games group    | `POST /api/groups/{gamesId}/pause`    |
-| Unpause — kiosks group | `POST /api/groups/{kiosksId}/unpause` |
-| Pause — kiosks group   | `POST /api/groups/{kiosksId}/pause`   |
+| Button             | Endpoint                        |
+| ------------------ | ------------------------------- |
+| Unpause (a group)  | `POST /api/groups/{id}/unpause` |
+| Pause (a group)    | `POST /api/groups/{id}/pause`   |
 
-These are the same endpoints the CEplay web dashboard's group Pause/Unpause
-buttons use, so any CEplay server supports them. A pause group can contain games
+Because these are the standard group endpoints, any CEplay server supports them.
+A pause group can contain games
 **and** kiosks; CEplay flips every eligible member to the target state and skips
 anything `outOfService` (and kiosks with unknown status, which the API spec says
 must not be controlled). **Per-asset failures (e.g. a unit that is in use) are
@@ -94,10 +89,10 @@ On first launch, click the **⚙ Settings** button and enter:
 - **Allow self-signed TLS** — only if your LAN server uses a self‑signed cert
 
 Click **Test connection** to verify — this also loads your pause groups into the
-dropdowns. Pick the **Arcade games**, **Kiosks**, and **Outdoor attractions**
-groups the buttons should control (leave any on "— none —" to keep that pair of
-buttons disabled), then **Save**. (Create those groups first in the main CEplay
-app under *Pause Groups* if you haven't already.)
+**Pause-group buttons** picker. Use it to **add** a card for each group you want
+to control (each gets an Unpause + a Pause button), **remove** any you don't need
+with the × button, then **Save**. (Create the groups first in the main CEplay app
+under *Pause Groups* if you haven't already.)
 
 ## Build an installer
 

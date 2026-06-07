@@ -101,6 +101,15 @@ body {
 .group-row-hint { margin-left: auto; font-size: 12px; color: var(--muted); }
 .group-row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
+/* Empty state when no group buttons are configured yet. */
+.groups-empty {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  border: 1px dashed var(--border); border-radius: 14px; color: var(--muted);
+  padding: 20px;
+}
+.groups-empty-text { margin: 0; font-size: 14px; }
+
 .big-btn {
   border: none; border-radius: 12px; cursor: pointer; color: #fff;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -151,6 +160,7 @@ body {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 14px; padding: 22px; width: 100%; max-width: 420px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  max-height: calc(100vh - 40px); overflow-y: auto;
 }
 .panel h2 { margin: 0 0 16px; font-size: 18px; }
 .panel label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
@@ -165,6 +175,28 @@ body {
 .panel input:focus, .panel select:focus { outline: 2px solid var(--kiosks); border-color: var(--kiosks); }
 
 .hint { font-size: 12px; color: var(--muted); margin: 14px 0 0; }
+.hint-tight { margin: 4px 0 8px; }
+
+/* Settings: editable list of pause-group buttons ------------------------- */
+.group-list { display: flex; flex-direction: column; gap: 8px; }
+.group-list-empty { font-size: 13px; color: var(--muted); padding: 4px 2px; }
+.group-list-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.group-list-name {
+  flex: 1; font-size: 14px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.group-remove-btn {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.group-remove-btn:hover { border-color: var(--error); color: var(--error); background: rgba(229, 72, 77, 0.08); }
+.group-add { display: flex; gap: 8px; margin-top: 10px; }
+.group-add select { flex: 1; }
 
 .panel-actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
 .panel-actions .spacer { flex: 1; }
