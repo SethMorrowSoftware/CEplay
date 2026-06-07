@@ -21,22 +21,22 @@ const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
-
-// Linux: AppImages mount read-only under /tmp, so their bundled chrome-sandbox
-// helper can't be owned root / setuid (mode 4755), and many locked-down distros
-// (Ubuntu 23.10+/24.04 via AppArmor, hardened Debian) also disable unprivileged
-// user namespaces — leaving Chromium with no way to initialize its sandbox, so
-// it aborts on launch. This window only ever renders trusted, local UI (no
-// remote/untrusted web content), with contextIsolation on and all network I/O
-// in the main process, so running without the OS-level sandbox is an acceptable
-// trade-off here. To run *with* the sandbox instead, enable unprivileged user
-// namespaces on the machine (see the README "Linux: sandbox & AppImage"
-// section) and remove this switch. Windows and macOS keep the sandbox.
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-setuid-sandbox');
+// Linux: Chromium's setuid sandbox can't initialize from a read-only AppImage
+// mount, and many locked-down hosts disable unprivileged user namespaces, so
+// Electron aborts at startup ("chrome-sandbox ... is owned by root and has mode
+// 4755"). app.commandLine.appendSwitch('no-sandbox') runs too late to prevent
+// it — the sandbox is decided from the real process command line during native
+// startup — so if the flag isn't already present, relaunch ourselves once with
+// it on argv. This window only renders trusted, local UI (no remote/untrusted
+// web content), so running without the OS sandbox is an acceptable trade-off.
+// To keep the sandbox instead, enable unprivileged user namespaces (see the
+// README "Linux: sandbox & AppImage" section) and delete this block.
+if (process.platform === 'linux' && !process.argv.includes('--no-sandbox')) {
+  app.relaunch({ args: process.argv.slice(1).concat(['--no-sandbox']) });
+  app.exit(0);
 }
+
+const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
 
 // In-memory session state. Re-established automatically on 401/403.
 let cookieJar = {};      // cookie name -> value
