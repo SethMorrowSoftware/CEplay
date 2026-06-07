@@ -470,6 +470,7 @@ function createWindow() {
     backgroundColor: '#090d14',
     title: 'CEplay Remote',
     autoHideMenuBar: true,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -479,6 +480,12 @@ function createWindow() {
   });
 
   win.removeMenu();
+
+  // Open as a full desktop portal by default, without a small-window flash.
+  win.once('ready-to-show', () => {
+    win.maximize();
+    win.show();
+  });
 
   // Open any external links in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
