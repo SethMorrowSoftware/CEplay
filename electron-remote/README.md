@@ -46,6 +46,9 @@ there are no CORS/CSP issues and no backend CORS changes are required.
 Switch to the **Status** tab (top of the window) for a live staff console,
 **organized by group** so a teenager can find a reader in seconds:
 
+- A row of **at-a-glance chips** sits at the top — one per group, color-coded
+  (green = all running, amber = paused, red = something out of service, blue =
+  mixed) with a quick count. Tap a chip to jump straight to that group.
 - **Every pause group on the server** gets its own **section** — independent of
   which groups you've made Controls buttons for — so you can monitor them all.
   Each header shows the group's overall state (Running / Paused / Mixed) and a
