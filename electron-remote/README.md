@@ -92,14 +92,15 @@ FATAL:setuid_sandbox_host.cc … chrome-sandbox is owned by root and has mode 47
 ```
 
 Because this window only renders trusted, local UI (no remote/untrusted web
-content), **the app launches with `--no-sandbox` on Linux by default** so it
-works out of the box. Windows and macOS are unaffected and keep the sandbox.
+content), **on Linux the app relaunches itself once with `--no-sandbox`** (and
+`npm start` passes it too), so it works out of the box with no per‑machine
+setup. Windows and macOS are unaffected and keep the sandbox.
 
 ### Prefer to keep the sandbox on Linux?
 
-Enable unprivileged user namespaces on each machine, then remove the
-`--no-sandbox` switch in `main.js` (the `if (process.platform === 'linux')`
-block):
+Enable unprivileged user namespaces on each machine, then delete the Linux
+relaunch block near the top of `main.js` (the `if (process.platform === 'linux'
+…)`) and drop `--no-sandbox` from the `start` script:
 
 ```bash
 # Ubuntu 23.10+/24.04 (AppArmor gate):
