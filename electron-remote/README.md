@@ -102,7 +102,7 @@ busy and being retried by the server.
 
 ## Branding
 
-The top bar shows `renderer/logo.png` as the app logo. Drop your own
-`logo.png` into the `renderer/` folder (a wide/landscape image around 26px tall
-looks best). If the file is missing, the brand falls back to the "CEplay Remote"
-wordmark.
+A large `logo.png` is shown as a hero banner above the action buttons. Drop your
+own `logo.png` into the `renderer/` folder — a landscape/wide image works best;
+it's scaled to fit (up to ~104px tall). If the file is missing, the hero is
+hidden and the top-bar "CEplay Remote" wordmark still identifies the app.

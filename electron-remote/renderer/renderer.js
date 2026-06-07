@@ -335,7 +335,7 @@ document.addEventListener('keydown', (e) => {
 // brand falls back to the wordmark instead of a broken-image icon.
 const brandLogo = document.getElementById('brand-logo');
 if (brandLogo) {
-  brandLogo.addEventListener('error', () => brandLogo.classList.add('brand-logo--hidden'));
+  brandLogo.addEventListener('error', () => brandLogo.classList.add('hero-logo--hidden'));
 }
 
 refreshConnection();

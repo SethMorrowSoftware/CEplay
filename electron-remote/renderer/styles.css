@@ -45,8 +45,6 @@ body {
 
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .brand-text { font-size: 15px; letter-spacing: 0.2px; }
-.brand-logo { height: 26px; width: auto; display: block; border-radius: 6px; }
-.brand-logo--hidden { display: none; }
 
 .dot {
   width: 11px; height: 11px; border-radius: 50%;
@@ -72,6 +70,12 @@ body {
   padding: 22px;
   gap: 20px;
 }
+
+/* Hero logo above the action buttons ------------------------------------- */
+.hero { display: flex; align-items: center; justify-content: center; padding: 6px 0 2px; }
+.hero-logo { max-height: 104px; max-width: 78%; height: auto; width: auto; object-fit: contain; }
+.hero-logo--hidden { display: none; }
+@media (max-height: 580px) { .hero-logo { max-height: 60px; } }
 
 .buttons {
   flex: 1;
