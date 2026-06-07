@@ -43,20 +43,21 @@ there are no CORS/CSP issues and no backend CORS changes are required.
 
 ## Status console
 
-Switch to the **Status** tab (top of the window) for a live staff console:
+Switch to the **Status** tab (top of the window) for a live staff console,
+**organized by group** so a teenager can find a reader in seconds:
 
-- A **group monitor** strip shows each pause group you've added with its current
-  state (Running / Paused / Mixed) and a running / paused / OOS breakdown.
-- A **searchable, filterable list** of every game and kiosk (filter by type and
-  by status), **sorted problems-first** (Out of service, then Paused, then
-  Running), with per-asset **Unpause / Pause / Out of service** buttons. Games
-  use the JSON-Patch `operationStatus` endpoint; kiosks use
+- Each pause group you've added is its own **section** — a header showing the
+  group's overall state (Running / Paused / Mixed) and a running / paused / OOS
+  count, followed by **only that group's games and kiosks**.
+- Within a group, readers are **sorted problems-first** (Out of service, then
+  Paused, then Running) with per-reader **Unpause / Pause / Out of service**
+  buttons. Games use the JSON-Patch `operationStatus` endpoint; kiosks use
   `POST /api/kiosks/{id}/{pause|unpause|out-of-service}`. Kiosks the card system
   can't control (or that report no status) are shown read-only, per the API spec.
-- **Unpause / Pause are one tap**; **Out of service** asks for a quick confirm
-  (it's the most consequential). The view **auto-refreshes ~every 12s** while
-  open (and pauses when the window is hidden); a busy asset is queued for retry
-  server-side just like a group action.
+- A **search box** filters readers by name across the groups. **Unpause / Pause
+  are one tap**; **Out of service** asks for a quick confirm. The view
+  **auto-refreshes ~every 12s** while open (pausing when the window is hidden);
+  a busy reader is queued for retry server-side just like a group action.
 
 Use the **Controls** tab for the big one-tap group Unpause/Pause buttons.
 

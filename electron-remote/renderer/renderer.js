@@ -17,11 +17,8 @@ const el = {
   // status view
   statusSynced: document.getElementById('status-synced'),
   statusRefresh: document.getElementById('status-refresh'),
-  groupMonitor: document.getElementById('group-monitor'),
   assetSearch: document.getElementById('asset-search'),
-  assetTypeFilters: document.getElementById('asset-type-filters'),
-  assetStatusFilters: document.getElementById('asset-status-filters'),
-  assetList: document.getElementById('asset-list'),
+  groupSections: document.getElementById('group-sections'),
   // settings
   settingsBtn: document.getElementById('settings-btn'),
   overlay: document.getElementById('settings-overlay'),
@@ -48,8 +45,6 @@ let currentView = 'controls';
 
 // Status view state
 let statusData = { games: [], kiosks: [], groups: [], kioskPauseSupported: false };
-let assetType = 'all';
-let assetStatus = 'all';
 let assetSearch = '';
 let assetActionInFlight = false;
 let statusPollCleanup = null;
@@ -109,9 +104,7 @@ function switchView(name) {
   el.navControls.classList.toggle('active', name === 'controls');
   el.navStatus.classList.toggle('active', name === 'status');
   if (name === 'status') {
-    renderFilters();
-    renderGroupMonitor();
-    renderAssetList();
+    renderGroupSections();
     if (ready) { loadStatus(); startStatusPolling(); }
   } else {
     stopStatusPolling();
@@ -203,7 +196,7 @@ async function onActionClick(ctrl) {
 }
 
 // --------------------------------------------------------------------------
-// Confirmation dialog (guards group "pause all" / "unpause all" presses)
+// Confirmation dialog (group "pause/unpause all" + per-asset "out of service")
 // --------------------------------------------------------------------------
 
 function confirmAction(opts) {
@@ -291,7 +284,8 @@ function summarizeGroup(name, isPause, res) {
 }
 
 // --------------------------------------------------------------------------
-// Status view — live per-asset status + individual pause/unpause/OOS
+// Status view — each configured group with only its own readers, plus
+// individual pause / unpause / out-of-service.
 // --------------------------------------------------------------------------
 
 function statusBadge(status) {
@@ -309,13 +303,6 @@ function groupBadge(state) {
   return { label: 'Unknown', cls: 'unknown' };
 }
 
-function mergedAssets() {
-  const list = [];
-  (statusData.games || []).forEach((g) => list.push({ type: 'game', id: g.id, name: g.name, status: g.status }));
-  (statusData.kiosks || []).forEach((k) => list.push({ type: 'kiosk', id: k.id, name: k.name, status: k.status }));
-  return list;
-}
-
 // Surface problems first: Out of service, then Paused, then Unknown, then
 // Running — alphabetical within each tier.
 function statusRank(s) {
@@ -323,40 +310,10 @@ function statusRank(s) {
   return order[s] != null ? order[s] : 9;
 }
 
-function filteredAssets() {
-  const q = assetSearch.trim().toLowerCase();
-  return mergedAssets().filter((a) => {
-    if (assetType !== 'all' && a.type !== assetType) return false;
-    if (assetStatus !== 'all' && a.status !== assetStatus) return false;
-    if (q && a.name.toLowerCase().indexOf(q) === -1) return false;
-    return true;
-  }).sort((a, b) => {
-    const r = statusRank(a.status) - statusRank(b.status);
-    return r !== 0 ? r : a.name.localeCompare(b.name);
-  });
-}
-
-function filterPill(value, label, count, activeVal, onClick) {
-  const b = makeEl('button', 'filter-pill' + (value === activeVal ? ' active' : ''), label + ' (' + count + ')');
-  b.type = 'button';
-  b.addEventListener('click', () => onClick(value));
-  return b;
-}
-
-function renderFilters() {
-  const games = (statusData.games || []).length;
-  const kiosks = (statusData.kiosks || []).length;
-  clearEl(el.assetTypeFilters);
-  [['all', 'All', games + kiosks], ['game', 'Games', games], ['kiosk', 'Kiosks', kiosks]].forEach((t) => {
-    el.assetTypeFilters.appendChild(filterPill(t[0], t[1], t[2], assetType, (v) => { assetType = v; renderFilters(); renderAssetList(); }));
-  });
-
-  const base = mergedAssets().filter((a) => assetType === 'all' || a.type === assetType);
-  const c = (s) => base.filter((a) => a.status === s).length;
-  clearEl(el.assetStatusFilters);
-  [['all', 'All', base.length], ['enabled', 'Running', c('enabled')], ['paused', 'Paused', c('paused')], ['outOfService', 'OOS', c('outOfService')]].forEach((t) => {
-    el.assetStatusFilters.appendChild(filterPill(t[0], t[1], t[2], assetStatus, (v) => { assetStatus = v; renderFilters(); renderAssetList(); }));
-  });
+function memberCountText(g) {
+  const parts = [g.enabled + ' running', g.paused + ' paused'];
+  if (g.oos > 0) parts.push(g.oos + ' OOS');
+  return parts.join(' · ');
 }
 
 function assetActions(a) {
@@ -390,46 +347,73 @@ function renderAssetRow(a) {
   return row;
 }
 
-function renderAssetList() {
-  const top = el.assetList.scrollTop;
-  clearEl(el.assetList);
-  if (!ready) {
-    el.assetList.appendChild(makeEl('div', 'asset-empty', 'Connect to the server to see live status.'));
-    return;
-  }
-  const items = filteredAssets();
-  if (items.length === 0) {
-    el.assetList.appendChild(makeEl('div', 'asset-empty', 'No matching games or kiosks.'));
-    return;
-  }
-  items.forEach((a) => el.assetList.appendChild(renderAssetRow(a)));
-  el.assetList.scrollTop = top;
-}
+function renderGroupSections() {
+  const top = el.groupSections.scrollTop;
+  clearEl(el.groupSections);
 
-function renderGroupMonitor() {
-  clearEl(el.groupMonitor);
-  if (!ready) return;
+  if (!ready) {
+    el.groupSections.appendChild(makeEl('div', 'asset-empty', 'Connect to the server to see live status.'));
+    return;
+  }
+
   const configured = configuredGroups();
-  if (configured.length === 0) return;
-  const byId = {};
-  (statusData.groups || []).forEach((g) => { byId[String(g.id)] = g; });
+  if (configured.length === 0) {
+    const empty = makeEl('div', 'groups-empty');
+    empty.appendChild(makeEl('p', 'groups-empty-text', 'No groups yet. Add one in Settings to see its games and kiosks here.'));
+    const btn = makeEl('button', 'btn-secondary', 'Open Settings');
+    btn.type = 'button';
+    btn.addEventListener('click', openSettings);
+    empty.appendChild(btn);
+    el.groupSections.appendChild(empty);
+    return;
+  }
+
+  const gById = {}; (statusData.groups || []).forEach((g) => { gById[String(g.id)] = g; });
+  const gamesById = {}; (statusData.games || []).forEach((a) => { gamesById[String(a.id)] = a; });
+  const kiosksById = {}; (statusData.kiosks || []).forEach((a) => { kiosksById[String(a.id)] = a; });
+  const q = assetSearch.trim().toLowerCase();
+  let anyShown = false;
+
   configured.forEach((cg) => {
-    const g = byId[String(cg.id)];
-    const chip = makeEl('div', 'gm-chip');
-    const top = makeEl('div', 'gm-top');
-    top.appendChild(makeEl('span', 'gm-name', cg.name || ('Group #' + cg.id)));
-    const st = g ? groupBadge(g.state) : { label: '?', cls: 'unknown' };
-    top.appendChild(makeEl('span', 'state-badge ' + st.cls, st.label));
-    chip.appendChild(top);
+    const g = gById[String(cg.id)];
+    const members = [];
     if (g) {
-      const parts = [g.enabled + ' running', g.paused + ' paused'];
-      if (g.oos > 0) parts.push(g.oos + ' OOS');
-      chip.appendChild(makeEl('div', 'gm-counts', parts.join(' · ')));
-    } else {
-      chip.appendChild(makeEl('div', 'gm-counts', 'unavailable'));
+      (g.gameIds || []).forEach((id) => { const m = gamesById[String(id)]; if (m) members.push({ type: 'game', id: m.id, name: m.name, status: m.status }); });
+      (g.kioskIds || []).forEach((id) => { const m = kiosksById[String(id)]; if (m) members.push({ type: 'kiosk', id: m.id, name: m.name, status: m.status }); });
     }
-    el.groupMonitor.appendChild(chip);
+    let shown = members;
+    if (q) shown = members.filter((a) => a.name.toLowerCase().indexOf(q) !== -1);
+    if (q && shown.length === 0) return; // hide non-matching groups while searching
+    anyShown = true;
+    shown.sort((a, b) => {
+      const r = statusRank(a.status) - statusRank(b.status);
+      return r !== 0 ? r : a.name.localeCompare(b.name);
+    });
+
+    const sec = makeEl('section', 'gsection');
+    const head = makeEl('div', 'gsection-head');
+    head.appendChild(makeEl('span', 'gsection-name', cg.name || ('Group #' + cg.id)));
+    const st = g ? groupBadge(g.state) : { label: '?', cls: 'unknown' };
+    head.appendChild(makeEl('span', 'state-badge ' + st.cls, st.label));
+    head.appendChild(makeEl('span', 'gsection-count', g ? memberCountText(g) : 'unavailable'));
+    sec.appendChild(head);
+
+    const body = makeEl('div', 'gsection-body');
+    if (!g) {
+      body.appendChild(makeEl('div', 'gsection-empty', 'This group was not found on the server.'));
+    } else if (shown.length === 0) {
+      body.appendChild(makeEl('div', 'gsection-empty', 'No games or kiosks in this group yet.'));
+    } else {
+      shown.forEach((a) => body.appendChild(renderAssetRow(a)));
+    }
+    sec.appendChild(body);
+    el.groupSections.appendChild(sec);
   });
+
+  if (q && !anyShown) {
+    el.groupSections.appendChild(makeEl('div', 'asset-empty', 'No games or kiosks match "' + assetSearch.trim() + '".'));
+  }
+  el.groupSections.scrollTop = top;
 }
 
 function updateLocalAsset(a) {
@@ -454,7 +438,7 @@ async function onAssetAction(a, target, label) {
   }
 
   assetActionInFlight = true;
-  renderAssetList(); // disables action buttons while in flight
+  renderGroupSections(); // disables action buttons while in flight
   setStatus('Setting "' + a.name + '" to ' + label + '…', null);
 
   let res;
@@ -475,27 +459,24 @@ async function onAssetAction(a, target, label) {
   }
 
   assetActionInFlight = false;
-  renderFilters();
-  renderAssetList();
+  renderGroupSections();
   // Reconcile from the server shortly (covers busy/retry + group counts).
   setTimeout(() => { if (currentView === 'status' && !assetActionInFlight) loadStatus(); }, 1600);
 }
 
 async function loadStatus() {
-  if (!ready) { renderGroupMonitor(); renderAssetList(); return; }
+  if (!ready) { renderGroupSections(); return; }
   if (assetActionInFlight) return;
   const res = await api.getStatus();
-  if (currentView !== 'status') return; // user navigated away mid-flight
+  if (currentView !== 'status') return;
   if (res && res.ok) {
     statusData = res;
     el.statusSynced.textContent = 'Updated ' + new Date().toLocaleTimeString();
-    renderGroupMonitor();
-    renderFilters();
-    renderAssetList();
+    renderGroupSections();
   } else {
     el.statusSynced.textContent = '';
-    clearEl(el.assetList);
-    el.assetList.appendChild(makeEl('div', 'asset-empty', 'Could not load status: ' + ((res && res.error) || 'unknown error')));
+    clearEl(el.groupSections);
+    el.groupSections.appendChild(makeEl('div', 'asset-empty', 'Could not load status: ' + ((res && res.error) || 'unknown error')));
   }
 }
 
@@ -515,7 +496,7 @@ function stopStatusPolling() {
 }
 
 el.statusRefresh.addEventListener('click', () => { if (ready) loadStatus(); });
-el.assetSearch.addEventListener('input', () => { assetSearch = el.assetSearch.value; renderAssetList(); });
+el.assetSearch.addEventListener('input', () => { assetSearch = el.assetSearch.value; renderGroupSections(); });
 
 // --------------------------------------------------------------------------
 // Connection check
@@ -526,7 +507,7 @@ async function refreshConnection() {
   currentCfg = await api.getConfig();
   configured = !!(currentCfg.baseUrl && currentCfg.username && currentCfg.hasPassword);
   renderGroupCards();
-  if (currentView === 'status') { renderGroupMonitor(); renderAssetList(); }
+  if (currentView === 'status') renderGroupSections();
   if (!configured) {
     ready = false;
     stopStatusPolling();
@@ -556,7 +537,7 @@ async function refreshConnection() {
     stopStatusPolling();
     setConn('error');
     updateButtonsEnabled();
-    if (currentView === 'status') { renderGroupMonitor(); renderAssetList(); }
+    if (currentView === 'status') renderGroupSections();
     setStatus('Cannot connect: ' + res.error, 'error');
   }
 }

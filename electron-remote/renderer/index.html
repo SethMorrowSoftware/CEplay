@@ -30,7 +30,7 @@
       <div class="groups" id="groups"></div>
     </section>
 
-    <!-- Status view: live per-asset status + individual pause/unpause/OOS -->
+    <!-- Status view: each group, its readers, and individual pause/unpause/OOS -->
     <section class="view hidden" id="view-status">
       <div class="status-head">
         <span class="status-title">Live status</span>
@@ -38,15 +38,9 @@
         <button id="status-refresh" class="btn-secondary btn-sm" type="button">Refresh</button>
       </div>
 
-      <div class="group-monitor" id="group-monitor"></div>
+      <input type="text" id="asset-search" class="asset-search" placeholder="Search for a game or kiosk…" autocomplete="off" />
 
-      <div class="asset-toolbar">
-        <input type="text" id="asset-search" class="asset-search" placeholder="Search games &amp; kiosks…" autocomplete="off" />
-        <div class="filter-pills" id="asset-type-filters" role="group" aria-label="Filter by type"></div>
-        <div class="filter-pills" id="asset-status-filters" role="group" aria-label="Filter by status"></div>
-      </div>
-
-      <div class="asset-list" id="asset-list"></div>
+      <div class="group-sections" id="group-sections"></div>
     </section>
 
     <section class="status" id="status" aria-live="polite">

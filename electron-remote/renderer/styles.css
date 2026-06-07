@@ -208,6 +208,16 @@ body {
 .asset-btn.pause:hover:not(:disabled)   { border-color: var(--pause); color: var(--pause-hi); }
 .asset-btn.oos:hover:not(:disabled)     { border-color: var(--error); color: var(--error); }
 
+/* Per-group sections (Status page is organized by group) */
+.group-sections { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.gsection { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.gsection-head { display: flex; align-items: center; gap: 10px; padding: 11px 13px 9px; }
+.gsection-name { font-size: 15px; font-weight: 700; letter-spacing: 0.2px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gsection-count { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
+.gsection-body { display: flex; flex-direction: column; gap: 6px; padding: 0 11px 11px; }
+.gsection-body .asset-row { background: var(--bg); }
+.gsection-empty { font-size: 13px; color: var(--muted); padding: 0 2px 10px; }
+
 /* Confirmation dialog (reuses .overlay / .panel) ------------------------- */
 .confirm-message { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); }
 .btn-primary.confirm-go.unpause { background: var(--unpause); border-color: var(--unpause); }

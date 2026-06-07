@@ -405,6 +405,8 @@ ipcMain.handle('ceplay:getStatus', async () => {
         enabled: c.enabled || 0,
         paused: c.paused || 0,
         oos: c.out_of_service || 0,
+        gameIds: (g.game_ids || []).map(String),
+        kioskIds: (g.kiosk_ids || []).map(String),
       };
     });
     return {
