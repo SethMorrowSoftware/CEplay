@@ -465,8 +465,11 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 760,
-    minHeight: 620,
+    // Keep the minimums small enough that the window fully fits low-resolution
+    // POS / ELO touch panels (e.g. 800x600, even 640x480). The renderer's CSS
+    // is responsive and scrolls, so the UI stays usable at these sizes.
+    minWidth: 640,
+    minHeight: 480,
     backgroundColor: '#090d14',
     title: 'CEplay Remote',
     autoHideMenuBar: true,
