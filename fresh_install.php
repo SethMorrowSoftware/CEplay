@@ -9,45 +9,33 @@
  *   1. Removes old database files
  *   2. Generates a new encryption key and writes it into config.php
  *   3. Initializes a fresh database with all tables
- *   4. Creates a default admin user (admin / random password printed once)
+ *   4. Creates a default admin user (admin / admin123!)
  *   5. Sets default timezone
  */
 
 $isCli = (php_sapi_name() === 'cli');
 
 // ─── Web safety guard ────────────────────────────────────────────────────
-// This script wipes the database and rotates the encryption key. The web
-// surface is FAIL-CLOSED: if the DB file exists at all, we refuse to run
-// from the browser. Operators who legitimately need to reset must either
-// delete /data/pause_groups.db first or run from the CLI. The previous
-// behaviour caught any SQLite open error and proceeded — meaning a
-// transient lock or partial schema would silently wipe a working install.
+// This script should be DELETED after first use. Block web access if an
+// admin user already exists — prevents remote database wipe.
 if (!$isCli) {
     $guardDbPath = __DIR__ . '/data/pause_groups.db';
     if (file_exists($guardDbPath)) {
-        $denyMessage = 'Setup already completed (data/pause_groups.db exists).';
-        $adminCount = null;
         try {
             $guardDb = new SQLite3($guardDbPath, SQLITE3_OPEN_READONLY);
-            $adminCount = $guardDb->querySingle('SELECT COUNT(*) FROM admin_users');
+            $guardResult = $guardDb->querySingle('SELECT COUNT(*) FROM admin_users');
             $guardDb->close();
-            if (is_numeric($adminCount) && (int)$adminCount > 0) {
-                $denyMessage = 'Setup already completed (' . (int)$adminCount . ' admin user' . ((int)$adminCount === 1 ? '' : 's') . ' present).';
+            if ($guardResult > 0) {
+                http_response_code(403);
+                header('Content-Type: text/html; charset=utf-8');
+                echo '<!DOCTYPE html><html><head><title>Forbidden</title></head><body style="font-family:sans-serif;background:#0b0e14;color:#e5534b;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">';
+                echo '<div style="text-align:center"><h1>Access Denied</h1><p style="color:#7a8194">This install script is blocked because setup has already been completed.<br>Delete <code>fresh_install.php</code> from the server for security.</p></div>';
+                echo '</body></html>';
+                exit(1);
             }
         } catch (Exception $e) {
-            // Fall through and deny anyway — we will NOT proceed to wipe a
-            // database we couldn't read. Log the underlying error for the
-            // operator's benefit.
-            error_log('fresh_install.php: DB exists but could not be opened — refusing to wipe: ' . $e->getMessage());
-            $denyMessage = 'Setup database exists but could not be read. Refusing to wipe. Check the server error log and run this from the CLI if a reset is intentional.';
+            // DB can't be opened — proceed with fresh install
         }
-
-        http_response_code(403);
-        header('Content-Type: text/html; charset=utf-8');
-        echo '<!DOCTYPE html><html><head><title>Forbidden</title></head><body style="font-family:sans-serif;background:#0b0e14;color:#e5534b;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">';
-        echo '<div style="text-align:center;max-width:520px;padding:1rem"><h1>Access Denied</h1><p style="color:#7a8194">' . htmlspecialchars($denyMessage, ENT_QUOTES, 'UTF-8') . '<br><br>Delete <code>fresh_install.php</code> from the server for security, or run it from the CLI if you really intend to wipe and reinitialise.</p></div>';
-        echo '</body></html>';
-        exit(1);
     }
 }
 
@@ -206,24 +194,17 @@ try {
 }
 
 // ─── Step 5: Create default admin user ───────────────────────────────────
-// Generate a random initial password instead of hard-coding one.  The previous
-// fixed default ("admin123!") meant any operator who forgot to delete this
-// script — or to change the password on first login — was exposing a known
-// credential to the world.  Random + printed once = the operator must record
-// it before continuing.
 $adminUser = 'admin';
+$adminPass = 'admin123!';
 $adminDisplay = 'Administrator';
-$randomPart = bin2hex(random_bytes(8)); // 16 hex chars
-$adminPass = 'cfc!' . $randomPart;       // e.g. cfc!9f3a8b1c2d4e5f60
 
 $hash = password_hash($adminPass, PASSWORD_BCRYPT, ['cost' => 12]);
 try {
     DB::execute(
-        'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
-        [$adminUser, $hash, $adminDisplay]
+        'INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, :p3)',
+        [$adminUser, $hash, $adminDisplay, 'admin']
     );
-    out("Admin user created — username: $adminUser", 'ok');
-    out("INITIAL PASSWORD (record this NOW; it will not be shown again): $adminPass", 'warn');
+    out("Admin user created — username: $adminUser / password: $adminPass", 'ok');
 } catch (Exception $e) {
     out('Could not create admin user: ' . $e->getMessage(), 'error');
     if (!$isCli) { renderWeb($webOutput); }
@@ -253,8 +234,8 @@ out('');
 out('=== Setup complete! ===', 'ok');
 out('');
 out('Next steps:');
-out("  1. Log in with username: admin / password: $adminPass");
-out('  2. CHANGE your password in Settings > Admin Users immediately');
+out('  1. Log in with username: admin / password: admin123!');
+out('  2. Change your password in Settings > Admin Users');
 out('  3. Configure your CenterEdge API connection in Settings');
 out('  4. DELETE this file (fresh_install.php) — it is a security risk!');
 

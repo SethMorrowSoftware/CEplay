@@ -52,7 +52,6 @@ if ($isHttps) {
 }
 // Content-Security-Policy: restrict sources; unsafe-inline required for the
 // inline APP_CONFIG <script> block injected by the SPA shell.
-// cdn.jsdelivr.net is allowed for Chart.js (loaded for the games analytics dashboard).
 header(
     "Content-Security-Policy: " .
     "default-src 'self'; " .
@@ -98,34 +97,24 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
         require_once __DIR__ . '/lib/centeredge_client.php';
         require_once __DIR__ . '/lib/scheduler.php';
 
-        // Tier 1: targeted expired-override enforcement (fast — cache-only unless change needed)
-        try {
-            Scheduler::enforceExpiredOverrides(300);
-        } catch (Exception $e) {
-            error_log('Expired-override enforcement failed: ' . $e->getMessage());
-        }
+        // Both tiers run under the global scheduler lock so web-triggered
+        // enforcement never races the watchdog / at-jobs on the state cache
+        // and CenterEdge PATCHes. Short wait only: if the lock is busy, skip
+        // quietly — the watchdog re-covers this ground within a minute, and
+        // an API request must not stall behind a long action phase.
+        if (Scheduler::acquireLock(2)) {
+            try {
+                // Tier 1: targeted expired-override enforcement (fast — cache-only unless change needed)
+                try {
+                    Scheduler::enforceExpiredOverrides(300);
+                } catch (Exception $e) {
+                    error_log('Expired-override enforcement failed: ' . $e->getMessage());
+                }
 
-        // Tier 2: full enforcement (throttled to avoid hammering CenterEdge).
-        // The throttle period is configurable via Settings → Safety Nets.
-        $tier2Throttle = (int)(DB::getConfig('tier2_throttle_seconds') ?? 60);
-        $tier2Throttle = max(15, min(3600, $tier2Throttle));
-        $missedCheckFile = __DIR__ . '/data/.last_missed_check';
-        $throttleFh = @fopen($missedCheckFile, 'c');
-        if ($throttleFh && flock($throttleFh, LOCK_EX | LOCK_NB)) {
-            $mtime = @filemtime($missedCheckFile) ?: 0;
-            if ((time() - $mtime) >= $tier2Throttle) {
-                @touch($missedCheckFile);
-                // Run inside the scheduler lock so this HTTP-driven safety
-                // net doesn't race the watchdog cron / at-jobs / the
-                // operator-side manual buttons that all touch the same
-                // upstream state. If the lock is contended we skip — the
-                // watchdog runs every minute and will catch up shortly.
-                // executeMissedActions and enforceCurrentStates each
-                // re-acquire the lock internally too; flock() is a no-op
-                // when held by the same fd in the same process, so the
-                // outer wrapper just guarantees we don't enter the slow
-                // path while another worker is mid-flight.
-                Scheduler::withSchedulerLock(function () {
+                // Tier 2: full enforcement (throttled to avoid hammering CenterEdge)
+                $missedCheckFile = __DIR__ . '/data/.last_missed_check';
+                if (!file_exists($missedCheckFile) || (time() - filemtime($missedCheckFile)) >= 15) {
+                    @touch($missedCheckFile);
                     try {
                         Scheduler::executeMissedActions();
                     } catch (Exception $e) {
@@ -136,12 +125,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                     } catch (Exception $e) {
                         error_log('State enforcement failed: ' . $e->getMessage());
                     }
-                }, /*waitSec*/ 2, /*skipOnContention*/ true);
+                }
+            } finally {
+                Scheduler::releaseLock();
             }
-            flock($throttleFh, LOCK_UN);
-        }
-        if ($throttleFh) {
-            fclose($throttleFh);
         }
     }
     date_default_timezone_set($__savedTz);
@@ -218,9 +205,17 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/users.php';
                 handleUsers($method, $parts, $input);
                 break;
+            case 'roles':
+                require_once __DIR__ . '/api/roles.php';
+                handleRoles($method, $parts, $input);
+                break;
             case 'capabilities':
                 require_once __DIR__ . '/api/capabilities.php';
                 handleCapabilities($method, $parts, $input);
+                break;
+            case 'analytics':
+                require_once __DIR__ . '/api/analytics.php';
+                handleAnalytics($method, $parts, $input);
                 break;
             case 'health':
                 handleHealthCheck();
@@ -252,31 +247,12 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
 }
 
 /**
- * Health check endpoint.
- *
- * Public surface (unauthenticated): minimal liveness — overall status,
- * heartbeat ages, and a single "degraded" boolean. Anything that could
- * help an attacker (specific error messages, install.php-still-present
- * warnings, retry counts, exact failure reasons) requires a logged-in
- * session. This keeps the endpoint useful for external monitoring while
- * not leaking operational detail to anonymous probes.
- *
- * Authenticated callers see the full payload.
+ * Health check endpoint (no auth required).
+ * Reports cron heartbeat status so operators can detect if scheduling is alive.
  */
 function handleHealthCheck(): void {
-    $isAuthed = (Auth::check() !== null);
-
     $dataDir = dirname(DB_PATH);
-    $status = [
-        'status' => 'ok',
-        'cron' => null,
-        'watchdog' => null,
-        'database' => false,
-        'centeredge' => null,
-        'retries' => null,
-        'caches' => null,
-    ];
-    $degradedReasons = [];
+    $status = ['status' => 'ok', 'cron' => null, 'watchdog' => null, 'database' => false];
 
     // Check database connectivity
     try {
@@ -284,7 +260,6 @@ function handleHealthCheck(): void {
         $status['database'] = true;
     } catch (Exception $e) {
         $status['status'] = 'degraded';
-        $degradedReasons[] = 'database unreachable';
     }
 
     // Check cron heartbeat
@@ -300,12 +275,10 @@ function handleHealthCheck(): void {
         ];
         if ($age >= 90000) {
             $status['status'] = 'degraded';
-            $degradedReasons[] = 'daily cron has not run in 25h';
         }
     } else {
         $status['cron'] = ['last_run' => null, 'healthy' => false];
         $status['status'] = 'degraded';
-        $degradedReasons[] = 'daily cron has never run';
     }
 
     // Check watchdog heartbeat
@@ -321,194 +294,44 @@ function handleHealthCheck(): void {
         ];
         if ($age >= 180) {
             $status['status'] = 'degraded';
-            $degradedReasons[] = 'per-minute watchdog has not run in 3 min';
         }
     } else {
         $status['watchdog'] = ['last_run' => null, 'healthy' => false];
         $status['status'] = 'degraded';
-        $degradedReasons[] = 'watchdog has never run';
     }
 
-    // CenterEdge upstream health
+    // Security warnings for operators
+    $warnings = [];
+    // Transaction-feed backlog: set by pollGameTransactions when the per-cycle
+    // page cap is hit with pages still full (feed producing faster than we
+    // drain — e.g. catching up after an outage). Cleared automatically.
     try {
-        require_once __DIR__ . '/lib/centeredge_client.php';
-        $ceHealth = CenterEdgeClient::getUpstreamHealth();
-        $breakerOpenSince = CenterEdgeClient::circuitBreakerOpenSince();
-        $ceHealth['breaker_open_since'] = $breakerOpenSince;
-        $status['centeredge'] = $ceHealth;
-        if (!empty($ceHealth['degraded'])) {
-            $status['status'] = 'degraded';
-            $msg = 'CenterEdge upstream degraded';
-            if (!empty($ceHealth['consecutive_failures'])) {
-                $msg .= ' (' . $ceHealth['consecutive_failures'] . ' consecutive failures)';
-            }
-            $degradedReasons[] = $msg;
+        $backlogSince = DB::getConfig('game_tx_backlog_default');
+        if ($backlogSince) {
+            // Advisory only (no status downgrade): the app functions normally
+            // during a catch-up; only recent-plays reporting lags.
+            $warnings[] = 'Game-play transaction feed is backlogged (since ' . $backlogSince
+                . ' UTC). Recent-plays data may lag until the poll catches up.';
         }
     } catch (Exception $e) {
-        $status['centeredge'] = ['error' => 'unavailable'];
+        // Health check must never fail on a config read
     }
-
-    // Retry queue depth: how many assets are stuck waiting for the watchdog?
-    // Useful as an operator-visible signal that something has been failing
-    // upstream long enough to accumulate state.
-    try {
-        $rqRow = DB::queryOne(
-            'SELECT
-               COUNT(*) AS pending,
-               SUM(CASE WHEN gave_up_at IS NOT NULL THEN 1 ELSE 0 END) AS gave_up,
-               MIN(created_at) AS oldest_created_at
-             FROM action_retries'
-        );
-        $pending = $rqRow ? (int)($rqRow['pending'] ?? 0) : 0;
-        $gaveUp = $rqRow ? (int)($rqRow['gave_up'] ?? 0) : 0;
-        $oldest = $rqRow ? ($rqRow['oldest_created_at'] ?? null) : null;
-        $oldestAge = null;
-        if ($oldest) {
-            $ts = strtotime($oldest . ' UTC');
-            if ($ts !== false) $oldestAge = max(0, time() - $ts);
-        }
-        $status['retries'] = [
-            'pending'        => $pending,
-            'gave_up'        => $gaveUp,
-            'active'         => max(0, $pending - $gaveUp),
-            'oldest_age_seconds' => $oldestAge,
-        ];
-        if ($gaveUp > 0) {
-            $status['status'] = 'degraded';
-            $degradedReasons[] = "$gaveUp asset(s) gave up after retry exhaustion";
-        }
-    } catch (Exception $e) {
-        $status['retries'] = ['error' => 'unavailable'];
+    if (file_exists(__DIR__ . '/install.php')) {
+        $warnings[] = 'install.php is still web-accessible. Remove or block it in your web server config.';
     }
-
-    // Cache freshness — surfaces "we're running on stale data"
-    try {
-        $gameOldest = DB::queryOne('SELECT MIN(last_synced_at) AS oldest, COUNT(*) AS n FROM game_state_cache');
-        $kioskOldest = DB::queryOne('SELECT MIN(last_synced_at) AS oldest, COUNT(*) AS n FROM kiosk_state_cache');
-        $catFetched = DB::getConfig('categories_cache_at');
-
-        $status['caches'] = [
-            'games'      => formatCacheStat($gameOldest),
-            'kiosks'     => formatCacheStat($kioskOldest),
-            'categories' => $catFetched ? [
-                'fetched_at'  => $catFetched,
-                'age_seconds' => max(0, time() - (strtotime($catFetched . ' UTC') ?: time())),
-            ] : null,
-        ];
-    } catch (Exception $e) {
-        $status['caches'] = ['error' => 'unavailable'];
+    if (file_exists(__DIR__ . '/fresh_install.php')) {
+        $warnings[] = 'fresh_install.php is still present. Delete it — it contains default credentials.';
     }
-
-    // Game-transaction polling lag — how long since the watchdog last
-    // ingested a transaction page? If this grows unbounded the live activity
-    // feed and Top Games widgets will go stale.
-    try {
-        $lastTx = DB::queryOne('SELECT MAX(fetched_at) AS last_at FROM game_play_transactions');
-        $lastAt = $lastTx ? ($lastTx['last_at'] ?? null) : null;
-        $lagSec = null;
-        if ($lastAt) {
-            $ts = strtotime($lastAt . ' UTC');
-            if ($ts !== false) $lagSec = max(0, time() - $ts);
-        }
-        $status['polling'] = [
-            'transactions' => [
-                'last_fetched_at'  => $lastAt,
-                'lag_seconds'      => $lagSec,
-            ],
-        ];
-        // Only flag as degraded if the watchdog is healthy (otherwise the
-        // watchdog banner already explains why polling stopped).
-        if ($status['watchdog'] && !empty($status['watchdog']['healthy'])
-            && $lagSec !== null && $lagSec > 1800) { // 30 min
-            $status['status'] = 'degraded';
-            $degradedReasons[] = 'transaction feed poll lag exceeds 30 min';
-        }
-    } catch (Exception $e) {
-        $status['polling'] = ['error' => 'unavailable'];
+    if (defined('APP_DEBUG') && APP_DEBUG) {
+        $warnings[] = 'APP_DEBUG is enabled. Disable it for production (unset PG_APP_DEBUG or set to false).';
     }
-
-    // Recent error rate from action_log (last hour). Useful as a quick
-    // "is something failing right now?" signal that doesn't depend on
-    // upstream-call counters (which only move when something tries the API).
-    try {
-        $sinceCutoff = gmdate('Y-m-d H:i:s', time() - 3600);
-        $errRow = DB::queryOne(
-            'SELECT
-               SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS errors,
-               COUNT(*) AS total
-             FROM action_log WHERE timestamp >= :p0',
-            [$sinceCutoff]
-        );
-        $status['errors_last_hour'] = [
-            'errors' => $errRow ? (int)($errRow['errors'] ?? 0) : 0,
-            'total'  => $errRow ? (int)($errRow['total'] ?? 0) : 0,
-        ];
-    } catch (Exception $e) {
-        $status['errors_last_hour'] = ['error' => 'unavailable'];
-    }
-
-    if (!empty($degradedReasons) && $isAuthed) {
-        $status['degraded_reasons'] = $degradedReasons;
-    }
-
-    // Security warnings for operators (only visible to authenticated sessions
-    // so an anonymous probe can't learn that install.php is still around).
-    if ($isAuthed) {
-        $warnings = [];
-        if (file_exists(__DIR__ . '/install.php')) {
-            $warnings[] = 'install.php is still web-accessible. Remove or block it in your web server config.';
-        }
-        if (file_exists(__DIR__ . '/fresh_install.php')) {
-            $warnings[] = 'fresh_install.php is still present. Delete it — it contains default credentials.';
-        }
-        if (defined('APP_DEBUG') && APP_DEBUG) {
-            $warnings[] = 'APP_DEBUG is enabled. Disable it for production (unset PG_APP_DEBUG or set to false).';
-        }
-        if (!empty($warnings)) {
-            $status['warnings'] = $warnings;
-        }
-    }
-
-    // Strip detail-rich fields from the unauthenticated public surface.
-    // Keep: overall status, heartbeat ages, degraded boolean. Drop: error
-    // messages, retry counts, cache details, polling lag. External monitors
-    // see "is this thing alive?" — operators see "what's wrong?".
-    if (!$isAuthed) {
-        if (is_array($status['centeredge'] ?? null)) {
-            $status['centeredge'] = [
-                'degraded' => !empty($status['centeredge']['degraded']),
-            ];
-        }
-        unset(
-            $status['retries'],
-            $status['caches'],
-            $status['polling'],
-            $status['errors_last_hour']
-        );
+    if (!empty($warnings)) {
+        $status['warnings'] = $warnings;
     }
 
     $httpCode = $status['status'] === 'ok' ? 200 : 503;
     http_response_code($httpCode);
     echo json_encode($status);
-}
-
-/**
- * Helper: format a cache freshness row {oldest, n} into the shape the
- * /api/health response expects. Used for game_state_cache and kiosk_state_cache.
- */
-function formatCacheStat(?array $row): ?array {
-    if (!$row) return null;
-    $oldest = $row['oldest'] ?? null;
-    $n = (int)($row['n'] ?? 0);
-    if (!$oldest) {
-        return ['count' => $n, 'oldest_synced_at' => null, 'age_seconds' => null];
-    }
-    $ts = strtotime($oldest . ' UTC');
-    return [
-        'count'            => $n,
-        'oldest_synced_at' => $oldest,
-        'age_seconds'      => $ts !== false ? max(0, time() - $ts) : null,
-    ];
 }
 
 // ---------------------------------------------------
@@ -545,6 +368,13 @@ if (!$csrfToken) {
     $csrfToken = CSRF::generate();
 }
 $user = Auth::check();
+if ($user) {
+    // Resolved permission set for the client-side gates (nav, buttons,
+    // route guards). The server re-checks every call regardless.
+    $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+    $roles = Auth::getRoles();
+    $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
+}
 $userJson = $user ? json_encode($user) : 'null';
 $csrfJson = json_encode($csrfToken);
 $basePathJson = json_encode($basePath);
@@ -559,48 +389,16 @@ try {
 }
 $appTimezoneJson = json_encode($appTimezone);
 
-// UI polling intervals — read from DB with safe defaults so the JS modules
-// get the operator-configured values without an extra round-trip.
-$uiConfig = [
-    'uiPollDefaultMs'         => 30000,
-    'uiPollOverrideActiveMs'  => 10000,
-    'uiPollImminentMs'        => 5000,
-    'uiPollGamesAnalyticsMs'  => 30000,
-    'uiPollGamesFeedMs'       => 15000,
-    'uiPollOverridesMs'       => 15000,
-    'dashboardTopGamesLimit'  => 5,
-];
-try {
-    $uiMap = [
-        'uiPollDefaultMs'        => 'ui_poll_default_ms',
-        'uiPollOverrideActiveMs' => 'ui_poll_override_active_ms',
-        'uiPollImminentMs'       => 'ui_poll_imminent_ms',
-        'uiPollGamesAnalyticsMs' => 'ui_poll_games_analytics_ms',
-        'uiPollGamesFeedMs'      => 'ui_poll_games_feed_ms',
-        'uiPollOverridesMs'      => 'ui_poll_overrides_ms',
-        'dashboardTopGamesLimit' => 'dashboard_top_games_limit',
-    ];
-    foreach ($uiMap as $jsKey => $dbKey) {
-        $val = DB::getConfig($dbKey);
-        if ($val !== null) {
-            $uiConfig[$jsKey] = (int)$val;
-        }
-    }
-} catch (Exception $e) {
-    // Keep defaults on any DB error
-}
-$uiConfigJson = json_encode($uiConfig);
-
 
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0b0e14">
+    <meta name="theme-color" content="#0a0d14">
     <meta name="description" content="Castle Fun Center Management System - Game scheduling and automation">
     <title>Castle Fun Center - Management System</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b8def' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 21V9l3 2V7l3 2V6l3 2V5l3 2V8l3-1v4l3-2v12'/%3E%3Cpath d='M3 21h18M10 21v-5h4v5'/%3E%3C/svg%3E">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken) ?>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -624,17 +422,13 @@ $uiConfigJson = json_encode($uiConfig);
     </noscript>
 
     <script>
-        window.APP_CONFIG = Object.assign({
+        window.APP_CONFIG = {
             basePath: <?= $basePathJson ?>,
             csrfToken: <?= $csrfJson ?>,
             user: <?= $userJson ?>,
             timezone: <?= $appTimezoneJson ?>
-        }, <?= $uiConfigJson ?>);
+        };
     </script>
-    <!-- Chart.js (used by the Games analytics dashboard). Pinned to a specific
-         minor version so a future CDN release can't silently break the page. -->
-    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js"
-            crossorigin="anonymous"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/api.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/app.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/login.js"></script>
@@ -647,5 +441,8 @@ $uiConfigJson = json_encode($uiConfig);
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/overrides.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/logs.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/settings.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/analytics.js"></script>
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/performance.js"></script>
 </body>
 </html>

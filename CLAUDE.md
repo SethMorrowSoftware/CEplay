@@ -24,9 +24,9 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, groups, kiosks, schedules, overrides, logs, users, capabilities)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, kiosks, schedules, overrides, analytics, logs, users, capabilities)
 lib/          — 7 core libraries
-public/js/    — Vanilla JS modules (api, app, login, dashboard, groups, kiosks, schedules, overrides, logs, settings)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, logs, settings)
 public/css/   — Dark/light theme stylesheet
 data/         — Runtime: SQLite DB, locks, heartbeats, logs (gitignored)
 docs/         — Internal docs: security audit, CenterEdge API reference (HTML + OpenAPI YAML)
@@ -39,6 +39,20 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - Parameterized queries use positional `:p0, :p1, ...` placeholders
 - Schema auto-initializes on first DB access (CREATE TABLE IF NOT EXISTS)
 - Migrations via ALTER TABLE in try/catch for backward compat
+
+### Reporting & Analytics
+- Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
+  for the live feed, per-game drill-downs, and hourly reporting.
+- `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
+  aggregates the raw feed into the permanent per-game, per-day `game_daily_stats`
+  table, so month/year performance history survives indefinitely. CenterEdge has
+  no reporting API — all aggregation is done locally.
+- Reporting endpoints (`GET /api/analytics/games`, `GET /api/analytics/game`)
+  stitch the rollup (older days) with the raw feed (recent days) at a split
+  point safely inside raw retention, so totals are correct AND live. Same
+  `analytics` role gate + cash/revenue scrub the Analytics page uses (tech sees
+  plays/tickets, never dollars). Powers the Performance page
+  (Day/Week/Month/Year/Custom, searchable, with prior-period comparison).
 
 ### API Pattern
 - API handlers are loaded via `require_once` from `index.php` which pre-loads `db.php`, `auth.php`, `csrf.php`, `crypto.php`
@@ -58,7 +72,11 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - Priority: manual override > schedule override > recurring schedule
 - `planDay()` computes transition points, resolves conflicts, deduplicates
 - Missed-action optimization: only latest per group executed, earlier superseded (status 3)
-- Concurrency via file lock (flock). Different retry strategies per script.
+- Concurrency via ONE global scheduler lock (`Scheduler::acquireLock()/releaseLock()`,
+  re-entrant per process). cron.php, cron_watchdog.php, run_action.php AND the web
+  entry points (manual actions, per-request enforcement) all take it — never
+  fopen/flock LOCK_FILE directly. The watchdog holds it only for its action
+  phase and releases before the slow transaction poll.
 - `executeStateChange()` patches both games AND kiosks for a group in one
   invocation — kiosks share the GameOperationStatus enum (enabled/paused/outOfService).
   Kiosk patching is best-effort; failure does not roll back game changes.
@@ -71,6 +89,20 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - Encryption at rest: AES-256-CBC + HMAC-SHA256 for API credentials
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
+- Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 9 keys incl.
+  view_revenue, manual_control). `Auth::hasPermission()/canAccess()` resolve
+  through the user's role; admin bypasses and is locked against edit/delete.
+  The client gets the resolved permission list injected into
+  `APP_CONFIG.user.permissions` (and login/status responses) —
+  `App.canAccess()` reads it (LEGACY_ACCESS fallback for stale sessions).
+  Non-admins can only assign roles whose permissions are a subset of their
+  own (`Auth::canAssignRole`). Unknown role slugs resolve to ZERO permissions.
+- Sessions re-validate role + is_active from the DB every ~60s, so role
+  changes / deactivation / deletion apply without waiting for re-login.
+- Admin accounts can only be modified/deleted by admins; last-admin
+  demotion/deactivation/deletion is blocked. Card PIN checks are
+  audit-logged and rate-limited (15 / 10 min per user).
 
 ### Testing
 - No automated test suite

@@ -4,7 +4,7 @@
  * Run once per day (recommended: 00:05).
  *
  * Usage: php cron.php
- * Crontab: 5 0 * * * /usr/bin/php /var/www/html/ce/pause-groups-main/cron.php >> /var/www/html/ce/pause-groups-main/data/cron.log 2>&1
+ * Crontab: 5 0 * * * /usr/bin/php /path/to/app/cron.php >> /path/to/app/data/cron.log 2>&1
  */
 
 // CLI-only guard
@@ -25,67 +25,12 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire a "daily-cron is running" lock. This prevents two concurrent
-// invocations of cron.php (e.g. from a manual run + the scheduled cron),
-// but is *separate* from the LOCK_FILE used during the planning section.
-// We deliberately do NOT hold LOCK_FILE during the long upstream data-sync
-// phase — those are idempotent SQLite writes that don't need exclusion from
-// run_action.php / replanToday(). Only the planning section (which mutates
-// scheduled_actions) takes LOCK_FILE.
-//
-// Stale-lock recovery: this script only runs once per day (00:05 UTC via
-// systemd timer). A "lock contended" outcome is therefore almost always a
-// stale fd left behind by a crashed/killed prior run, not a genuine overlap.
-// We retry briefly, then steal the lock with a loud log line so a real
-// problem is visible without leaving the daily planner wedged for days.
-$cronOwnLock = LOCK_FILE . '.daily';
-$cronLockFh = null;
-$lockAcquired = false;
-
-for ($attempt = 1; $attempt <= 4; $attempt++) {
-    $cronLockFh = @fopen($cronOwnLock, 'c');
-    if (!$cronLockFh) {
-        echo "[" . date('c') . "] Could not open daily cron lock file (attempt $attempt). Exiting.\n";
-        exit(1);
-    }
-    if (flock($cronLockFh, LOCK_EX | LOCK_NB)) {
-        $lockAcquired = true;
-        break;
-    }
-    fclose($cronLockFh);
-    $cronLockFh = null;
-
-    if ($attempt < 4) {
-        echo "[" . date('c') . "] Daily lock contended (attempt $attempt/4) — retrying in 10s...\n";
-        sleep(10);
-    }
-}
-
-if (!$lockAcquired) {
-    // Lock has been busy for ~30s. The daily timer fires at most once per day
-    // and a real prior invocation finishes well under a minute, so this is
-    // almost certainly a leaked fd from a long-dead PHP-FPM worker or a
-    // killed container. Steal it: delete and recreate, then re-acquire.
-    // Log loudly so the operator sees this happened (and so we can diagnose
-    // a recurring leak source if it shows up again).
-    echo "[" . date('c') . "] WARNING: daily lock has been contended for 30s — assuming stale, breaking it.\n";
-    error_log('cron.php: breaking apparently-stale .scheduler.lock.daily after 30s of contention');
-
-    @unlink($cronOwnLock);
-    $cronLockFh = @fopen($cronOwnLock, 'c');
-    if (!$cronLockFh) {
-        echo "[" . date('c') . "] Could not recreate daily lock file after stale-break. Exiting.\n";
-        exit(1);
-    }
-    if (!flock($cronLockFh, LOCK_EX | LOCK_NB)) {
-        // Still contended after delete+recreate? That means a real concurrent
-        // process is actively holding it RIGHT NOW (between our unlink and
-        // fopen). Bail out — better to skip a day than to double-plan.
-        echo "[" . date('c') . "] Daily lock still contended after stale-break — a real concurrent run exists. Exiting.\n";
-        fclose($cronLockFh);
-        exit(0);
-    }
-    $lockAcquired = true;
+// Acquire the global scheduler lock (non-blocking — skip if another instance
+// is running). Uses the shared re-entrant helper so nested Scheduler calls
+// (e.g. replanToday) don't deadlock against our own lock.
+if (!Scheduler::acquireLock(0)) {
+    echo "[" . date('c') . "] Another instance is already running. Exiting.\n";
+    exit(0);
 }
 
 try {
@@ -97,8 +42,6 @@ try {
     echo "[" . date('c') . "] === Daily Plan for $today (TZ: $tz) ===\n";
 
     // Step 1: Sync game states from CenterEdge
-    // No global lock here: the watchdog and run_action.php are free to keep
-    // executing during the (potentially multi-second) data-sync calls.
     echo "Syncing game states from CenterEdge...\n";
     try {
         $count = Scheduler::syncGameStates();
@@ -118,91 +61,60 @@ try {
         echo "  Note: kiosk sync skipped — " . $e->getMessage() . "\n";
     }
 
-    // Step 1c: Refresh the cached categories list. The Groups editor reads
-    // this on every open, so keeping it warm here saves a paginated upstream
-    // call on each admin session.
-    echo "Refreshing game categories cache...\n";
+    // Step 2: Execute any missed actions from earlier
+    echo "Checking for missed actions...\n";
+    Scheduler::executeMissedActions($today);
+
+    // Step 3: Plan today's actions
+    echo "Planning actions for $today...\n";
+    $actions = Scheduler::planDay($today);
+    echo "  Planned " . count($actions) . " actions:\n";
+    foreach ($actions as $a) {
+        echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
+    }
+
+    // Step 4: Queue at jobs (if available on this host)
+    echo "Queuing at jobs (or fallback mode if at/atrm unavailable)...\n";
+    Scheduler::queueAtJobs($today);
+    echo "  Done.\n";
+
+    // Step 5: Roll up the raw play feed into the permanent per-game daily
+    // summary BEFORE purging. This is what makes month/year reporting possible
+    // — the raw feed is only kept for a short window, but game_daily_stats is
+    // retained indefinitely.
+    echo "Rolling up daily game stats...\n";
+    $rollupOk = false;
     try {
-        $client = new CenterEdgeClient();
-        if ($client->isConfigured()) {
-            $categories = $client->getCategoriesCached(/*forceRefresh*/ true);
-            echo "  Cached " . count($categories) . " categories.\n";
-        } else {
-            echo "  Skipped: CenterEdge API is not configured.\n";
-        }
+        $rollup = Scheduler::rollupDailyStats();
+        $rollupOk = true;
+        echo "  Rolled up {$rollup['days_recomputed']} days, {$rollup['rows_written']} game-day rows.\n";
     } catch (Exception $e) {
-        echo "  WARNING: Categories refresh failed: " . $e->getMessage() . "\n";
+        echo "  WARNING: Daily rollup failed: " . $e->getMessage() . "\n";
     }
 
-    // -------- Planning section (takes the shared scheduler lock briefly) --------
-    // Acquire LOCK_FILE only here so run_action.php / replanToday() can't
-    // race with us while we mutate scheduled_actions. Opens with a short
-    // blocking retry; if we genuinely can't acquire it within ~30s, we skip
-    // planning rather than deadlock — the watchdog will pick up later actions.
-    $planLockFh = fopen(LOCK_FILE, 'c');
-    $planLockHeld = false;
-    if ($planLockFh) {
-        for ($i = 0; $i < 30; $i++) {
-            if (flock($planLockFh, LOCK_EX | LOCK_NB)) {
-                $planLockHeld = true;
-                break;
-            }
-            sleep(1);
-        }
-    }
-    if (!$planLockHeld) {
-        echo "[" . date('c') . "] WARNING: could not acquire planning lock after 30s — skipping planning section.\n";
+    // Step 6: Purge old data to prevent unbounded growth. Skip purging the raw
+    // play feed if the rollup failed — purging would delete raw rows that never
+    // made it into the permanent summary, silently losing reporting history.
+    // The other retention sweeps (logs, executed actions, expired overrides)
+    // are independent of the rollup and still run.
+    if (!$rollupOk) {
+        echo "Purging old data (raw play feed retained — rollup failed)...\n";
     } else {
-        // Tell the Scheduler that the LOCK_FILE is already held by this
-        // process, so nested withSchedulerLock() calls inside planDay /
-        // executeMissedActions / queueAtJobs won't try to re-acquire on
-        // a competing fd and silently skip.
-        Scheduler::declareLockHeld();
-        try {
-            // Step 2: Execute any missed actions from earlier
-            echo "Checking for missed actions...\n";
-            Scheduler::executeMissedActions($today);
-
-            // Step 3: Plan today's actions
-            echo "Planning actions for $today...\n";
-            $actions = Scheduler::planDay($today);
-            echo "  Planned " . count($actions) . " actions:\n";
-            foreach ($actions as $a) {
-                echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
-            }
-
-            // Step 4: Queue at jobs (if available on this host)
-            echo "Queuing at jobs (or fallback mode if at/atrm unavailable)...\n";
-            Scheduler::queueAtJobs($today);
-            echo "  Done.\n";
-        } finally {
-            Scheduler::declareLockReleased();
-            flock($planLockFh, LOCK_UN);
-            fclose($planLockFh);
-        }
+        echo "Purging old data...\n";
     }
-
-    // Step 5: Purge old data to prevent unbounded growth
-    echo "Purging old data...\n";
     try {
-        // Read retention periods from settings (configurable via Settings page).
-        $retActionLog    = max(7,   min(3650, (int)(DB::getConfig('retention_action_log_days')          ?? 90)));
-        $retActions      = max(1,   min(365,  (int)(DB::getConfig('retention_scheduled_actions_days')   ?? 30)));
-        $retOverrides    = max(7,   min(3650, (int)(DB::getConfig('retention_overrides_days')           ?? 90)));
-        $retTransactions = max(30,  min(3650, (int)(DB::getConfig('retention_transactions_days')        ?? 395)));
-
-        $purged = Scheduler::purgeOldData($retActionLog, $retActions, $retOverrides, $retTransactions);
+        // A very large retention effectively disables the raw-feed purge for
+        // this run without affecting the other sweeps.
+        $purged = $rollupOk ? Scheduler::purgeOldData() : Scheduler::purgeOldData(90, 30, 90, 100000);
         echo "  Purged: {$purged['action_log_purged']} log entries, "
             . "{$purged['scheduled_actions_purged']} old actions, "
             . "{$purged['overrides_purged']} expired overrides, "
             . "{$purged['game_plays_purged']} old game plays.\n";
-        echo "  Retention: action_log={$retActionLog}d, actions={$retActions}d, "
-            . "overrides={$retOverrides}d, transactions={$retTransactions}d.\n";
     } catch (Exception $e) {
         echo "  WARNING: Data purge failed: " . $e->getMessage() . "\n";
     }
 
-    // Step 6: Rotate log files (keep last ~256KB when file exceeds 512KB)
+    // Step 7: Rotate log files (keep last ~256KB when file exceeds 512KB)
     foreach (['cron.log', 'watchdog.log'] as $logName) {
         $logPath = $dataDir . '/' . $logName;
         if (file_exists($logPath) && filesize($logPath) > 512000) {
@@ -221,7 +133,7 @@ try {
         }
     }
 
-    // Step 7: Write heartbeat for external monitoring
+    // Step 8: Write heartbeat for external monitoring
     Scheduler::writeHeartbeat('cron');
 
     echo "[" . date('c') . "] === Daily plan complete ===\n\n";
@@ -245,6 +157,5 @@ try {
 
     exit(1);
 } finally {
-    flock($cronLockFh, LOCK_UN);
-    fclose($cronLockFh);
+    Scheduler::releaseLock();
 }

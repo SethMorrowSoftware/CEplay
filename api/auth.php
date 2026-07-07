@@ -22,7 +22,7 @@ function handleAuth(string $method, array $parts, ?array $input): void {
             // Rate-limit check before touching credentials
             $clientIp = getClientIp();
             if (Auth::isRateLimited($clientIp)) {
-                DB::auditLog('auth', 'login_rate_limited', null, ['ip' => $clientIp, 'username' => $input['username'] ?? null]);
+                DB::auditLog('auth', 'login_rate_limited', null, ['ip' => $clientIp, 'username' => $input['username'] ?? null], false);
                 http_response_code(429);
                 header('Retry-After: 900');
                 echo json_encode(['error' => 'Too many failed login attempts. Please wait 15 minutes before trying again.']);
@@ -35,14 +35,19 @@ function handleAuth(string $method, array $parts, ?array $input): void {
             $user = Auth::login($username, $password, $clientIp);
             if ($user) {
                 Auth::clearLoginAttempts($clientIp);
-                DB::auditLog('auth', 'login_success', null, ['username' => $username, 'ip' => $clientIp]);
+                DB::auditLog('auth', 'login_success', null, ['username' => $username, 'role' => $user['role'] ?? null, 'ip' => $clientIp]);
+                // Resolved permission set rides along so the client can gate
+                // nav/UI without a hardcoded role→area map.
+                $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+                $roles = Auth::getRoles();
+                $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
                 echo json_encode([
                     'user'       => $user,
                     'csrf_token' => CSRF::getToken(),
                 ]);
             } else {
                 Auth::recordFailedAttempt($clientIp);
-                DB::auditLog('auth', 'login_failed', null, ['username' => $username, 'ip' => $clientIp]);
+                DB::auditLog('auth', 'login_failed', null, ['username' => $username, 'ip' => $clientIp], false);
                 error_log("Failed login attempt for user '$username' from IP $clientIp");
                 http_response_code(401);
                 echo json_encode(['error' => 'Invalid username or password.']);
@@ -55,17 +60,7 @@ function handleAuth(string $method, array $parts, ?array $input): void {
                 echo json_encode(['error' => 'Method not allowed']);
                 return;
             }
-            // Snapshot the actor before destroying the session so the audit
-            // entry has a user attached. Auth::check() reads $_SESSION which
-            // logout() blanks immediately after.
-            $sessionUser = Auth::check();
-            $actorId = $sessionUser['id'] ?? null;
-            $actorName = $sessionUser['username'] ?? null;
             Auth::logout();
-            DB::auditLog('auth', 'logout', $actorId, [
-                'username' => $actorName,
-                'ip' => getClientIp(),
-            ]);
             echo json_encode(['success' => true]);
             break;
 
@@ -76,6 +71,11 @@ function handleAuth(string $method, array $parts, ?array $input): void {
                 return;
             }
             $user = Auth::check();
+            if ($user) {
+                $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+                $roles = Auth::getRoles();
+                $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
+            }
             echo json_encode([
                 'authenticated' => $user !== null,
                 'user'          => $user,

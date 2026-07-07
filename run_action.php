@@ -31,32 +31,13 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire lock with retry (blocking, but with timeout)
-$lockFile = fopen(LOCK_FILE, 'c');
-if (!$lockFile) {
-    $msg = "[" . date('c') . "] Could not open lock file: " . LOCK_FILE . "\n";
-    echo $msg;
-    error_log($msg);
+// Acquire the global scheduler lock (blocking with a 60s timeout — an `at`
+// job may legitimately need to wait out a watchdog action phase). Uses the
+// shared re-entrant helper so nested Scheduler calls don't deadlock.
+if (!Scheduler::acquireLock(60)) {
+    echo "[" . date('c') . "] Could not acquire scheduler lock after 60 seconds. Exiting.\n";
     exit(1);
 }
-$lockAcquired = false;
-for ($i = 0; $i < 12; $i++) { // Try for up to 60 seconds
-    if (flock($lockFile, LOCK_EX | LOCK_NB)) {
-        $lockAcquired = true;
-        break;
-    }
-    usleep(5000000); // 5 seconds
-}
-
-if (!$lockAcquired) {
-    echo "[" . date('c') . "] Could not acquire lock after 60 seconds. Exiting.\n";
-    fclose($lockFile);
-    exit(1);
-}
-
-// Tell Scheduler we already hold LOCK_FILE so nested withSchedulerLock()
-// calls don't fight a competing fd within this process.
-Scheduler::declareLockHeld();
 
 try {
     // Load timezone
@@ -99,7 +80,5 @@ try {
 
     exit(1);
 } finally {
-    Scheduler::declareLockReleased();
-    flock($lockFile, LOCK_UN);
-    fclose($lockFile);
+    Scheduler::releaseLock();
 }

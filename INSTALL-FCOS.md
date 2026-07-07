@@ -115,7 +115,7 @@ rebuilds while you're working on this. Clone it to a staging folder:
 
 ```bash
 cd /var/persist
-sudo git clone https://github.com/morroware/pause-groups.git pause-groups-src
+sudo git clone https://github.com/SethMorrowSoftware/NewCEPlay.git pause-groups-src
 ```
 
 > If the repo is private or on a different host, replace the URL with yours.
@@ -161,37 +161,32 @@ cd /var/persist/pause-groups-src
 sudo bash setup-fcos.sh
 ```
 
-The script will run through 13 steps with explanations at each one.
+The script will run through 12 steps with explanations at each one.
 Here's what to expect and what to do at each interactive point:
 
 ---
 
 #### Pre-flight checks (automatic)
 
-The script checks for Podman, `/var/persist`, internet access, OpenSSL, and
-`semanage` (the SELinux file-context tool) before doing anything. If `semanage`
-is missing, the script will layer `policycoreutils-python-utils` via
-`rpm-ostree` and prompt you to reboot once and re-run. All other failed checks
-will tell you exactly what's wrong and how to fix it. The script is safe to
-re-run.
+The script checks for Podman, `/var/persist`, internet access, and OpenSSL before
+doing anything. If any check fails, it will tell you exactly what's wrong and how
+to fix it. Fix the issue and re-run — the script is safe to re-run.
 
 ---
 
-#### Steps 1–5 (automatic, no input needed)
+#### Steps 1–4 (automatic, no input needed)
 
 - Copies app files to `/var/persist/pause-groups/`
 - Creates the data directory
 - Generates a random encryption key (saved to `/var/persist/pause-groups/.env`)
-- Configures Podman storage on `/var/persist/containers/storage` so container
-  layers can't fill the small root partition
 - Pulls the PHP-FPM container image from Docker Hub
 
-> **The image pull (step 5) takes 2–5 minutes** on first run — the image is
+> **The image pull (step 4) takes 2–5 minutes** on first run — the image is
 > about 450 MB. You'll see download progress bars. This is normal.
 
 ---
 
-#### Step 6 — The installer prompts
+#### Step 5 — The installer prompts
 
 Before the installer launches, the script prints a preview of every question.
 **Press Enter** when prompted to launch it.
@@ -220,14 +215,12 @@ If you type `y` for CenterEdge:
 
 ---
 
-#### Steps 7–12 (automatic, no input needed)
+#### Steps 6–11 (automatic, no input needed)
 
 - Fixes file ownership for the PHP-FPM container
 - Creates and starts the `pause-groups-fpm` systemd service
 - Creates systemd timers for the watchdog (every minute) and daily cron (00:05)
-- Removes `install.php` and `fresh_install.php` for security, caps the systemd
-  journal at 200 MB / 2-week retention, and installs a weekly Podman prune
-  timer that auto-removes unused image layers
+- Removes `fresh_install.php` for security
 - Generates the Nginx server block and saves it to a file
 - Verifies all services started correctly
 

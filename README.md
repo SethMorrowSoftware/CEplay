@@ -1,1027 +1,630 @@
-# Castle Fun Center — CEplay Management Console
+# Castle Fun Center - Pause Group Automation
 
-A self-hosted, framework-free PHP application for the Castle Fun Center
-arcade. CEplay sits between the venue's CenterEdge Card System API and a
-small admin team, giving floor staff a single dashboard to:
-
-- Pause and unpause **games** and **kiosks**, individually or in groups.
-- Run recurring weekly schedules and one-off date-bounded overrides.
-- Look up **player cards** (balance, transaction history, PIN probe).
-- Watch live **swipe activity** and per-game / per-category analytics.
-- Audit every administrative and scheduling action.
-
-The whole stack is PHP 7.4+ with vanilla JavaScript on the front end. No
-Composer, no npm, no build step — drop the files on a host with PHP and
-SQLite and it runs.
-
----
-
-## Table of contents
-
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [How CEplay talks to CenterEdge](#how-ceplay-talks-to-centeredge)
-- [Feature tour](#feature-tour)
-- [Architecture](#architecture)
-- [Configurable settings](#configurable-settings)
-- [Scheduling and enforcement](#scheduling-and-enforcement)
-- [Retry queue](#retry-queue)
-- [Database schema](#database-schema)
-- [API reference](#api-reference)
-- [CenterEdge integration](#centeredge-integration)
-- [Security](#security)
-- [Operations](#operations)
-- [Smoke testing checklist](#smoke-testing-checklist)
-- [Known limitations](#known-limitations)
-
----
+A self-hosted automation tool for the CenterEdge Card System: pause groups,
+schedule recurring active-hours, run one-off overrides, and now also pause
+kiosks alongside games. Built with PHP and vanilla JavaScript — no frameworks,
+no external dependencies.
 
 ## Requirements
 
-| Component | Why |
-|-----------|-----|
-| PHP 7.4 or newer (CLI + web SAPI) | Application runtime |
-| SQLite3 PHP extension | Embedded database with WAL journaling |
-| OpenSSL extension | AES-256-CBC + HMAC-SHA256 credential encryption |
-| cURL extension | CenterEdge HTTPS calls |
-| mbstring extension | UTF-8 input handling |
-| Apache, nginx, or `php -S` | Web server with PHP-FPM or built-in CLI server |
-| Cron daemon | Daily planner + per-minute watchdog (recommended) |
-| Linux `at` and `atrm` *(optional)* | Native per-action job queueing; see [Scheduling](#scheduling-and-enforcement) for the fallback |
+| Requirement | Purpose |
+|-------------|---------|
+| PHP 7.4+ | Runtime (CLI and web) |
+| SQLite3 extension | Embedded database |
+| OpenSSL extension | AES-256-CBC credential encryption with HMAC-SHA256 integrity |
+| mbstring extension | String handling in installer and runtime |
+| cURL extension | CenterEdge API communication |
+| Linux `at` + `atrm` (optional) | Native per-action job queueing; fallback mode works without these |
+| Apache or Nginx | Web server (with PHP-FPM or mod_php) |
+| Cron daemon (recommended) | Daily planning + per-minute watchdog execution |
 
-Tested on PHP 7.4 / 8.x. There is no Composer manifest — every dependency
-is in the PHP standard library.
+No Composer, no npm, no external PHP packages. Everything uses the PHP standard library.
 
----
+## Feature Modules
 
-## Quick start
+### Pause Groups (`#/groups`)
+- Define named groups of games and/or kiosks (by category and/or individual ID).
+- Recurring weekly schedules define active (unpaused) hours.
+- Override windows for one-off events (parties, maintenance) take priority over schedules.
+- Manual pause/unpause buttons on the dashboard with optimistic UI updates.
+- Watchdog cron + per-API-call safety nets enforce the desired state continuously.
 
-### 1. Lay down the files
+### Kiosks (`#/kiosks`)
+- Standalone page listing every kiosk reported by the CenterEdge `/kiosks` endpoint.
+- Per-kiosk Pause / Unpause / Out-of-service controls plus any RPC actions the
+  kiosk advertises in its `supportedActions` list (e.g. `reboot`).
+- Capabilities-aware: when the card system reports `kiosks.operationStatus = false`,
+  the pause/unpause controls are hidden and a banner explains why.
+- Kiosks can also be added to a pause group, where they'll be paused/unpaused
+  alongside the group's games via the same schedules and overrides.
+
+### Analytics (`#/analytics`)
+- Venue-wide KPI dashboard: plays, tickets, revenue, points, unique cards,
+  payment mix, with previous-period trend deltas.
+- Time-bucketed charts (hourly, day-of-week, daily), top-game leaderboards,
+  and automation-activity breakdowns (actions by source / outcome / group).
+- Range presets: Today / 7d / 30d / 90d / All / Custom.
+
+### Performance (`#/performance`)
+- Searchable per-game performance reporting over **Day / Week / Month / Year**
+  or a custom range, with period navigation and prior-period comparison.
+- Backed by the permanent `game_daily_stats` rollup (written nightly before
+  the raw-feed purge), stitched with the live raw feed for recent days —
+  month/year history survives indefinitely while "today" stays live.
+- Per-game drill-down modal with an hourly/daily/monthly trend chart.
+
+### Card Lookup (`#/cards`)
+- Read-only proxy for floor staff: card balance, time plays, privileges,
+  transaction history, and PIN probe/validate (rate-limited and audit-logged).
+
+### Roles & Permissions (custom RBAC)
+Access is controlled by **roles**, which are data — create and edit them in
+**Settings → Roles & Permissions**. Each role grants a set of permissions
+from a fixed catalog:
+
+| Permission | Grants |
+|------------|--------|
+| `analytics` | Analytics & Performance pages (plays/tickets) |
+| `view_revenue` | Cash/revenue figures in all reporting (scrubbed otherwise) |
+| `cards` | Card lookup: balances, transactions, PIN checks |
+| `manual_control` | Pause/unpause groups, kiosk & game actions, force syncs |
+| `overrides_manage` | Create/delete schedule overrides |
+| `groups_manage` | Create/edit/delete pause groups |
+| `schedules_manage` | Create/edit/delete schedules |
+| `settings` | CenterEdge API credentials, timezone |
+| `users` | User management (admin accounts always excluded) |
+
+Anything not in the catalog (dashboard, game/kiosk status views, action log)
+is open to every signed-in user.
+
+Three **system roles** are seeded and match the classic behavior: `admin`
+(everything — locked, cannot be edited or deleted), `manager` (all floor +
+reporting, no settings/users), `tech` (operations + settings/users, no sales
+data or structural editing). Manager/tech permissions can be tuned; custom
+roles (e.g. a view-only "Front Desk") can be added freely.
+
+Safety rails: only admins manage roles and admin accounts; the last active
+admin can never be demoted, deactivated, or deleted; non-admin users can only
+assign roles whose permissions are a **subset of their own** (no
+self-escalation); roles in use can't be deleted; unknown/corrupt role slugs
+resolve to zero permissions. Sessions re-validate every ~60s, so role and
+permission changes apply within a minute without re-login.
+
+## Hosting Compatibility
+
+Designed to run across common environments:
+
+- **cPanel / shared hosting** — PHP + SQLite + cron. If `at` is unavailable, schedules still execute through `cron_watchdog.php` (every minute) and the API-level missed-action safety net.
+- **VPS / dedicated Linux** — cron jobs plus `at`/`atrm` for precise native queueing.
+- **Raspberry Pi (Ubuntu Server)** — same as VPS; install `at` if desired.
+
+`at` improves execution precision to the exact scheduled minute. Without it, actions fire within 60 seconds via the watchdog cron or on the next API request via the built-in safety net.
+
+## Deployment Guides
+
+- `INSTALL-FCOS.md` — full Fedora CoreOS installation walkthrough.
+- `DEPLOY-CEPLAY.md` — coexistence runbook for hosting pause-groups at `/ceplay` alongside an existing Grafana/reverse-proxy setup, plus DNS/TLS steps for `ceplay.thecastlefuncenter.com`.
+
+## Installation
+
+### Option 1: Interactive Installer (recommended)
+
+Run from the command line:
 
 ```bash
-git clone https://github.com/morroware/ceplay.git /var/www/ceplay
-cd /var/www/ceplay
-mkdir -p data
-chown -R www-data:www-data data
-chmod 770 data
+php install.php
 ```
 
-### 2. Choose an install path
+This walks through:
+1. PHP extension preflight checks
+2. `at`/`atrm` availability warning
+3. Data directory creation and permission verification
+4. SQLite database initialization (WAL mode, foreign keys)
+5. Admin user creation (username, display name, password)
+6. Timezone configuration
+7. Optional CenterEdge API credential setup with connection test
+8. Cron setup guidance and file permission instructions
 
-| Option | When to use |
-|--------|-------------|
-| `php install.php` (interactive CLI or web wizard) | Production / new venues. Walks you through PHP extension checks, admin user creation, timezone, and CenterEdge credential entry. |
-| `php install.php --reset` | You're starting over and want every setting wiped. |
-| `php install.php --migrate` | Existing DB — only run schema migrations. |
-| `php fresh_install.php` | Disposable demo / dev box. Generates a random encryption key, creates `admin` / `admin123!`, and primes the schema. **Delete the file afterwards** — the password is well known. |
+The installer also runs in web mode — navigate to `/install.php` in a browser to create the first admin account through a web form. The web installer locks itself after the first admin user is created.
 
-The CLI installer prompts in order:
+To wipe and start over:
 
-1. Verify PHP extensions are loaded.
-2. Warn if `at`/`atrm` are missing (CEplay still works without them).
-3. Create the `data/` directory and confirm it's writable.
-4. Initialise the SQLite schema (idempotent — safe to re-run).
-5. Create the first admin account (bcrypt cost 12).
-6. Set the venue timezone.
-7. Optionally enter CenterEdge API credentials and run a live connection test.
-8. Print the recommended cron entries.
-
-### 3. Configure the cron jobs
-
-Add to `crontab -e` (replace `/var/www/ceplay` with your actual path):
-
-```cron
-* * * * * /usr/bin/php /var/www/ceplay/cron_watchdog.php >> /var/www/ceplay/data/watchdog.log 2>&1
-5 0 * * * /usr/bin/php /var/www/ceplay/cron.php           >> /var/www/ceplay/data/cron.log     2>&1
+```bash
+php install.php --reset
 ```
 
-- **Watchdog (every minute)** — re-runs missed actions, enforces game and
-  kiosk states against the local cache, retries failed pauses, and polls
-  the CenterEdge play-transaction feed.
-- **Daily planner (00:05)** — refreshes the game directory, plans every
-  scheduled transition for the new day, queues `at` jobs, refreshes the
-  game-categories cache, purges old data, and rotates log files.
+### Option 2: Fresh Install (automated)
 
-### 4. Sign in and configure the API
+For a fully automated setup (useful for development or redeployment):
 
-Open the app in a browser, sign in with the admin account, and go to
-**Settings**. Enter:
+```bash
+php fresh_install.php
+```
 
-- API base URL (e.g. `https://yoursite.centeredge.io/api/v1`)
-- Username + password
-- Optional `X-Api-Key` if your CenterEdge tenant requires one
+This script:
+1. Removes any existing database files
+2. Generates a random AES-256 encryption key and writes it into `config.php`
+3. Initializes a fresh database with all tables
+4. Creates a default admin user (`admin` / `admin123!`)
+5. Sets timezone to `America/New_York`
+6. Verifies encryption round-trip
 
-Click **Test Connection**. CEplay authenticates, fetches `/capabilities`,
-counts games and categories, and reports back without persisting anything.
-On success, click **Save Configuration** to write the credentials. They
-are stored AES-256-CBC encrypted with HMAC-SHA256 integrity verification.
+**Delete `fresh_install.php` after use** — it creates a known default password and is a security risk if left accessible.
 
-### 5. (Optional) lock the door
-
-After the first admin is created, **delete `install.php` and
-`fresh_install.php`**, or block them in your web server config. The
-`/api/health` endpoint will warn in its `warnings[]` array if either file
-is still web-accessible.
-
-The Fedora CoreOS bootstrap script (`setup-fcos.sh`) removes
-`install.php` automatically on first boot.
-
-### Environment variables
+### Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `PG_ENCRYPTION_KEY` | 64 hex chars (32 random bytes) — master key for encrypting CenterEdge credentials at rest. Generate with `php -r 'echo bin2hex(random_bytes(32));'`. Falls back to `ENCRYPTION_KEY` defined in `config.php` if unset. |
-| `PG_APP_DEBUG` | `true` to include internal error details in HTTP 500 responses. **Never** enable in production. |
+| `PG_ENCRYPTION_KEY` | 32-byte hex key (64 hex chars) for AES-256-CBC encryption of stored API credentials. Overrides the fallback key in `config.php`. |
+| `PG_APP_DEBUG` | Set to `true` to include internal error details in API 500 responses. Do not enable in production. |
 
----
+### Cron Setup
 
-## How CEplay talks to CenterEdge
+Add the following to your crontab (`crontab -e`), replacing the path:
 
-CEplay is **read-mostly** against the CenterEdge API. Most browser
-interactions hit the local SQLite cache instead of the upstream API.
-This section enumerates **every** path that triggers an outbound CE call,
-when it fires, and the expected volume.
+```
+* * * * * /usr/bin/php /path/to/pause-groups/cron_watchdog.php >> /path/to/pause-groups/data/watchdog.log 2>&1
+5 0 * * * /usr/bin/php /path/to/pause-groups/cron.php >> /path/to/pause-groups/data/cron.log 2>&1
+```
 
-### Background traffic (cron-driven)
+- **`cron_watchdog.php`** (every minute) — executes missed actions, enforces desired game states, re-queues broken `at` jobs, writes a watchdog heartbeat.
+- **`cron.php`** (daily at 00:05) — syncs the game list from CenterEdge, plans all actions for the day, queues `at` jobs, purges old data, rotates log files, writes a cron heartbeat.
 
-| Trigger | Endpoint(s) | Frequency |
-|---------|-------------|-----------|
-| Daily cron (`cron.php`, 00:05 by default) | `POST /login`, `GET /games` (paginated), `GET /kiosks` (paginated), `GET /games/categories` (paginated) | Once per day |
-| Watchdog cron (`cron_watchdog.php`, every minute) — game-play feed | `POST /login` (if token expired), `GET /games/transactions?sinceId=…` (up to 20 pages of 200 rows per cycle) | Once per `tx_poll_interval_seconds` (60 s default; 1, 2, 5, 10, or 15-minute presets in **Settings → CenterEdge API Polling**) |
-| Watchdog cron — state enforcement | `GET /games`, `GET /kiosks` only when the local cache is older than `state_sync_stale_seconds` (300 s default), then `PATCH /games` / `PATCH /kiosks` only if a desired state needs correcting | Up to once per minute, but typically zero calls when no schedule transitions are happening |
-| Watchdog cron — retry queue | `PATCH /games`, `PATCH /kiosks` for assets whose pause/unpause failed earlier (up to `retry_max_attempts`, default 10) | Once per minute, only when retries are pending |
-
-### Foreground traffic (request-driven)
-
-| Trigger | Endpoint(s) | Frequency |
-|---------|-------------|-----------|
-| User clicks **Sync Now** on the dashboard | `GET /games` (full, paginated) | On demand |
-| User clicks **Sync** on the kiosks page | `GET /kiosks` (full, paginated) | On demand |
-| User opens **Settings → Test Connection** with override credentials | `POST /login`, `GET /capabilities`, `GET /games`, `GET /games/categories` | On demand |
-| User saves a CenterEdge schedule action (e.g. clicks Pause Group) | `GET /games` and `GET /kiosks` only if the cache is older than 30 s (`STATE_CHANGE_CACHE_FRESHNESS`), then `PATCH /games` and/or `PATCH /kiosks` for the affected assets | On demand |
-| User opens the **Cards** page and looks up a card | `GET /cards/{cardNumber}`, optionally `GET /cards/{cardNumber}/transactions`, `GET /cards/{cardNumber}/pin?validate=…` | On demand |
-| User opens the **Games** page and clicks a per-game action (e.g. Reboot) | `POST /games/{gameId}/performAction` | On demand |
-| User opens the **Kiosks** page and runs an RPC action | `POST /kiosks/{kioskId}/performAction` | On demand |
-| Tier 1 enforcement (every authenticated API request) | **No CenterEdge calls**. Reads the local cache only and only patches if a recently-expired override has not been honoured. | On demand |
-| Tier 2 enforcement (gated by `tier2_throttle_seconds`, default 60 s, `index.php`) | May trigger a `GET /games` / `GET /kiosks` if the cache is older than `state_sync_stale_seconds`, plus `PATCH /games` / `PATCH /kiosks` if drift is detected | At most once per minute *across all browser tabs combined* |
-
-### Server-side caches
-
-CEplay caches everything aggressive enough to skip redundant CE traffic:
-
-| Cache | Backed by | Refresh |
-|-------|-----------|---------|
-| Bearer token | `api_config.bearer_token` (encrypted) | Proactive re-auth after `TOKEN_MAX_AGE` (1800 s); automatic re-auth on any HTTP 401. |
-| Game directory | `game_state_cache` table | Daily cron, `Sync Now`, and any state-change call that observes a stale cache. |
-| Kiosk directory | `kiosk_state_cache` table | Same triggers as games. |
-| Capabilities (`/capabilities`) | `api_config.capabilities_cache` (1-hour TTL) | First request after expiry, or when an admin appends `?refresh=1`. Stale copy served if upstream is unreachable. |
-| Categories (`/games/categories`) | `api_config.categories_cache` (1-hour TTL) | Daily cron, on-demand via `?refresh=1`, or first request after expiry. Stale fallback on upstream failure. |
-| Game-play transactions | `game_play_transactions` table (default 395 days) | Watchdog cron polls forward by transaction ID; rows are append-only with `INSERT OR IGNORE` so duplicate fetches are safe. |
-
-**Net effect**: at default settings a venue running 24/7 makes roughly
-60 CenterEdge calls per hour during normal browsing — almost all from
-the watchdog's transaction-feed poll. Bumping the poll interval to
-5 minutes drops that to ~12 calls per hour.
-
----
-
-## Feature tour
-
-### Dashboard (`#/dashboard`)
-
-The command centre. Adaptive polling speeds up to 5 s when an override is
-about to expire or a scheduled transition is imminent, and slows back to
-the configured default rate (30 s by default) the rest of the time.
-
-Widgets, top to bottom:
-
-- **Stats grid** — total / running / paused / out-of-service game counts.
-- **Swipe Activity** — totals and unique-card counts for last hour, today,
-  and last 7 days.
-- **Swipe by Category** — per-category breakdown of swipes and unique
-  cards, with Last Hour / Today / Last 7 Days tabs. Category names are
-  resolved from the cached `/games/categories` blob.
-- **Top games today** — the busiest games right now (1–20 rows,
-  configurable in Settings).
-- **Group Controls** — one card per active pause group with current
-  effective state (running / paused / mixed / empty), member breakdown,
-  the next scheduled transition, the active override (if any), and Pause /
-  Unpause buttons. Manual overrides are surfaced with a "Resume Schedule"
-  button to release them.
-- **Game Status** — a searchable, sortable, paginated table or grid of
-  every game in the directory.
-- **Active Overrides** — countdown view of every currently-running
-  schedule override.
-
-Everything except the **Sync Now** button reads from local caches.
-
-### Games (`#/games`)
-
-A full analytics dashboard powered by the cached play-transaction feed:
-
-- KPI grid (plays, points, tickets, unique cards, time/privilege plays).
-- Plays-over-time line chart (hour/day/month buckets per window).
-- Status doughnut.
-- Three top-N leaderboards (plays, tickets, points).
-- Recent-play live feed.
-- Searchable game directory with per-row pause / unpause / out-of-service
-  buttons and any RPC actions the game advertises (e.g. `reboot`).
-
-Window selector: Today / Week / Month / Year / All. Auto-refreshes
-analytics on `ui_poll_games_analytics_ms` (30 s default) and the live feed
-on `ui_poll_games_feed_ms` (15 s default).
-
-### Cards (`#/cards`)
-
-Read-only proxy to the CenterEdge `/cards` endpoints. Floor staff can:
-
-- Look up a card by number → balance, time plays, privileges.
-- Page through the card's transaction history.
-- Probe whether a card has a PIN, or validate one against the API.
-
-Every lookup is audit-logged (`card_viewed`, `card_pin_probed`, etc.) so
-the manager can review who looked up which card.
-
-### Pause Groups (`#/groups`)
-
-A pause group is a named bucket of games and/or kiosks. Membership is
-defined two ways and unioned:
-
-- **By category** — every game in one or more CenterEdge categories
-  (resolved at execution time against the game cache).
-- **By individual ID** — specific games or kiosks pinned to the group.
-
-Each group has a recurring schedule, an optional active override, and
-optional manual override. The dashboard treats them as one unit even when
-mixing games and kiosks.
-
-### Schedules (`#/schedules`)
-
-Recurring weekly time windows. Each row defines an active (unpaused)
-window for a group on one day of week. Bulk creation via
-`days_of_week: [1, 2, 3, 4, 5]` is supported in the API. Schedules cannot
-cross midnight — split into two rows for overnight windows.
-
-### Overrides (`#/overrides`)
-
-One-off pause or unpause windows that take precedence over the recurring
-schedule:
-
-- Active overrides are listed on the dashboard with a countdown.
-- Active overrides at boundaries are honoured for their entire duration —
-  schedule transitions inside the override window are suppressed during
-  planning.
-- When an override expires the system enforces the correct
-  schedule-derived state within seconds (Tier 1 safety net + watchdog).
-
-### Kiosks (`#/kiosks`)
-
-Standalone view of every CenterEdge kiosk. Per-kiosk Pause / Unpause /
-Out-of-service controls plus any `supportedActions` (e.g. `reboot`). When
-the API reports `kiosks.operationStatus = false`, the pause controls are
-hidden and a banner explains why. Kiosks that report no operation status
-("unknown") are also hidden from pause controls per the spec.
-
-### Action Log (`#/logs`)
-
-Searchable, paginated audit trail. Filters: source (cron / manual /
-override / schedule / watchdog / admin / auth / card-lookup / etc.),
-action, group, success flag, and date range. The log captures the actor
-ID, username, and IP for every state-change so manager review is trivial.
-
-### Settings (`#/settings`)
-
-Sectioned editor for everything an admin would otherwise have to edit
-config files for. See the [Configurable settings](#configurable-settings)
-section.
-
----
+If `at`/`atrm` are not installed, keep the watchdog cron running every minute. In that mode, due actions are picked up and executed by the watchdog within one minute of their scheduled time.
 
 ## Architecture
 
+PHP backend with a vanilla JavaScript single-page application frontend. SQLite database (WAL mode). No frameworks.
+
 ```
-ceplay/
-├── index.php               Front controller — SPA shell, API dispatcher,
-│                           Tier 1 + Tier 2 safety nets, security headers
-├── config.php              Constants (paths, timeouts, encryption key)
-├── install.php             Interactive installer (CLI + web)
-├── fresh_install.php       Wipe-and-rebuild dev installer (delete after use)
-├── cron.php                Daily planner — game/kiosk/category sync, plan
-│                           today, queue at-jobs, purge, log rotation
-├── cron_watchdog.php       Per-minute watchdog — missed actions, state
-│                           enforcement, retry queue, transaction feed poll
-├── run_action.php          Single-action executor invoked by `at` jobs
-├── setup-fcos.sh           Fedora CoreOS bootstrap (auto-removes install.php)
-│
-├── api/                    API endpoint handlers (loaded on demand)
-│   ├── auth.php            POST /login, /logout, GET /status
-│   ├── settings.php        GET/PUT /settings, POST /settings/test
-│   ├── games.php           Game directory, analytics, transactions, RPC actions
-│   ├── cards.php           /cards/{id}, /transactions, /pin
-│   ├── groups.php          Pause group CRUD + manual actions
-│   ├── kiosks.php          Kiosk directory + pause / unpause / RPC
-│   ├── schedules.php       Recurring schedule CRUD (bulk supported)
-│   ├── overrides.php       Override CRUD with immediate execution
-│   ├── logs.php            Filterable, paginated audit log
-│   ├── users.php           Admin user CRUD
-│   └── capabilities.php    /capabilities passthrough (cached, with
-│                           ?refresh=1 escape hatch and stale-fallback)
-│
-├── lib/                    Core libraries
-│   ├── db.php              SQLite singleton, schema init, query helpers
-│   ├── auth.php            Session lifecycle, bcrypt, brute-force guard
-│   ├── csrf.php            CSRF token generation + timing-safe validation
-│   ├── crypto.php          AES-256-CBC encrypt-then-MAC (HMAC-SHA256)
-│   ├── validator.php       Input validation throwing RuntimeException
-│   ├── centeredge_client.php  HTTP client (login, retries, pagination,
-│   │                          token cache, kiosks/games sync, tx polling)
-│   └── scheduler.php       Planning, execution, enforcement, retries,
-│                           purge, heartbeat
-│
-├── public/
-│   ├── css/style.css       Dark + light themes
-│   └── js/                 Vanilla JS modules (loaded as plain <script defer>)
-│       ├── api.js          fetch() wrapper with CSRF + base path injection
-│       ├── app.js          SPA router, navigation, App.config init
-│       ├── login.js        Login page
-│       ├── dashboard.js    Command Center
-│       ├── games.js        Games analytics + directory
-│       ├── cards.js        Card lookup
-│       ├── groups.js       Pause group editor
-│       ├── kiosks.js       Kiosk directory
-│       ├── schedules.js    Schedule editor
-│       ├── overrides.js    Override management
-│       ├── logs.js         Action log viewer
-│       └── settings.js     Settings editor
-│
-├── data/                   Runtime data (gitignored, created by installer)
-│   ├── pause_groups.db     SQLite database (+ -wal, -shm journals)
-│   ├── .scheduler.lock     flock() target for cron / run_action / replan
-│   ├── .heartbeat_cron     Daily cron heartbeat (ISO 8601)
-│   ├── .heartbeat_watchdog Watchdog heartbeat (ISO 8601)
-│   ├── .last_missed_check  Tier 2 throttle marker
-│   ├── cron.log            Daily cron output (auto-rotated at 512 KB)
-│   └── watchdog.log        Watchdog output (auto-rotated at 512 KB)
-│
-├── docs/
-│   ├── AUDIT.md            Internal security review notes
-│   └── api-reference/      CenterEdge OpenAPI spec (HTML + YAML)
-│
-├── INSTALL-FCOS.md         Fedora CoreOS deployment walkthrough
-├── DEPLOY-CEPLAY.md        Coexistence runbook (proxy + DNS + TLS)
-└── README.md               (this file)
+pause-groups/
+  index.php                # Router: SPA shell, API dispatch, static file serving,
+                           #   tiered safety net (expired-override + missed-action enforcement)
+  config.php               # Timezone, encryption key, session lifetime, API timeouts
+  install.php              # Interactive first-run setup (CLI and web modes)
+  fresh_install.php        # Automated wipe-and-rebuild (dev/redeployment)
+  cron.php                 # Daily cron: game sync, day planning, at-job queueing,
+                           #   data purge, log rotation, heartbeat
+  cron_watchdog.php        # Per-minute watchdog: missed actions, state enforcement,
+                           #   at-job requeue, heartbeat
+  run_action.php           # Single-action executor invoked by at jobs
+
+  api/                     # API endpoint handlers (all require auth except /api/health)
+    auth.php               #   Login, logout, session status
+    settings.php           #   CenterEdge API config + timezone management
+    games.php              #   Game list, categories, sync
+    groups.php             #   Pause group CRUD, manual pause/unpause, state enforcement
+    schedules.php          #   Recurring schedule CRUD (bulk creation supported)
+    overrides.php          #   Temporary override CRUD with immediate execution
+    logs.php               #   Paginated, filterable action log
+    users.php              #   Admin user management
+
+  lib/                     # Core libraries
+    db.php                 #   SQLite singleton, schema initialization, query helpers
+    auth.php               #   Session management (HttpOnly, SameSite=Strict, brute-force delay)
+    csrf.php               #   CSRF token generation + timing-safe validation
+    crypto.php             #   AES-256-CBC encrypt-then-MAC (HMAC-SHA256), backward-compatible
+    validator.php          #   Input validation (strings, ints, dates, times, enums, arrays, URLs, pagination)
+    centeredge_client.php  #   CenterEdge API client (SHA-1 auth, token caching, pagination, retry)
+    scheduler.php          #   Scheduling engine (planning, execution, enforcement, purge)
+
+  public/                  # Frontend assets
+    css/style.css          #   Stylesheet (dark and light themes)
+    js/
+      api.js               #   HTTP client with CSRF header injection
+      app.js               #   SPA router and navigation (hash-based)
+      login.js             #   Login form
+      dashboard.js         #   Dashboard with live group states, auto-refresh
+      groups.js            #   Pause group management UI
+      schedules.js         #   Schedule editor
+      overrides.js         #   Override management
+      logs.js              #   Action log viewer with filters
+      settings.js          #   CenterEdge API config + admin user management
+
+  data/                    # Runtime data (created by installer)
+    pause_groups.db        #   SQLite database (+ WAL/SHM journal files)
+    .scheduler.lock        #   Concurrency lock file
+    .heartbeat_cron        #   Cron heartbeat (ISO 8601 timestamp)
+    .heartbeat_watchdog    #   Watchdog heartbeat (ISO 8601 timestamp)
+    .last_missed_check     #   Throttle file for API-level safety net (mtime-based, 15s cooldown)
+    cron.log               #   Daily cron output (auto-rotated at 500KB)
+    watchdog.log           #   Watchdog output (auto-rotated at 500KB)
+
+  docs/                    # Internal documentation (not user-facing)
+    AUDIT.md               #   Security audit notes and findings
+    api-reference/         #   CenterEdge Card System API specification (OpenAPI 3.0)
 ```
 
-### Request lifecycle
-
-1. **Apache / nginx / `php -S`** routes every request to `index.php`.
-2. `index.php` boots `config.php`, the DB layer, the CSRF helper, and
-   `Auth::initSession()`. Security headers are emitted on every response.
-3. If the path begins with `api/`, `index.php` dispatches to the matching
-   handler in `api/`. Before dispatch:
-   - Display errors are silenced so warnings can't corrupt JSON output.
-   - For authenticated requests, **Tier 1** (cache-only expired-override
-     check) and **Tier 2** (throttled missed-action + state enforcement)
-     run as safety nets.
-   - CSRF is validated for `POST`/`PUT`/`PATCH`/`DELETE` (login is
-     exempt — there's no session yet).
-4. Static assets in `public/` are served directly with `readfile()` and a
-   1-hour cache header. Path traversal is blocked via `realpath()` checks.
-5. Anything else is the **SPA shell** — `index.php` emits HTML containing
-   a `window.APP_CONFIG = { … }` block (CSRF token, basePath, current
-   user, timezone, all UI poll intervals) and the `<script defer>` tags
-   for the vanilla JS modules.
-6. `app.js` registers a `DOMContentLoaded` handler that copies
-   `APP_CONFIG` values into `App.config`, then routes by `window.location.hash`.
-
-### Frontend conventions
-
-- Routes are registered with `App.registerRoute('#/path', { render: fn })`.
-- Modules are IIFEs that close over module-level state.
-- DOM construction goes through `App.el(tag, attrs, children)` — there is
-  no `innerHTML` injection of user data anywhere.
-- HTTP calls go through `API.get / .post / .put / .patch / .del`. `del` is
-  used because `delete` is a reserved word in JavaScript.
-
-### Backend conventions
-
-- API handlers are functions named `handleX($method, $parts, $input)`.
-- `$parts` is the URL segments after `api/<resource>`.
-- `$input` is the parsed JSON body for `POST`/`PUT`/`PATCH`.
-- `RuntimeException` → HTTP 422 with the message; any other exception →
-  HTTP 500 (sanitised in production, full text with `PG_APP_DEBUG=true`).
-- Database access goes through the `DB` singleton with positional
-  parameters (`:p0, :p1, …`) only. No string concatenation of values.
-
----
-
-## Configurable settings
-
-Everything below is editable from **Settings** in the UI and persisted in
-the `api_config` SQLite table. The values are read live, so changes take
-effect on the next request (or the next page load for browser-side
-intervals).
-
-### CenterEdge API configuration
-
-- **API Base URL**, **Username**, **Password**, optional **API Key**.
-- **Test Connection** lets you verify candidate credentials without
-  saving.
-- Saving with a non-masked password rotates the cached bearer token.
-
-### Timezone
-
-- IANA name (e.g. `America/New_York`).
-- All schedules, overrides, and log timestamps render in this zone.
-
-### CenterEdge API Polling
-
-| Setting | DB key | Range | Default |
-|---------|--------|-------|---------|
-| Transaction-feed poll interval | `tx_poll_interval_seconds` | 60 / 120 / 300 / 600 / 900 | 60 s |
-
-This drives the only cron-driven contact with CenterEdge other than the
-daily sync. Lower = fresher swipe analytics; higher = fewer outbound
-calls.
-
-### Safety Nets & State Sync
-
-| Setting | DB key | Range | Default |
-|---------|--------|-------|---------|
-| Tier 2 safety-net throttle | `tier2_throttle_seconds` | 15–3600 s | 60 s |
-| Game/Kiosk state-sync staleness | `state_sync_stale_seconds` | 30–3600 s | 300 s |
-
-The watchdog's full state-sync only re-fetches `/games` and `/kiosks`
-when the local cache is older than `state_sync_stale_seconds`. State-change
-actions (manual button presses, etc.) always use a tight 30-second
-freshness window regardless.
-
-### Browser Polling Intervals
-
-These never contact CenterEdge — they only pull from the local cache.
-
-| Setting | DB key | Default |
-|---------|--------|---------|
-| Dashboard normal poll | `ui_poll_default_ms` | 30 000 ms |
-| Dashboard active-override poll | `ui_poll_override_active_ms` | 10 000 ms |
-| Dashboard imminent-transition poll | `ui_poll_imminent_ms` | 5 000 ms |
-| Games analytics refresh | `ui_poll_games_analytics_ms` | 30 000 ms |
-| Games live-feed refresh | `ui_poll_games_feed_ms` | 15 000 ms |
-| Overrides page refresh | `ui_poll_overrides_ms` | 15 000 ms |
-| Top-games widget size | `dashboard_top_games_limit` | 5 (1–20) |
-
-### Data Retention (applied by the daily cron)
-
-| Setting | DB key | Range | Default |
-|---------|--------|-------|---------|
-| Action-log retention | `retention_action_log_days` | 7–3650 | 90 d |
-| Scheduled-action retention | `retention_scheduled_actions_days` | 1–365 | 30 d |
-| Override retention | `retention_overrides_days` | 7–3650 | 90 d |
-| Transaction retention | `retention_transactions_days` | 30–3650 | 395 d |
-
-The 395-day default keeps a full year of swipe data for the analytics
-dashboard with a small buffer.
-
-### Scheduler Behaviour
-
-| Setting | DB key | Range | Default |
-|---------|--------|-------|---------|
-| Max retry attempts | `retry_max_attempts` | 1–50 | 10 |
-
-Each retry is one watchdog cycle (one minute), so 10 attempts ≈ a
-10-minute catch-up window.
-
----
-
-## Scheduling and enforcement
-
-### Concepts
-
-- **Schedule windows** define **active (unpaused)** hours.
-  - At `start_time` → unpause (group becomes active).
-  - At `end_time` → pause (group goes back to paused).
-  - Outside any schedule window the default is **paused**.
-- **Overrides** force a specific action for a date/time range. They take
-  precedence over recurring schedules. Schedule transitions that fall
-  inside an override window are dropped during planning.
-- **Manual overrides** (the Pause / Unpause buttons on the dashboard)
-  take precedence over both. They stick until the next scheduled
-  transition fires, or until an admin clicks **Resume Schedule**.
-
-### Daily planning (`cron.php` at 00:05)
-
-1. **Sync games** — `GET /games` (paginated). Updates `game_state_cache`,
-   prunes rows for games no longer in the directory.
-2. **Sync kiosks** — same, `GET /kiosks`. Best-effort: a 4xx (kiosks
-   unsupported) is logged and skipped.
-3. **Refresh categories cache** — `GET /games/categories`.
-4. **Catch up missed actions** for the new calendar day.
-5. **Plan today** — for each active group:
-   - Build transition points from today's recurring schedules.
-   - Add transitions for any override that starts or ends today.
-   - Suppress any schedule transition that falls inside an active
-     override window.
-   - Sort, deduplicate by time (highest-priority source wins), drop past
-     times, and write to `scheduled_actions`.
-6. **Queue `at` jobs** for each pending action. If `at`/`atrm` aren't
-   installed, this step is a no-op — actions are picked up by the
-   watchdog instead.
-7. **Purge old data** per the retention settings.
-8. **Rotate logs** when they exceed 512 KB.
-9. **Write heartbeat** to `data/.heartbeat_cron`.
-
-### Per-minute watchdog (`cron_watchdog.php`)
-
-Runs after the daily cron, and again every minute around the clock. It:
-
-1. Acquires the scheduler `flock()` (15-second blocking retry).
-2. Executes any missed actions for today.
-3. Calls `Scheduler::enforceCurrentStates()` — for every active group,
-   computes the desired state from manual override > active override >
-   schedule, and `PATCH`es the upstream API only if the cache disagrees.
-4. Re-queues any pending `scheduled_actions` rows whose `at_job_id` is
-   missing (i.e. the `at` job vanished or was never queued).
-5. Drains the **retry queue** (see next section).
-6. Polls the CenterEdge transaction feed if the configured interval has
-   elapsed since the last poll. Walks forward from the last processed
-   transaction ID up to 20 pages of 200 rows per cycle.
-7. Writes heartbeat to `data/.heartbeat_watchdog`.
-
-### Per-API-call safety nets (`index.php`)
-
-Every authenticated API request runs two checks before dispatching to the
-handler:
-
-- **Tier 1** — `Scheduler::enforceExpiredOverrides(300)`. Cheap, cache-
-  only. Looks at any override that ended within the last 5 minutes and
-  enforces the correct post-expiry state if the cached state still shows
-  the override's action.
-- **Tier 2** — gated by a file-lock + mtime throttle. At most once every
-  `tier2_throttle_seconds` (60 s default) it runs
-  `Scheduler::executeMissedActions()` and `Scheduler::enforceCurrentStates()`.
-
-This means the system self-corrects to the right state within 60 seconds
-of the next browser interaction, even if both crons are silenced.
-
-### `at` job execution (`run_action.php`)
-
-`at` triggers `php run_action.php --id <scheduled_action_id>`. The
-script:
-
-1. Acquires the scheduler `flock()` (60 s blocking retry).
-2. Calls `Scheduler::executeAction($id)`.
-3. Releases the lock and exits.
-
-The action's `executed` column is set to `1` on success, `2` on partial
-errors, or `3` if a later action superseded it during catch-up.
-
----
-
-## Retry queue
-
-When a `PATCH /games` or `PATCH /kiosks` call comes back with a per-asset
-error (typically the asset is in active play, or upstream is throttling),
-CEplay queues a retry instead of dropping the request:
-
-- A row is upserted into `action_retries` keyed by `(asset_type, asset_id)`.
-- The watchdog drains the queue once per cycle, retrying every pending
-  asset with `attempts < max_attempts`.
-- After `retry_max_attempts` failures (default 10 ≈ 10 minutes), the row
-  is marked `gave_up_at` and **skipped** on subsequent cycles. This stops
-  the watchdog from spinning forever against a permanently-busy game.
-- A **fresh intent** clears the give-up state automatically:
-  - Clicking Pause / Unpause from the dashboard.
-  - A scheduled transition firing.
-  - An override starting or ending.
-  - Calling `groups/{id}/enforce` from the API.
-- Once the cache observes that an asset reached the desired state on its
-  own (e.g. another operator acted), the retry row is also cleared.
-
-This mechanism is what makes group operations resilient on busy
-weekends — a single stuck game in a 30-game group no longer prevents the
-remaining 29 from being pause/unpaused, and the system retries the stuck
-one in the background instead of silently dropping the intent.
-
----
-
-## Database schema
-
-SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
-Schema initialisation is **idempotent** — `CREATE TABLE IF NOT EXISTS`
-plus `try { ALTER TABLE ADD COLUMN }` migrations on every boot.
-
-| Table | Purpose |
-|-------|---------|
-| `admin_users` | Admin accounts (username, bcrypt hash, display name, active flag) |
-| `api_config` | Key-value store (encrypted CenterEdge credentials, timezone, every UI/scheduler/retention setting, capabilities cache, categories cache, transaction-feed checkpoints) |
-| `pause_groups` | Named groups + manual override columns |
-| `pause_group_categories` | Category-based group memberships |
-| `pause_group_games` | Individual game memberships |
-| `pause_group_kiosks` | Individual kiosk memberships |
-| `schedules` | Recurring weekly windows (group, day, start, end, active flag) |
-| `schedule_overrides` | One-off pause/unpause windows |
-| `scheduled_actions` | Planned transitions for a date (id, group, action, time, source, at_job_id, executed) |
-| `action_log` | Audit trail with actor_user_id, actor_username, ip_address |
-| `action_retries` | Pending retries with attempts, max_attempts, gave_up_at |
-| `game_state_cache` | Local mirror of `/games` |
-| `kiosk_state_cache` | Local mirror of `/kiosks` |
-| `game_play_transactions` | Append-only mirror of `/games/transactions` |
-| `login_attempts` | Brute-force rate-limit state, keyed by IP |
-
-### `scheduled_actions.executed` codes
-
-| Code | Meaning |
-|------|---------|
-| `0` | Pending |
-| `1` | Executed successfully |
-| `2` | Executed with errors |
-| `3` | Superseded — skipped during catch-up because a later action for the same group made it redundant |
-
----
-
-## API reference
-
-All responses are JSON. State-changing methods require a valid
-`X-CSRF-Token` header (except `/api/auth/login`). Authentication is
-session-based via HttpOnly, SameSite=Strict cookies.
-
-### Auth
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/auth/login` | No | `{ username, password }` → `{ user, csrf_token }` |
-| POST | `/api/auth/logout` | Yes | Destroys session and regenerates ID |
-| GET  | `/api/auth/status` | No | `{ authenticated, user, csrf_token }` |
-
-### Settings
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET  | `/api/settings` | All current settings (passwords masked as `********`) |
-| PUT  | `/api/settings` | Update API config, timezone, polling, retention, scheduler |
-| POST | `/api/settings/test` | Test connection. Pass overrides in the body to verify candidate credentials without persisting them |
-
-### Games
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET   | `/api/games` | Cached game directory + per-game `pending_retry` |
-| GET   | `/api/games/categories` | Cached categories (1-hour TTL); `?refresh=1` to bypass |
-| POST  | `/api/games/sync` | Force re-sync from CenterEdge |
-| GET   | `/api/games/analytics` | Aggregated KPIs / leaderboards / time-series for `?window=day\|week\|month\|year\|all` |
-| GET   | `/api/games/transactions/recent` | Most recent plays from cache. `?limit=50` (max 500), `?since=ISO8601` |
-| GET   | `/api/games/transactions/top` | Top games by plays. `?window=hour\|today\|week\|all`, `?limit=10` (max 100) |
-| GET   | `/api/games/transactions/summary` | Total plays + unique cards for last hour / today / last 7 days in a single call |
-| GET   | `/api/games/transactions/by-category` | Per-category plays + unique cards. `?window=hour\|today\|week` |
-| POST  | `/api/games/transactions/poll` | Manual catch-up: poll the upstream feed now |
-| GET   | `/api/games/{id}` | Live single-game lookup (bypasses cache) |
-| POST  | `/api/games/{id}/action` | RPC perform-action (`{ actionId, operator? }`). The operator object falls back to the logged-in admin |
-| PATCH | `/api/games` | Bulk JSON-Patch passthrough — `{ games: { gameId: [{op:"replace", path:"/operationStatus", value:"paused"}] } }` |
-
-### Cards (read-only proxy)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/cards/{cardNumber}` | Card record (balance, time plays, privileges) |
-| GET | `/api/cards/{cardNumber}/transactions` | History (`?skip=0`, `?take=50`, max 200) |
-| GET | `/api/cards/{cardNumber}/pin` | Probe/validate. With `?validate=<pin>`, validates; otherwise just probes whether the card has a PIN |
+## Core Concepts
 
 ### Pause Groups
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/api/groups` | All groups with combined game+kiosk stats, next transition, active override, manual override, and resolved game/kiosk ID lists |
-| POST   | `/api/groups` | Create with optional `category_ids[]`, `game_ids[]`, `kiosk_ids[]` |
-| GET    | `/api/groups/{id}` | One group with its categories, games, kiosks, and schedules |
-| PUT    | `/api/groups/{id}` | Replace name/description/active flag and all membership lists |
-| DELETE | `/api/groups/{id}` | Delete group (cascades to schedules + memberships) |
-| POST   | `/api/groups/{id}/pause` | Manual pause (sets manual override) |
-| POST   | `/api/groups/{id}/unpause` | Manual unpause (sets manual override) |
-| POST   | `/api/groups/{id}/enforce` | Force the correct state from current schedule + overrides |
-| POST   | `/api/groups/{id}/clear-manual-override` | Resume the schedule |
+A named collection of arcade games. Games can be added to a group in two ways:
+- **By CenterEdge category** — all games in the category are dynamically included (resolved at execution time from the game state cache).
+- **By individual game ID** — specific games pinned to the group.
 
-### Schedules
+A single group can contain both category-based and individual game memberships. Game resolution is deduplicated.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/api/schedules` | List, optionally filtered by `?group_id=` |
-| POST   | `/api/schedules` | Create one (`day_of_week`) or many (`days_of_week: [1,2,3]`) |
-| PUT    | `/api/schedules/{id}` | Update one row |
-| DELETE | `/api/schedules/{id}` | Delete one row |
+### Schedules (Active Windows)
 
-Schedule changes trigger `Scheduler::replanToday()` + state enforcement.
+Recurring weekly time windows attached to a group. Each schedule defines a **day of week** (0=Sunday through 6=Saturday), a **start time**, and an **end time** (HH:MM format, no midnight crossing).
+
+Schedule windows define when games are **active (unpaused)**:
+- At `start_time` the scheduler generates an **unpause** action (games become active).
+- At `end_time` the scheduler generates a **pause** action (active window ends).
+- Outside all schedule windows, games default to **paused**.
+
+Bulk creation is supported: a single API call can create schedules for multiple days with the same time window via the `days_of_week` array field.
+
+When a schedule is created, updated, or deleted through the API, the system automatically replans the remainder of the day and immediately enforces the correct state for affected groups.
 
 ### Overrides
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/api/overrides` | `{ active, upcoming, expired }` (last 30 days, max 50). Optional `?group_id=` filter |
-| POST   | `/api/overrides` | Create override; if active right now, executes immediately; replans the day |
-| DELETE | `/api/overrides/{id}` | Delete override; if it was active, immediately enforces the post-deletion state |
+Temporary, date-bounded pause or unpause periods that take precedence over recurring schedules. Each override specifies:
+- A **pause group**
+- An **action** (`pause` or `unpause`)
+- A **start datetime** and **end datetime** (YYYY-MM-DD HH:MM format)
+- A **name** (descriptive label)
+- The **creating user** (tracked automatically)
+
+Override conflict resolution:
+1. When an override's time range overlaps with a recurring schedule, the **override wins** — the schedule's transitions are suppressed for the duration.
+2. When multiple overrides overlap, the **most recently started** override takes precedence.
+3. When an override ends, the system restores the correct state by checking for other active overrides first, then falling back to the recurring schedule.
+
+Overrides that are active at creation time execute immediately via the CenterEdge API. Deleting an active override immediately enforces the correct post-deletion state.
+
+### Daily Planning
+
+The daily cron job (`cron.php`, recommended at 00:05) performs:
+
+1. **Game sync** — fetches the full game list from CenterEdge into the local cache.
+2. **Missed-action catch-up** — executes any overdue actions from earlier.
+3. **Day planning** — merges recurring schedules with active overrides to compute all transition points for the day. Override transitions suppress conflicting schedule transitions. At each time slot, the highest-priority source wins. Past times are skipped.
+4. **At-job queueing** — queues each planned action as a Linux `at` job (or skips if `at` is unavailable).
+5. **Daily stats rollup** — aggregates the raw play feed into the permanent per-game, per-day `game_daily_stats` table (recomputing a trailing ~28-day window). This runs BEFORE the purge; if it fails, the raw-feed purge is skipped so no un-rolled-up data is ever lost.
+6. **Data purge** — removes action log entries older than 90 days, executed scheduled actions older than 30 days, expired overrides older than 90 days, and raw game-play transactions older than 30 days (long-range reporting is preserved by the rollup).
+7. **Log rotation** — rotates `cron.log` and `watchdog.log` when they exceed 500KB (keeps last 256KB).
+8. **Heartbeat** — writes an ISO 8601 timestamp to `.heartbeat_cron`.
+
+### Execution Model
+
+Actions are executed through multiple complementary mechanisms, providing defense in depth:
+
+| Layer | Trigger | Precision | Description |
+|-------|---------|-----------|-------------|
+| **`at` jobs** | Exact scheduled time | To the minute | Each action queued as a Linux `at` job invoking `run_action.php`. Best precision. |
+| **Watchdog cron** | Every minute | Within 60s | `cron_watchdog.php` catches missed actions, enforces desired states, re-queues broken `at` jobs. |
+| **API safety net (Tier 1)** | Every API request | On demand | `index.php` checks for recently-expired overrides (5-minute lookback) and enforces correct state. Fast, cache-only check. |
+| **API safety net (Tier 2)** | Every 15 seconds (throttled) | On demand | Full missed-action execution and state enforcement, including a CenterEdge cache sync. Triggered by API traffic. |
+| **Immediate enforcement** | Schedule/override CRUD | Instant | Creating, updating, or deleting schedules/overrides triggers an immediate replan and state enforcement for affected groups. |
+
+#### Action Execution Flow
+
+When an action executes (via any mechanism):
+
+1. Resolves the pause group to a deduplicated list of game IDs (categories + individual games).
+2. Reads current game states from the local cache.
+3. Skips games already in the target state.
+4. Skips games marked `outOfService` (never touched by automation).
+5. Sends a PATCH request to the CenterEdge API using JSON Patch format.
+6. Updates the local cache with the API response.
+7. Logs each game state change (or skip/error) to `action_log`.
+
+#### Missed-Action Optimization
+
+When catching up on multiple missed actions for the same group, only the **latest** action per group is executed against the API. Earlier superseded actions are marked with status 3 (superseded) without making API calls, avoiding wasteful churn (e.g., pause then immediately unpause).
+
+### Game Sync Behavior
+
+Game and status data is refreshed from CenterEdge through multiple paths:
+
+1. **Daily cron** — full sync before planning.
+2. **Watchdog cron** — syncs if cache is stale (older than 2 minutes).
+3. **Dashboard "Sync Now" button** — `POST /api/games/sync` for immediate refresh.
+4. **`GET /api/games` auto-primes cache** — runs a sync if the cache is empty.
+5. **State enforcement** — syncs before each enforcement cycle (with staleness check).
+
+The dashboard uses adaptive polling: 30 seconds by default, 10 seconds when an override is active, and 5 seconds when a transition or override expiry is imminent (< 2 minutes away). Override expiry and scheduled transitions trigger immediate enforcement and refresh.
+
+### Concurrency Control
+
+All CLI scripts (`cron.php`, `cron_watchdog.php`, `run_action.php`) and the `replanToday()` method acquire an exclusive file lock (`data/.scheduler.lock`) before executing. Lock behavior varies by context:
+
+| Script | Lock Behavior |
+|--------|--------------|
+| `cron.php` | Non-blocking — skips if another instance is running |
+| `cron_watchdog.php` | Retries for up to 15 seconds (1s intervals), then skips |
+| `run_action.php` | Retries for up to 60 seconds (5s intervals), then fails |
+| `replanToday()` | Retries for up to 30 seconds (5s intervals), then skips |
+
+## Beta Readiness Smoke Checklist
+
+Run this checklist before each beta push:
+
+1. **Syntax + environment sanity**
+   - Run `php -l` across all `*.php` files.
+   - Run `php install.php` in a disposable environment and confirm all prerequisite checks pass.
+2. **Scheduler health**
+   - Run `php cron.php` and verify action planning completes without errors.
+   - Run `php cron_watchdog.php` and verify watchdog heartbeat/log updates.
+3. **UI/API flow**
+   - Log in as admin and trigger **Sync Now** from the dashboard.
+   - Create and delete a temporary override and verify immediate enforcement + action-log entries.
+4. **Operational safety**
+   - Confirm `install.php` and `fresh_install.php` are blocked from web access in beta/prod.
+   - Confirm both cron entries exist and append to `data/cron.log` and `data/watchdog.log`.
+
+## Database Schema
+
+SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
+
+| Table | Purpose |
+|-------|---------|
+| `admin_users` | Admin accounts (username, bcrypt hash, display name, role: admin/manager/tech, active flag) |
+| `api_config` | Key-value config store (base URL, credentials, timezone, bearer token). Sensitive values stored encrypted. |
+| `pause_groups` | Named game collections with active/inactive flag |
+| `pause_group_categories` | Category memberships for groups |
+| `pause_group_games` | Individual game memberships for groups |
+| `schedules` | Recurring weekly time windows (group, day of week, start/end time) |
+| `schedule_overrides` | Temporary overrides (group, action, start/end datetime, creator) |
+| `scheduled_actions` | Planned actions for the day (group, action, time, date, source, at_job_id, execution status) |
+| `action_log` | Audit trail of all actions (timestamp, source, action, game, success/error) |
+| `game_state_cache` | Local mirror of CenterEdge game data (ID, name, operation status, categories, sync time) |
+| `kiosk_state_cache` | Local mirror of CenterEdge kiosks (ID, name, operation status, categories, supported actions, sync time) |
+| `pause_group_kiosks` | Kiosk memberships for pause groups (paused/unpaused alongside the group's games) |
+| `login_attempts` | Login rate-limiting state by IP (failed attempt counter + lockout window). |
+| `game_play_transactions` | Rolling ~30-day cache of the CenterEdge play feed (per-play card, game, tickets, points, cash). Powers the live feed, hourly reporting, and recent-day stats. |
+| `roles` | Role definitions (slug, name, description, JSON permission list, system flag). Seeded with admin/manager/tech. |
+| `game_daily_stats` | Permanent per-game, per-day rollup (plays, tickets, cash, points, unique cards). Written nightly by cron before the purge; powers month/year reporting. |
+| `action_retries` | Pending pause/unpause retries for games/kiosks that failed transiently (e.g. in use); re-attempted by the watchdog up to a cap. |
+
+**Execution status codes** in `scheduled_actions.executed`:
+- `0` — pending (not yet executed)
+- `1` — executed successfully
+- `2` — executed with errors
+- `3` — superseded (skipped during catch-up because a later action for the same group replaced it)
+
+## API Reference
+
+All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) require a valid `X-CSRF-Token` header (except `/api/auth/login`). Authentication is session-based via HttpOnly cookies.
+
+### Authentication
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/auth/login` | POST | No | Authenticate. Returns user object + CSRF token. |
+| `/api/auth/logout` | POST | Yes | Destroy session. |
+| `/api/auth/status` | GET | No | Check session validity. Returns auth status + CSRF token. |
+
+### Settings
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/settings` | GET | Read API config (passwords masked as `********`). |
+| `/api/settings` | PUT | Update API config and/or timezone. Changing password clears cached bearer token. |
+| `/api/settings/test` | POST | Test CenterEdge connection: authenticates, checks capabilities, counts games and categories. |
+
+### Games
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/games` | GET | List cached games with categories and sync timestamp. Auto-syncs if cache is empty. |
+| `/api/games/categories` | GET | Fetch categories live from CenterEdge (not cached). |
+| `/api/games/sync` | POST | Force full game cache refresh from CenterEdge. |
+
+### Pause Groups
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/groups` | GET | List all groups with member counts, game and kiosk stats (enabled/paused/outOfService), next transition, and active override. |
+| `/api/groups` | POST | Create a group with optional `category_ids`, `game_ids`, and `kiosk_ids`. |
+| `/api/groups/{id}` | GET | Single group with categories, games, kiosks, and schedules. |
+| `/api/groups/{id}` | PUT | Update group name, description, active flag, categories, games, and kiosks. |
+| `/api/groups/{id}` | DELETE | Delete group (cascades to schedules, categories, games, kiosks). |
+| `/api/groups/{id}/pause` | POST | Immediately pause all games and kiosks in the group (manual action). |
+| `/api/groups/{id}/unpause` | POST | Immediately unpause all games and kiosks in the group (manual action). |
+| `/api/groups/{id}/enforce` | POST | Immediately enforce the correct state based on current schedules and overrides. |
 
 ### Kiosks
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/api/kiosks` | Cached kiosk list with `pending_retry` per kiosk |
-| GET    | `/api/kiosks/{id}` | Live single-kiosk lookup |
-| POST   | `/api/kiosks/sync` | Force re-sync |
-| POST   | `/api/kiosks/{id}/pause` | `operationStatus = paused` (queues a retry on failure) |
-| POST   | `/api/kiosks/{id}/unpause` | `operationStatus = enabled` |
-| POST   | `/api/kiosks/{id}/out-of-service` | `operationStatus = outOfService` |
-| POST   | `/api/kiosks/{id}/action` | RPC perform-action (`{ actionId, operator? }`) |
-| PATCH  | `/api/kiosks` | Bulk JSON-Patch passthrough (only `replace /operationStatus` is allowed) |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/kiosks` | GET | List cached kiosks. Auto-syncs if cache is empty. |
+| `/api/kiosks/{id}` | GET | Live single-kiosk lookup (bypasses cache). |
+| `/api/kiosks/sync` | POST | Force resync from CenterEdge. |
+| `/api/kiosks/{id}/pause` | POST | Set `operationStatus = paused`. |
+| `/api/kiosks/{id}/unpause` | POST | Set `operationStatus = enabled`. |
+| `/api/kiosks/{id}/out-of-service` | POST | Set `operationStatus = outOfService`. |
+| `/api/kiosks/{id}/action` | POST | RPC perform-action passthrough (e.g. `{ "actionId": "reboot" }`). |
+| `/api/kiosks` | PATCH | Bulk JSON Patch passthrough (multi-kiosk operationStatus update). |
 
-### Capabilities
+### Schedules
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/capabilities` | Cached for 1 hour. `?refresh=1` to force a live fetch. Stale fallback if upstream is unreachable |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/schedules` | GET | List schedules. Supports `?group_id=` filter. |
+| `/api/schedules` | POST | Create schedule(s). Supports bulk via `days_of_week` array or single `day_of_week`. Triggers replan + enforcement if today is affected. |
+| `/api/schedules/{id}` | PUT | Update schedule. Triggers replan + enforcement. |
+| `/api/schedules/{id}` | DELETE | Delete schedule. Triggers replan + enforcement. |
 
-### Logs
+### Overrides
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/logs` | Paginated log. Filters: `from`, `to`, `source`, `group_id`, `action`, `success`. `?per_page` max 200 |
-| GET | `/api/logs/options` | The canonical lists of valid `source` and `action` filter values |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/overrides` | GET | List overrides grouped as `active`, `upcoming`, and `expired` (last 30 days, max 50). Supports `?group_id=` filter. |
+| `/api/overrides` | POST | Create override. If active now, executes immediately. Triggers replan. Tracks creating user. |
+| `/api/overrides/{id}` | DELETE | Delete override. If it was active, immediately enforces the correct post-deletion state. |
 
 ### Users
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/api/users` | All admin accounts |
-| POST   | `/api/users` | Create (username, display name, password ≥ 8 chars) |
-| PUT    | `/api/users/{id}` | Update display name / password / active flag (cannot deactivate self) |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/users` | GET | List all admin users (id, username, display name, role, active flag, timestamps) plus the role catalog. |
+| `/api/users` | POST | Create a new admin user (username, display name, role, password). Only admins can mint admins. |
+| `/api/users/{id}` | PUT | Update user (display name, role, password, active flag). Admin accounts can only be modified by admins; last-admin demotion/deactivation is blocked. |
+| `/api/users/{id}` | DELETE | Permanently delete a user (admin only; self-delete and last-admin deletion are blocked; override history is preserved). |
+
+### Roles
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/roles` | GET | Role list (with per-role user counts and caller capabilities) plus the permission catalog. |
+| `/api/roles` | POST | Create a custom role (admin only; name, description, permissions). |
+| `/api/roles/{slug}` | PUT | Update a role (admin only; the `admin` role is locked; system manager/tech keep their slug). |
+| `/api/roles/{slug}` | DELETE | Delete a custom role (admin only; blocked while any user holds it). |
+
+### Logs
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/logs` | GET | Paginated action log. Filters: `from`, `to` (dates), `source`, `group_id`, `action`, `success`. Pagination: `page`, `per_page` (max 200). |
 
 ### Health
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/api/health` | No | `{ status, database, cron, watchdog, warnings? }`. HTTP 200 healthy / 503 degraded. Reports the cron heartbeat (healthy if < 25 h old) and watchdog heartbeat (healthy if < 3 min old). `warnings[]` flags `install.php` or `fresh_install.php` still being web-accessible, or `APP_DEBUG` left on. |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/health` | GET | No | Health check. Reports database connectivity, cron heartbeat (healthy if <25 hours old), watchdog heartbeat (healthy if <3 minutes old). Returns HTTP 200 if all OK, 503 if degraded. |
 
----
+## CenterEdge Integration
 
-## CenterEdge integration
+### Authentication Flow
 
-### Authentication flow
+The application authenticates with the CenterEdge Card System API using a SHA-1 hash-based flow:
 
-```
-1. dt    = current UTC instant, format Y-m-d\TH:i:s.v\Z
-2. hash  = base64( SHA1(username + password + dt, raw=true) )
-3. POST /login with { username, passwordHash:hash, password, requestTimestamp:dt }
-4. Response → bearerToken; cached encrypted in api_config.bearer_token
-```
+1. Generate a UTC timestamp with millisecond precision (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
+2. Concatenate `username + password + timestamp`.
+3. Compute `SHA-1` of the concatenation, then `base64` encode the raw hash.
+4. POST to `/login` with `username`, `passwordHash`, `password`, and `requestTimestamp`.
+5. Receive and cache a `bearerToken`.
 
-`TOKEN_MAX_AGE` (1800 s) drives proactive re-authentication. Any HTTP 401
-on a real call also triggers re-auth and one retry. Saving new
-credentials in Settings clears `bearer_token` and `token_fetched_at` so
-the next call re-authenticates.
+### Token Management
 
-### Pagination
+- Tokens are cached encrypted in the database with a timestamp.
+- Proactive refresh after 30 minutes (`TOKEN_MAX_AGE`).
+- Automatic re-authentication on HTTP 401 responses.
+- Token cache is cleared when API credentials are changed via settings.
 
-`GET /games`, `GET /kiosks`, and `GET /games/categories` are paginated
-with `skip` / `take`. CEplay defaults to `take = GAMES_PAGE_SIZE` (500)
-with a hard ceiling of 1000 pages per call as a runaway-loop guard.
+### API Communication
 
-### Retries and timeouts
+- All requests use cURL with a 30-second timeout and 10-second connect timeout.
+- Supports optional `X-Api-Key` header when an API key is configured.
+- Game lists and categories are fetched with pagination (500 items per page, safety limit of 1000 pages).
+- Game state changes use JSON Patch format: `[{"op": "replace", "path": "/operationStatus", "value": "paused"}]`.
+- **Retry logic**: transient errors (network failures, 5xx, 408, 429) are retried up to 3 times with exponential backoff (2s, 4s, 8s). Client errors (4xx) other than 401/408/429 fail immediately.
 
-The HTTP layer wraps every call with:
+### Game States
 
-- 30-second total timeout (`API_TIMEOUT`).
-- 10-second connect timeout.
-- Up to 3 transient retries with exponential backoff (2 s → 4 s → 8 s)
-  for network errors, HTTP 5xx, 408, and 429.
-- 401 → one re-auth attempt, then retry once.
-- All other 4xx → fail immediately with the upstream message.
+CenterEdge games have three `operationStatus` values:
 
-### State patches
-
-`PATCH /games` and `PATCH /kiosks` use JSON-Patch:
-
-```json
-{ "games": { "<id>": [ { "op": "replace", "path": "/operationStatus", "value": "paused" } ] } }
-```
-
-Allowed `operationStatus` values: `enabled`, `paused`, `outOfService`.
-CEplay never patches `outOfService` to anything else — out-of-service
-games are treated as permanently offline by automation.
-
-### Operator object
-
-RPC actions (`/games/{id}/performAction`, `/kiosks/{id}/performAction`)
-require an `operator` per the spec:
-
-```json
-{ "actionId": "reboot", "operator": { "employeeName": "Floor Lead", "employeeNumber": 42, "stationName": "CEplay Web" } }
-```
-
-If the request omits `operator`, CEplay synthesises one from the
-authenticated admin user.
-
----
+| Status | Meaning | Automation Behavior |
+|--------|---------|-------------------|
+| `enabled` | Active, accepting play | Set by unpause actions |
+| `paused` | Temporarily disabled | Set by pause actions |
+| `outOfService` | Permanently offline | **Never touched** by automation (always skipped) |
 
 ## Security
 
-### Authentication & sessions
+### Authentication & Sessions
 
-- bcrypt (cost 12) with automatic rehash if cost is bumped.
-- Session ID regenerated on login (and on logout).
-- Cookies are HttpOnly + SameSite=Strict, plus Secure when HTTPS is
-  detected (forwarded proto-aware).
-- 2-hour sliding-window timeout (`SESSION_LIFETIME`).
-- Brute-force defences: progressive per-IP delay (1 / 3 / 5 s) plus a
-  hard lockout at 10 failures in 15 minutes. The `password_verify` call
-  always runs against a real bcrypt hash to avoid timing-based user
-  enumeration.
+- Passwords hashed with **bcrypt** (cost 12). Automatic rehash on login if cost parameter changes.
+- Session cookies: **HttpOnly**, **SameSite=Strict**, **Secure** (when HTTPS detected). Strict session mode enabled.
+- 2-hour session timeout with sliding window (activity refreshes the timer).
+- Session ID regenerated on login to prevent session fixation.
+- 1-second delay on failed login attempts (brute-force mitigation).
 
-### CSRF
+### CSRF Protection
 
-- 256-bit per-session token, validated with `hash_equals()`.
-- Required on every `POST` / `PUT` / `PATCH` / `DELETE` except login.
+- 256-bit random token generated per session, stored server-side.
+- Required via `X-CSRF-Token` header on all state-changing requests (POST, PUT, PATCH, DELETE).
+- Validated with timing-safe `hash_equals()`.
+- Login endpoint is exempt (pre-authentication).
 
-### Encryption at rest
+### Encryption at Rest
 
-- AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC).
-- Distinct encryption + MAC sub-keys derived from the master key.
-- Backward-compatible with the legacy "no MAC" format (logs a warning).
-- The master key comes from `PG_ENCRYPTION_KEY` (env) and falls back to
-  `ENCRYPTION_KEY` defined in `config.php`.
+- API credentials (username, password, API key, bearer token) encrypted with **AES-256-CBC**.
+- **Encrypt-then-MAC** scheme: HMAC-SHA256 integrity verification before decryption.
+- Separate encryption and MAC sub-keys derived from the master key via HKDF-like HMAC derivation.
+- Backward-compatible: gracefully decrypts legacy data encrypted without HMAC (logs a notice).
+- Master key sourced from `PG_ENCRYPTION_KEY` environment variable with fallback to `config.php`.
 
-### HTTP hardening
+### Request Security
 
-- Headers on every response: `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
-  `X-Permitted-Cross-Domain-Policies: none`,
-  `Permissions-Policy: geolocation=(), camera=(), microphone=()`,
-  `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-  (only when HTTPS is detected),
-  and a strict `Content-Security-Policy` allowing only `'self'`,
-  `'unsafe-inline'` (for the `APP_CONFIG` bootstrap), Google Fonts, and
-  the pinned Chart.js CDN URL.
-- All SQL parameterised with `:p0, :p1, …` positional binding.
-- `Validator` class checks lengths, types, enums, dates, times, URLs, IDs,
-  and array elements before any input reaches business logic.
-- `cron.php`, `cron_watchdog.php`, and `run_action.php` reject web SAPI.
-- Static file serving is locked to `realpath()` inside `public/`.
-- `install.php` self-locks once an admin account exists.
-- Sensitive API errors are sanitised on the way out (URLs and file paths
-  redacted) unless `PG_APP_DEBUG=true`.
+- All SQL queries use parameterized statements (`:p0`, `:p1`, ... positional binding).
+- Input validation on all API endpoints via the `Validator` class (type checking, length limits, format validation, enum enforcement).
+- Security headers on all responses: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
+- CLI-only guards on `cron.php`, `cron_watchdog.php`, and `run_action.php` prevent web execution.
+- Static file serving restricted to the `public/` directory with path traversal protection.
+- `install.php` web mode locks itself after the first admin user is created.
 
-### Production hardening checklist
+### Production Deployment Checklist
 
-1. Set `PG_ENCRYPTION_KEY` in the web server's environment.
-2. Force HTTPS at the load balancer / reverse proxy.
-3. Block direct access to `data/`, `install.php`, and `fresh_install.php`
-   in your nginx/Apache config (or delete the latter two).
-4. Confirm `data/` is `0770` owned by the web user and not symlinked
-   into the document root.
-5. Wire `/api/health` into your monitoring / alerting (Uptime Kuma,
-   Statuscake, etc.). Alert on HTTP 503, missing watchdog heartbeat
-   > 3 min, or `warnings[]` non-empty.
-6. Ensure `PG_APP_DEBUG` is unset.
-7. Make a daily SQLite backup (`sqlite3 data/pause_groups.db ".backup …"`).
+1. **Block `install.php` and `fresh_install.php`** via web server configuration or delete after setup.
+2. **Set `PG_ENCRYPTION_KEY`** as an environment variable (don't rely on the hardcoded fallback).
+3. **Enforce HTTPS** — session cookies are marked Secure only when HTTPS is detected.
+4. **Restrict `data/` directory** — ensure it's not web-accessible (or use `.htaccess` / nginx location block). Permissions should be `770` owned by the web server user.
+5. **Monitor health** — poll `GET /api/health` for degraded status. Alert if cron heartbeat is >25 hours old or watchdog heartbeat is >3 minutes old.
+6. **Review logs** — check `data/cron.log` and `data/watchdog.log` for errors. Logs auto-rotate at 500KB.
 
----
+## Configuration Reference
 
-## Operations
+Constants defined in `config.php`:
 
-### Health checks
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `ENCRYPTION_KEY` | From `PG_ENCRYPTION_KEY` env var | 64 hex chars (32 bytes) for AES-256-CBC |
+| `DB_PATH` | `__DIR__ . '/data/pause_groups.db'` | SQLite database file path |
+| `DEFAULT_TIMEZONE` | `America/New_York` | Fallback timezone (overridden by DB config) |
+| `SESSION_LIFETIME` | `7200` (2 hours) | Session timeout in seconds |
+| `APP_DEBUG` | `false` (from `PG_APP_DEBUG` env) | Verbose error output in API responses |
+| `LOCK_FILE` | `__DIR__ . '/data/.scheduler.lock'` | Concurrency lock file path |
+| `API_TIMEOUT` | `30` | CenterEdge API request timeout (seconds) |
+| `TOKEN_MAX_AGE` | `1800` (30 min) | Bearer token refresh interval (seconds) |
+| `GAMES_PAGE_SIZE` | `500` | Games per page when paginating CenterEdge API |
 
-```
-GET /api/health
-{
-  "status":   "ok" | "degraded",
-  "database": true | false,
-  "cron":     { "last_run": "...", "age_seconds": 12345, "healthy": true|false },
-  "watchdog": { "last_run": "...", "age_seconds": 42,    "healthy": true|false },
-  "warnings": [ ... ]   // only present when something looks insecure
-}
-```
+## Development
 
-HTTP 200 → all OK. HTTP 503 → at least one degraded indicator.
-
-### Common log destinations
-
-- `data/cron.log` — daily planner output.
-- `data/watchdog.log` — per-minute watchdog cycle output.
-- PHP error log (e.g. `/var/log/apache2/error.log`) — request-time
-  exceptions, swallowed errors from background jobs.
-- The action log table (`/api/logs`) — every state-changing event the
-  admin team needs to audit.
-
-### Purging
-
-`Scheduler::purgeOldData()` runs nightly during the daily cron with the
-retention windows from Settings. It removes:
-
-- `action_log` rows older than `retention_action_log_days`.
-- `scheduled_actions` rows whose `scheduled_date` is older than
-  `retention_scheduled_actions_days` and which are no longer pending.
-- `schedule_overrides` rows whose `end_datetime` is older than
-  `retention_overrides_days`.
-- `game_play_transactions` rows older than `retention_transactions_days`.
-
-### Database backup
+Start a local server:
 
 ```bash
-sqlite3 /var/www/ceplay/data/pause_groups.db ".backup '/backup/ceplay-$(date +%F).db'"
+php -S localhost:8000
 ```
 
-The backup is consistent (SQLite uses internal locking) so it works
-without stopping CEplay.
+Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing (`#/dashboard`, `#/games`, `#/performance`, `#/cards`, `#/groups`, `#/kiosks`, `#/schedules`, `#/overrides`, `#/analytics`, `#/logs`, `#/settings`).
 
-### Resetting the bearer token
+The frontend is a SPA with dark and light themes (toggled via a button in the navigation bar, persisted to localStorage) using the Inter font family. All JavaScript modules are loaded as plain `<script>` tags (no bundler). The `api.js` module handles all HTTP communication and automatically injects the CSRF token header.
 
-Saving any password through Settings clears `bearer_token` and
-`token_fetched_at`. To force a full re-auth without changing credentials,
-simply re-save the same password.
+Manual pause/unpause actions use optimistic UI updates for instant visual feedback, skipping redundant API syncs.
 
-### Concurrency lock summary
+There is no automated test suite.
 
-| Script | Lock behaviour |
-|--------|---------------|
-| `cron.php` | Non-blocking — exits cleanly if another instance is running |
-| `cron_watchdog.php` | 15-second blocking retry, then skips this cycle |
-| `run_action.php` | 60-second blocking retry, then exits with an error log |
-| `Scheduler::replanToday()` | 30-second blocking retry, then logs and skips |
+## Beta Readiness Regression Checks
 
-All four use `data/.scheduler.lock` via `flock(LOCK_EX | LOCK_NB)`.
+Before each beta release, run this minimum regression pass:
 
----
-
-## Smoke testing checklist
-
-Run before every deploy:
-
-1. **PHP lint**
-
+1. **PHP lint pass**
    ```bash
-   find . -name '*.php' -not -path './data/*' -not -path './.git/*' \
-        | xargs -L1 php -l
+   find . -name '*.php' -print0 | xargs -0 -n1 php -l
    ```
+2. **Installer sanity**
+   - Run `php install.php` in a disposable environment and confirm admin creation + DB bootstrap.
+   - Run `php install.php --reset` and confirm a clean rebuild.
+3. **Scheduler sanity**
+   - Create a schedule and verify both pause/unpause actions appear in logs.
+   - If `at` is not installed, verify `cron_watchdog.php` executes actions within one minute.
+4. **Reporting & roles**
+   - Confirm the Performance page returns data for Day/Week/Month/Year and that `game_daily_stats` grows after a cron run.
+   - Confirm a `tech` login sees no cash/revenue figures and no Card Lookup nav item.
+   - Confirm group/schedule create/edit/delete is rejected (403) for a `tech` session.
+5. **Manual UI sweep**
+   - Validate each navigation route renders without console errors.
+   - Validate dark/light theme toggle works on login + authenticated layouts.
 
-2. **JS lint** (optional, requires Node)
+## Known Limitations
 
-   ```bash
-   for f in public/js/*.js; do node --check "$f"; done
-   ```
-
-3. **Installer**
-
-   ```bash
-   php install.php           # interactive
-   php install.php --migrate # idempotent migrations
-   ```
-
-4. **Cron sanity**
-
-   ```bash
-   php cron.php           # should print a clean daily plan
-   php cron_watchdog.php  # should write a heartbeat
-   tail -n 50 data/cron.log data/watchdog.log
-   ```
-
-5. **UI smoke** (sign in as admin)
-
-   - Dashboard renders without console errors.
-   - Stats grid + Swipe Activity + Swipe by Category + Top games today
-     all render (the latter two may say "no data" until the watchdog has
-     polled for a couple of minutes).
-   - Click **Sync Now** — last-synced timestamp updates.
-   - Create a quick override that ends in 2 minutes; watch it execute and
-     then auto-revert.
-   - Pause one game from the Games page; confirm the action appears in
-     the Action Log.
-   - Look up a known card on the Cards page.
-   - Deactivate / reactivate a non-self admin user.
-   - Toggle the dark / light theme.
-
-6. **Health probe**
-
-   ```bash
-   curl -fsS http://localhost:8080/api/health | jq
-   ```
-
-   `status` must be `"ok"` and `warnings` must be absent (or only contain
-   the expected dev warnings).
-
----
-
-## Known limitations
-
-- **No automated tests.** Verification is the smoke checklist above plus
-  manual UI testing.
-- **Schedules cannot cross midnight.** Split a 23:00–01:00 window into
-  two rows (23:00–23:59 + 00:00–01:00).
-- **Single-server SQLite.** WAL allows readers and one writer; this is
-  fine for one venue. For multi-site you'd need to migrate to PostgreSQL.
-- **`at` is optional but recommended.** Without it, scheduled actions
-  fire within 60 s of their target time via the watchdog.
-- **Kiosk endpoints are best-effort.** If your tenant doesn't expose
-  `/kiosks` or `/kiosks` PATCHes, CEplay logs and continues — kiosk
-  controls disappear from the UI per the capabilities response.
-- **Card module is read-only.** Adjustments, wipes, combines, and bulk
-  issue all need a different audit-capture flow that hasn't been wired
-  up yet.
-- **No email/SMS alerting.** Plug `/api/health` into your existing
-  monitor instead.
+- **No automated tests** — verification relies on the smoke checklist above and manual UI testing.
+- **No overnight schedules** — a schedule cannot cross midnight (e.g., 23:00–01:00). Create two separate entries instead.
+- **Single-server only** — SQLite does not support multi-server deployments. Use a single application server.
+- **`at` scheduler optional** — without `at`/`atrm`, actions execute within 60 seconds via the watchdog cron rather than at the exact scheduled minute.
+- **PHP 7.4 minimum** — uses positional unpacking and arrow functions available from PHP 7.4. Not tested on PHP 9+.
+- **No email/SMS alerts** — operational monitoring relies on polling `/api/health` and reviewing log files.

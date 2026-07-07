@@ -107,33 +107,81 @@ if ($isCli) {
 
     // Verify the data directory is writable
     if (!is_writable($dataDir)) {
-        $currentUser = posix_getpwuid(posix_geteuid())['name'] ?? get_current_user();
+        // posix_* is not compiled into every PHP build — fall back gracefully
+        // so this error path can't itself fatal with "undefined function".
+        $currentUser = function_exists('posix_getpwuid')
+            ? (posix_getpwuid(posix_geteuid())['name'] ?? get_current_user())
+            : get_current_user();
         echo "[ERROR] Data directory is not writable by '$currentUser': $dataDir\n";
         echo "        Fix: sudo chown $currentUser:$currentUser $dataDir && sudo chmod 770 $dataDir\n";
         exit(1);
     }
 
-    // Step 2: Initialize database
+    // Step 2: Initialize / migrate database. DB::getInstance() runs the
+    // CREATE TABLE IF NOT EXISTS schema and the ALTER TABLE migrations on
+    // every boot, so this step is fully idempotent: running install.php
+    // against an existing installation will add any missing columns
+    // (including the new admin_users.role column) without touching data.
     echo "\nInitializing database...\n";
+    $hadExistingDb = file_exists(DB_PATH);
     try {
         $db = DB::getInstance();
         // Make database files group-writable so the web server can access them
         @chmod(DB_PATH, 0660);
         @chmod(DB_PATH . '-wal', 0660);
         @chmod(DB_PATH . '-shm', 0660);
-        echo "[OK] Database initialized at: " . DB_PATH . "\n";
+        if ($hadExistingDb) {
+            echo "[OK] Existing database found and migrated in place: " . DB_PATH . "\n";
+        } else {
+            echo "[OK] Database initialized at: " . DB_PATH . "\n";
+        }
     } catch (Exception $e) {
         echo "[ERROR] Database initialization failed: " . $e->getMessage() . "\n";
         exit(1);
     }
 
-    // Step 3: Check if admin user exists
-    $existingAdmin = DB::queryOne('SELECT id FROM admin_users LIMIT 1');
+    // Step 2a: Backfill any users that pre-date the role column. ALTER TABLE
+    // already filled them with 'admin' via the column default; this is a
+    // belt-and-suspenders pass so a partially-migrated row never leaves
+    // someone locked out.
+    try {
+        $patched = DB::execute(
+            "UPDATE admin_users SET role = 'admin' WHERE role IS NULL OR role = ''"
+        );
+        if ($patched > 0) {
+            echo "[OK] Backfilled role='admin' on $patched legacy user(s).\n";
+        }
+        $existingRoleCounts = DB::query(
+            "SELECT role, COUNT(*) AS c FROM admin_users GROUP BY role ORDER BY role"
+        );
+        if ($existingRoleCounts) {
+            $summary = [];
+            foreach ($existingRoleCounts as $r) {
+                $summary[] = $r['role'] . ': ' . $r['c'];
+            }
+            echo "[INFO] Current users by role — " . implode(', ', $summary) . "\n";
+        }
+    } catch (Exception $e) {
+        echo "[WARN] Role backfill skipped: " . $e->getMessage() . "\n";
+    }
+
+    // Step 3: Check if admin user exists. The first user created during
+    // first-run is always assigned the 'admin' role so the installation is
+    // never left without a privileged account.
+    $existingAdmin = DB::queryOne(
+        "SELECT id FROM admin_users WHERE role = 'admin' AND is_active = 1 LIMIT 1"
+    );
     if ($existingAdmin) {
-        echo "\n[INFO] An admin user already exists. Skipping user creation.\n";
-        echo "       To create additional users, use the web UI Settings page.\n";
+        echo "\n[INFO] An active administrator already exists. Skipping user creation.\n";
+        echo "       To create additional users (admin / manager / tech), use the\n";
+        echo "       web UI Settings page after logging in.\n";
     } else {
-        echo "\n--- Create Admin User ---\n";
+        $anyUser = DB::queryOne('SELECT id FROM admin_users LIMIT 1');
+        if ($anyUser) {
+            echo "\n[WARN] No active administrator found, but other accounts exist.\n";
+            echo "       Creating a new administrator so you can sign in and manage roles.\n";
+        }
+        echo "\n--- Create Administrator ---\n";
         $username = cliPrompt('Username', 'admin');
         $displayName = cliPrompt('Display name', 'Administrator');
 
@@ -152,11 +200,22 @@ if ($isCli) {
         } while (true);
 
         $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-        DB::execute(
-            'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
-            [$username, $hash, $displayName]
-        );
-        echo "[OK] Admin user '$username' created.\n";
+        // If the username collides with an existing inactive/non-admin row,
+        // promote it in place rather than failing on the UNIQUE constraint.
+        $clash = DB::queryOne('SELECT id FROM admin_users WHERE username = :p0', [$username]);
+        if ($clash) {
+            DB::execute(
+                "UPDATE admin_users SET password_hash = :p0, display_name = :p1, role = 'admin', is_active = 1, updated_at = datetime('now') WHERE id = :p2",
+                [$hash, $displayName, (int)$clash['id']]
+            );
+            echo "[OK] Existing user '$username' promoted to administrator.\n";
+        } else {
+            DB::execute(
+                "INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, 'admin')",
+                [$username, $hash, $displayName]
+            );
+            echo "[OK] Administrator '$username' created.\n";
+        }
     }
 
     // Step 4: Timezone
@@ -243,7 +302,12 @@ if ($isCli) {
 // Hard lockout: if an admin already exists, refuse to serve the installer at all.
 // This prevents information leakage (confirming the app exists) and closes any
 // residual attack surface if the file is accidentally left web-accessible.
+//
+// We also opportunistically run schema initialization here so an upgrade by
+// dropping new files in place triggers the role-column migration on the
+// next page load — even if the operator forgets to run install.php at all.
 try {
+    DB::getInstance(); // runs CREATE/ALTER TABLE migrations idempotently
     $existingAdmin = DB::queryOne('SELECT id FROM admin_users LIMIT 1');
     if ($existingAdmin) {
         header('HTTP/1.1 403 Forbidden');
@@ -288,11 +352,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($existing) throw new RuntimeException("Username '$username' already exists.");
 
                 $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+                // First-run admin always lands as the 'admin' role.
                 DB::execute(
-                    'INSERT INTO admin_users (username, password_hash, display_name) VALUES (:p0, :p1, :p2)',
+                    "INSERT INTO admin_users (username, password_hash, display_name, role) VALUES (:p0, :p1, :p2, 'admin')",
                     [$username, $hash, $displayName]
                 );
-                $message = "Admin user '$username' created successfully.";
+                $message = "Administrator '$username' created successfully.";
                 $messageType = 'success';
                 $step = 'done';
                 break;
@@ -376,11 +441,11 @@ if ($hasAdmin && $step !== 'done') {
 
     <?php if ($step === 'already_setup'): ?>
         <p class="sub">Setup has already been completed.</p>
-        <p><span class="check">&#10003;</span> Database initialized</p>
-        <p><span class="check">&#10003;</span> Admin user exists</p>
+        <p><span class="check">&#10003;</span> Database initialized and migrations applied</p>
+        <p><span class="check">&#10003;</span> Administrator account exists</p>
         <div class="info">
             <p><a href="./">Go to application &rarr;</a></p>
-            <p style="margin-top: 0.5rem;">To manage users and settings, log in and visit the Settings page.</p>
+            <p style="margin-top: 0.5rem;">To manage users (admin / manager / tech), log in and visit the Settings page.</p>
         </div>
 
     <?php elseif ($step === 'done'): ?>
@@ -393,7 +458,7 @@ if ($hasAdmin && $step !== 'done') {
         </div>
 
     <?php else: ?>
-        <p class="sub">Create your first admin account to get started.</p>
+        <p class="sub">Create the first administrator account to get started. Additional users (managers and technicians) can be added from the Settings page after logging in.</p>
 
         <?php if ($dbExists): ?>
             <p style="margin-bottom: 1rem;"><span class="check">&#10003;</span> Database initialized</p>

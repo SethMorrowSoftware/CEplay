@@ -16,7 +16,9 @@ require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
 function handleCards(string $method, array $parts, ?array $input): void {
-    Auth::requireAuth();
+    // Card lookup exposes balances, transactions, and PIN data — sales-side
+    // information the 'tech' role is not permitted to see.
+    Auth::requireAccess('cards');
 
     if ($method !== 'GET') {
         http_response_code(405);
@@ -49,14 +51,9 @@ function handleCards(string $method, array $parts, ?array $input): void {
         return;
     }
 
-    // Card data is PII-adjacent, so every read is audit-logged with the
-    // looked-up card number — staff lookups are a known accountability
-    // requirement at the venue.
     try {
         if ($sub === null) {
             $card = $client->getCard($cardNumber);
-            DB::auditLog('card-lookup', 'card_viewed', null,
-                ['card_number' => $cardNumber]);
             echo json_encode($card);
             return;
         }
@@ -65,34 +62,53 @@ function handleCards(string $method, array $parts, ?array $input): void {
             $skip = max(0, (int)($_GET['skip'] ?? 0));
             $take = min(200, max(1, (int)($_GET['take'] ?? 50)));
             $result = $client->getCardTransactions($cardNumber, $skip, $take);
-            DB::auditLog('card-lookup', 'card_transactions_viewed', null, [
-                'card_number' => $cardNumber,
-                'skip' => $skip,
-                'take' => $take,
-            ]);
             echo json_encode($result);
             return;
         }
 
         if ($sub === 'pin') {
             $validate = $_GET['validate'] ?? null;
-            $isValidate = ($validate !== null && $validate !== '');
+            $actorId = Auth::userId();
+
+            // Rate-limit PIN validation attempts (the brute-forceable path).
+            // Counting off the audit trail keeps this self-contained: every
+            // attempt below is logged with source 'card-pin', so the log IS
+            // the sliding window. 15 attempts / 10 minutes per user is ample
+            // for floor staff helping guests and useless for brute force.
+            if ($validate !== null) {
+                $cutoff = gmdate('Y-m-d H:i:s', time() - 600);
+                $row = DB::queryOne(
+                    'SELECT COUNT(*) AS c FROM action_log
+                     WHERE source = :p0 AND action = :p1 AND timestamp > :p2
+                       AND details LIKE :p3',
+                    ['card-pin', 'pin_validate_attempt', $cutoff,
+                     '%"actor_user_id":' . (int)$actorId . '}']
+                );
+                if ((int)($row['c'] ?? 0) >= 15) {
+                    DB::auditLog('card-pin', 'pin_validate_rate_limited', $actorId, [
+                        'card' => $cardNumber,
+                    ], false);
+                    http_response_code(429);
+                    header('Retry-After: 600');
+                    echo json_encode(['error' => 'Too many PIN validation attempts. Please wait a few minutes and try again.']);
+                    return;
+                }
+            }
+
             // Per spec, the pin endpoint returns 404 for unknown cards or cards
             // without PIN. Surface that gracefully so the UI can distinguish
             // "no PIN" from "wrong PIN".
             try {
-                $result = $client->getCardPin($cardNumber, $isValidate ? (string)$validate : null);
-                DB::auditLog('card-pin', $isValidate ? 'card_pin_validated' : 'card_pin_probed', null, [
-                    'card_number' => $cardNumber,
-                    'pin_match' => $isValidate ? !empty($result['valid'] ?? null) : null,
-                ]);
-            } catch (RuntimeException $e) {
-                // Re-throw after logging so the outer catch keeps the existing
-                // 404/400 surface mapping intact.
-                DB::auditLog('card-pin', $isValidate ? 'card_pin_validated' : 'card_pin_probed', null, [
-                    'card_number' => $cardNumber,
-                ], false, $e->getMessage());
-                throw $e;
+                $result = $client->getCardPin($cardNumber, $validate !== null ? (string)$validate : null);
+            } finally {
+                // Audit every probe/validate — PIN checks are sensitive enough
+                // to leave a trail even when the upstream call fails.
+                DB::auditLog(
+                    'card-pin',
+                    $validate !== null ? 'pin_validate_attempt' : 'pin_probed',
+                    $actorId,
+                    ['card' => $cardNumber]
+                );
             }
             echo json_encode($result);
             return;
@@ -116,16 +132,6 @@ function handleCards(string $method, array $parts, ?array $input): void {
             }
         } elseif (strpos($msg, 'HTTP 400') !== false) {
             $code = 400;
-        }
-
-        // Record the failure so failed lookups (wrong card #, bad PIN, etc.)
-        // are visible alongside successes. Skip if the pin handler already
-        // logged its specific failure above.
-        if ($sub !== 'pin') {
-            $auditAction = $sub === 'transactions' ? 'card_transactions_viewed' : 'card_viewed';
-            DB::auditLog('card-lookup', $auditAction, null, [
-                'card_number' => $cardNumber,
-            ], false, $msg);
         }
 
         http_response_code($code);

@@ -8,17 +8,15 @@
 #    Step 1      Copy app files to /var/persist/pause-groups/ (survives reboots)
 #    Step 2      Create the writable data directory
 #    Step 3      Generate a random AES-256 encryption key
-#    Step 4      Configure Podman storage on /var/persist (avoids root-FS fill)
-#    Step 5      Pull the PHP-FPM container image
-#    Step 6      Run the interactive first-run installer (creates admin account)
-#    Step 7      Fix file ownership for the PHP-FPM container user
-#    Step 8      Create & start the PHP-FPM systemd service
-#    Step 9      Create systemd timers (watchdog every minute, daily planner)
-#    Step 10     Security cleanup and stability hardening (cap journald,
-#                weekly Podman prune, remove install.php / fresh_install.php)
-#    Step 11     Generate the Nginx server block and save it to a file
-#    Step 12     Verify services are running
-#    Step 13     Print a final checklist of remaining manual steps
+#    Step 4      Pull the PHP-FPM container image
+#    Step 5      Run the interactive first-run installer (creates admin account)
+#    Step 6      Fix file ownership for the PHP-FPM container user
+#    Step 7      Create & start the PHP-FPM systemd service
+#    Step 8      Create systemd timers (watchdog every minute, daily planner)
+#    Step 9      Remove fresh_install.php (security)
+#    Step 10     Generate the Nginx server block and save it to a file
+#    Step 11     Verify services are running
+#    Step 12     Print a final checklist of remaining manual steps
 #
 #  IMPORTANT — Nginx is NOT auto-edited.
 #    The existing Nginx config at /var/persist/nginx.conf already has working
@@ -177,36 +175,6 @@ if ! command -v openssl &>/dev/null; then
 fi
 ok "openssl found."
 
-# ── Check: semanage available (needed for SELinux relabeling in step 4) ──────
-# semanage comes from policycoreutils-python-utils, which is NOT in the
-# default FCOS image. Without it, restorecon would apply the wrong default
-# label (var_t) to Podman's relocated storage and containers would fail to
-# read their own image layers ("RELRO protection failed: No such file or
-# directory" / "error while loading shared libraries: ... Permission denied").
-info "Checking for semanage (SELinux file context management)..."
-if ! command -v semanage &>/dev/null; then
-    warn "semanage not installed — required for SELinux labeling of relocated"
-    warn "Podman storage. Layering policycoreutils-python-utils via rpm-ostree..."
-    echo ""
-    if rpm-ostree install policycoreutils-python-utils; then
-        echo ""
-        warn "╔══════════════════════════════════════════════════════╗"
-        warn "║  REBOOT REQUIRED                                     ║"
-        warn "╚══════════════════════════════════════════════════════╝"
-        warn "  policycoreutils-python-utils has been queued for the next boot."
-        warn "  Reboot now and re-run this script after the system comes up:"
-        echo ""
-        echo "    sudo systemctl reboot"
-        echo "    # after reboot:"
-        echo "    sudo bash setup-fcos.sh"
-        echo ""
-        exit 0
-    else
-        die "rpm-ostree install failed. Check internet access and 'rpm-ostree status'."
-    fi
-fi
-ok "semanage available."
-
 # ── Warn if existing install detected ────────────────────────────────────────
 if [[ -f "${DATA_DIR}/pause_groups.db" ]]; then
     echo ""
@@ -228,7 +196,7 @@ echo ""
 # =============================================================================
 #  STEP 1 — COPY APP FILES
 # =============================================================================
-hdr "1 of 13 — Copy app files to ${INSTALL_DIR}"
+hdr "1 of 12 — Copy app files to ${INSTALL_DIR}"
 echo ""
 note "Why: Fedora CoreOS is an immutable OS. Files placed in /var/"
 note "persist are stored on a separate VHDX that survives OS rebuilds"
@@ -263,7 +231,7 @@ fi
 # =============================================================================
 #  STEP 2 — CREATE DATA DIRECTORY
 # =============================================================================
-hdr "2 of 13 — Create data directory"
+hdr "2 of 12 — Create data directory"
 echo ""
 note "The data directory holds the SQLite database, log files, and lock"
 note "files. It needs to be writable by the PHP-FPM container."
@@ -280,7 +248,7 @@ ok "Data directory ready: ${DATA_DIR}"
 # =============================================================================
 #  STEP 3 — GENERATE ENCRYPTION KEY
 # =============================================================================
-hdr "3 of 13 — Generate AES-256 encryption key"
+hdr "3 of 12 — Generate AES-256 encryption key"
 echo ""
 note "The app encrypts your CenterEdge API credentials (username, password,"
 note "API key, bearer token) at rest using AES-256-CBC. This key protects"
@@ -311,67 +279,9 @@ ENVFILE
 fi
 
 # =============================================================================
-#  STEP 4 — CONFIGURE PODMAN STORAGE ON /var/persist
+#  STEP 4 — PULL PHP-FPM CONTAINER IMAGE
 # =============================================================================
-# Podman's default storage at /var/lib/containers/storage lives on the small
-# root partition (~8 GB on standard FCOS). Container layers (especially after
-# many image pulls / updates) accumulate and can fill that disk, breaking
-# every container on the host. We point Podman at /var/persist (typically
-# 100+ GB) instead, then add a persistent SELinux file-context equivalency
-# so containers can read their own image layers after relocation.
-hdr "4 of 13 — Configure Podman storage location"
-echo ""
-note "Default Podman storage on FCOS sits on the small root partition."
-note "We relocate it to /var/persist (the large persistent volume) so"
-note "container layers can't fill the root FS and take everything down."
-echo ""
-
-PODMAN_STORAGE_ROOT="/var/persist/containers"
-PODMAN_GRAPHROOT="${PODMAN_STORAGE_ROOT}/storage"
-STORAGE_CONF="/etc/containers/storage.conf"
-
-mkdir -p "$PODMAN_GRAPHROOT"
-mkdir -p /etc/containers
-
-if [[ -f "$STORAGE_CONF" ]] && grep -qF "graphroot = \"${PODMAN_GRAPHROOT}\"" "$STORAGE_CONF"; then
-    ok "storage.conf already points to ${PODMAN_GRAPHROOT}."
-else
-    cat > "$STORAGE_CONF" <<EOF
-# Generated by setup-fcos.sh on $(date -u +"%Y-%m-%d %H:%M UTC")
-# Relocate Podman storage off the small root partition.
-[storage]
-driver = "overlay"
-graphroot = "${PODMAN_GRAPHROOT}"
-runroot = "/run/containers/storage"
-EOF
-    ok "Wrote ${STORAGE_CONF}."
-fi
-
-# Persistent SELinux file-context equivalency. Without this, restorecon
-# applies var_t to the relocated path and containers can't load shared
-# libraries from their image layers.
-if semanage fcontext -l 2>/dev/null | grep -qE "^${PODMAN_STORAGE_ROOT}( |/)" ; then
-    ok "SELinux equivalency for ${PODMAN_STORAGE_ROOT} already present."
-else
-    semanage fcontext -a -e /var/lib/containers "$PODMAN_STORAGE_ROOT"
-    ok "Added SELinux equivalency: ${PODMAN_STORAGE_ROOT} → /var/lib/containers"
-fi
-
-info "Applying SELinux labels to ${PODMAN_STORAGE_ROOT} (may take ~30s)..."
-restorecon -R "$PODMAN_STORAGE_ROOT" >/dev/null 2>&1 || true
-ok "SELinux labels applied."
-
-# Verify Podman sees the new graphroot
-if podman info 2>/dev/null | grep -qF "graphRoot: ${PODMAN_GRAPHROOT}"; then
-    ok "Podman is using ${PODMAN_GRAPHROOT}."
-else
-    warn "Podman did not pick up the new graphroot. Check ${STORAGE_CONF}."
-fi
-
-# =============================================================================
-#  STEP 5 — PULL PHP-FPM CONTAINER IMAGE
-# =============================================================================
-hdr "5 of 13 — Pull PHP-FPM container image"
+hdr "4 of 12 — Pull PHP-FPM container image"
 echo ""
 note "Image: ${PHP_IMAGE}"
 note "This is the official PHP-FPM image from Docker Hub. It includes"
@@ -406,7 +316,7 @@ fi
 # =============================================================================
 #  STEP 5 — RUN THE INTERACTIVE INSTALLER
 # =============================================================================
-hdr "6 of 13 — Run the interactive installer"
+hdr "5 of 12 — Run the interactive installer"
 echo ""
 note "The installer will initialize the SQLite database and walk you"
 note "through creating your admin account."
@@ -461,7 +371,7 @@ ok "Installer finished."
 # =============================================================================
 #  STEP 6 — FIX PERMISSIONS
 # =============================================================================
-hdr "7 of 13 — Fix file ownership"
+hdr "6 of 12 — Fix file ownership"
 echo ""
 note "The installer ran as root (uid 0) inside the container. The PHP-FPM"
 note "service (step 7) runs as www-data (uid 33) inside its container."
@@ -485,7 +395,7 @@ ok "App files set to world-readable (required for container access)."
 # =============================================================================
 #  STEP 7 — CREATE PHP-FPM SYSTEMD SERVICE
 # =============================================================================
-hdr "8 of 13 — Create PHP-FPM systemd service"
+hdr "7 of 12 — Create PHP-FPM systemd service"
 echo ""
 note "This creates a systemd service (pause-groups-fpm) that runs the"
 note "PHP-FPM container as a long-lived process, restarting it if it"
@@ -562,7 +472,7 @@ fi
 # =============================================================================
 #  STEP 8 — CREATE SYSTEMD TIMERS (replaces cron)
 # =============================================================================
-hdr "9 of 13 — Create systemd timers"
+hdr "8 of 12 — Create systemd timers"
 echo ""
 note "Fedora CoreOS does not use /etc/cron.d in the traditional sense."
 note "Instead, we use systemd timers — the modern equivalent of cron."
@@ -664,15 +574,11 @@ done
 # =============================================================================
 #  STEP 9 — SECURITY CLEANUP
 # =============================================================================
-hdr "10 of 13 — Security cleanup and stability hardening"
+hdr "9 of 12 — Remove fresh_install.php"
 echo ""
 note "fresh_install.php wipes the database and creates a default admin"
 note "account with a known password (admin / admin123!). It must be"
 note "deleted from production systems to prevent unauthorized access."
-note ""
-note "install.php is the first-run setup script. It self-locks once an"
-note "admin user exists, but the dashboard still flags it as a warning"
-note "and the audit guidance is to remove it after first-run setup."
 echo ""
 
 FRESH="${INSTALL_DIR}/fresh_install.php"
@@ -683,60 +589,10 @@ else
     ok "fresh_install.php already absent — nothing to do."
 fi
 
-INSTALLER="${INSTALL_DIR}/install.php"
-if [[ -f "$INSTALLER" ]]; then
-    rm -f "$INSTALLER"
-    ok "install.php deleted."
-else
-    ok "install.php already absent — nothing to do."
-fi
-
-# ── Cap journald to keep /var/log from filling the root partition ────────────
-echo ""
-note "Capping systemd journal size so /var/log can't fill the root FS."
-JOURNALD_DROP_IN="/etc/systemd/journald.conf.d/size.conf"
-mkdir -p "$(dirname "$JOURNALD_DROP_IN")"
-cat > "$JOURNALD_DROP_IN" <<'EOF'
-[Journal]
-SystemMaxUse=200M
-MaxRetentionSec=2week
-EOF
-systemctl restart systemd-journald
-ok "journald capped at 200M / 2-week retention."
-
-# ── Weekly Podman prune: drop unused images/containers older than 7 days ─────
-echo ""
-note "Installing weekly Podman prune timer so old image layers don't"
-note "pile up between deployments."
-cat > /etc/systemd/system/podman-prune.service <<'EOF'
-[Unit]
-Description=Prune unused Podman images and containers
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/podman system prune -af --filter "until=168h"
-EOF
-
-cat > /etc/systemd/system/podman-prune.timer <<'EOF'
-[Unit]
-Description=Weekly Podman prune
-
-[Timer]
-OnCalendar=weekly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now podman-prune.timer >/dev/null 2>&1
-ok "podman-prune.timer enabled (runs weekly)."
-
 # =============================================================================
 #  STEP 10 — GENERATE NGINX BLOCK
 # =============================================================================
-hdr "11 of 13 — Generate Nginx server block"
+hdr "10 of 12 — Generate Nginx server block"
 echo ""
 note "This step does NOT modify ${NGINX_CONF}."
 note "Instead, the required Nginx config block is written to a file and"
@@ -782,9 +638,26 @@ server {
     index index.php;
 
     # ── Security: block direct access to server-side files ──────────────────
-    # These files contain credentials, database, or sensitive logic.
-    # They must NEVER be served directly by Nginx.
-    location ~ ^/(data|lib|\.env|config\.php|cron.*\.php|run_action\.php|install\.php|fresh_install\.php|AUDIT\.md|README\.md) {
+    # These paths contain credentials, the database, internal docs (including
+    # the security audit), the mock demo app, installers, or sensitive logic.
+    # They must NEVER be served directly by Nginx. Regex locations match in
+    # order, so these deny blocks sit BEFORE the .php fastcgi block below.
+    # NOTE: routed API URLs (/api/health, /api/games, ...) are NOT files and
+    # fall through to index.php — only direct hits on the api/*.php source
+    # files are denied.
+    location ~ ^/(data|lib|docs|demo)/ {
+        deny all;
+        return 404;
+    }
+    location ~ ^/api/.+\.php$ {
+        deny all;
+        return 404;
+    }
+    location ~ ^/(\.env|config\.php|cron\.php|cron_watchdog\.php|run_action\.php|install\.php|fresh_install\.php)$ {
+        deny all;
+        return 404;
+    }
+    location ~ \.md$ {
         deny all;
         return 404;
     }
@@ -865,7 +738,7 @@ note "  cat ${SNIPPET_FILE}"
 # =============================================================================
 #  STEP 11 — VERIFY SERVICES
 # =============================================================================
-hdr "12 of 13 — Verify services"
+hdr "11 of 12 — Verify services"
 echo ""
 info "Checking all pause-groups services and timers..."
 echo ""
@@ -913,7 +786,7 @@ fi
 # =============================================================================
 #  STEP 12 — FINAL SUMMARY AND CHECKLIST
 # =============================================================================
-hdr "13 of 13 — Done!"
+hdr "12 of 12 — Done!"
 echo ""
 echo -e "${BOLD}${GRN}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${GRN}║  Installation complete                               ║${NC}"

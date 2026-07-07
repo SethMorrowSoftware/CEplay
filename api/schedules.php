@@ -19,9 +19,13 @@ function handleSchedules(string $method, array $parts, ?array $input): void {
             listSchedules();
             break;
         case 'POST':
+            // Schedule windows define the venue's automation — structural
+            // changes are manager/admin only (same policy as pause groups).
+            Auth::requireAccess('schedules_manage');
             createSchedules($input);
             break;
         case 'PUT':
+            Auth::requireAccess('schedules_manage');
             if (!$scheduleId) {
                 http_response_code(400);
                 echo json_encode(['error' => 'Schedule ID required']);
@@ -30,6 +34,7 @@ function handleSchedules(string $method, array $parts, ?array $input): void {
             updateSchedule($scheduleId, $input);
             break;
         case 'DELETE':
+            Auth::requireAccess('schedules_manage');
             if (!$scheduleId) {
                 http_response_code(400);
                 echo json_encode(['error' => 'Schedule ID required']);
@@ -104,17 +109,16 @@ function createSchedules(?array $input): void {
         $created[] = DB::lastInsertId();
     }
 
-    DB::auditLog('admin', 'schedule_created', null, [
-        'group_id' => $groupId,
-        'days_of_week' => $daysOfWeek,
-        'start_time' => $startTime,
-        'end_time' => $endTime,
-        'is_active' => (bool)$isActive,
-        'schedule_ids' => $created,
-    ]);
-
     // Replan today if any schedule affects today; enforce state immediately
     replanIfNeeded($daysOfWeek, [$groupId]);
+
+    DB::auditLog('admin', 'schedule_created', Auth::userId(), [
+        'schedule_ids' => $created,
+        'group_id'     => $groupId,
+        'days_of_week' => $daysOfWeek,
+        'window'       => $startTime . '-' . $endTime,
+        'is_active'    => $isActive,
+    ], true, $groupId);
 
     http_response_code(201);
     $schedules = [];
@@ -152,23 +156,16 @@ function updateSchedule(int $scheduleId, ?array $input): void {
         [$dayOfWeek, $startTime, $endTime, $isActive, $scheduleId]
     );
 
-    DB::auditLog('admin', 'schedule_updated', null, [
-        'schedule_id' => $scheduleId,
-        'group_id' => (int)$existing['pause_group_id'],
-        'day_of_week' => $dayOfWeek,
-        'start_time' => $startTime,
-        'end_time' => $endTime,
-        'is_active' => (bool)$isActive,
-        'previous' => [
-            'day_of_week' => (int)$existing['day_of_week'],
-            'start_time' => $existing['start_time'],
-            'end_time' => $existing['end_time'],
-            'is_active' => (bool)$existing['is_active'],
-        ],
-    ]);
-
     // Replan if the old or new day is today; enforce state immediately
     replanIfNeeded([$existing['day_of_week'], $dayOfWeek], [$existing['pause_group_id']]);
+
+    DB::auditLog('admin', 'schedule_updated', Auth::userId(), [
+        'schedule_id' => $scheduleId,
+        'group_id'    => (int)$existing['pause_group_id'],
+        'day_of_week' => $dayOfWeek,
+        'window'      => $startTime . '-' . $endTime,
+        'is_active'   => $isActive,
+    ], true, (int)$existing['pause_group_id']);
 
     $schedule = DB::queryOne('SELECT s.*, g.name as group_name FROM schedules s JOIN pause_groups g ON g.id = s.pause_group_id WHERE s.id = :p0', [$scheduleId]);
     echo json_encode($schedule);
@@ -184,16 +181,15 @@ function deleteSchedule(int $scheduleId): void {
 
     DB::execute('DELETE FROM schedules WHERE id = :p0', [$scheduleId]);
 
-    DB::auditLog('admin', 'schedule_deleted', null, [
-        'schedule_id' => $scheduleId,
-        'group_id' => (int)$existing['pause_group_id'],
-        'day_of_week' => (int)$existing['day_of_week'],
-        'start_time' => $existing['start_time'],
-        'end_time' => $existing['end_time'],
-    ]);
-
     // Replan if the deleted schedule was for today; enforce state immediately
     replanIfNeeded([$existing['day_of_week']], [$existing['pause_group_id']]);
+
+    DB::auditLog('admin', 'schedule_deleted', Auth::userId(), [
+        'schedule_id' => $scheduleId,
+        'group_id'    => (int)$existing['pause_group_id'],
+        'day_of_week' => (int)$existing['day_of_week'],
+        'window'      => $existing['start_time'] . '-' . $existing['end_time'],
+    ], true, (int)$existing['pause_group_id']);
 
     echo json_encode(['success' => true]);
 }

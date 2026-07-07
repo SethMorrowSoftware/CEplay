@@ -29,7 +29,7 @@ Follow `INSTALL-FCOS.md` through setup script execution, but **do not** add the 
 
 ```bash
 cd /var/persist
-sudo git clone https://github.com/morroware/pause-groups.git pause-groups-src
+sudo git clone https://github.com/SethMorrowSoftware/NewCEPlay.git pause-groups-src
 cd /var/persist/pause-groups-src
 sudo bash setup-fcos.sh
 ```
@@ -50,8 +50,24 @@ location = /ceplay {
     return 302 /ceplay/;
 }
 
-# Block direct access to sensitive paths
-location ~ ^/ceplay/(data|lib|\.env|config\.php|cron.*\.php|run_action\.php|fresh_install\.php|AUDIT\.md|README\.md) {
+# Block direct access to sensitive paths: server-side code, DB, internal
+# docs (including the security audit), the mock demo app, installers, and
+# CLI-only scripts. Routed API URLs (/ceplay/api/health, ...) are not files
+# and fall through to the front controller — only direct hits on the
+# api/*.php source files are denied.
+location ~ ^/ceplay/(data|lib|docs|demo)/ {
+    deny all;
+    return 404;
+}
+location ~ ^/ceplay/api/.+\.php$ {
+    deny all;
+    return 404;
+}
+location ~ ^/ceplay/(\.env|config\.php|cron\.php|cron_watchdog\.php|run_action\.php|install\.php|fresh_install\.php)$ {
+    deny all;
+    return 404;
+}
+location ~ ^/ceplay/.*\.md$ {
     deny all;
     return 404;
 }

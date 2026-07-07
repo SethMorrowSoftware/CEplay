@@ -4,7 +4,7 @@
  * Run every minute as a safety net alongside the daily cron.
  *
  * Usage: php cron_watchdog.php
- * Crontab: * * * * * /usr/bin/php /var/www/html/ce/pause-groups-main/cron_watchdog.php >> /var/www/html/ce/pause-groups-main/data/watchdog.log 2>&1
+ * Crontab: * * * * * /usr/bin/php /path/to/app/cron_watchdog.php >> /path/to/app/data/watchdog.log 2>&1
  */
 
 // CLI-only guard
@@ -25,21 +25,20 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire the watchdog-specific lock. Using a dedicated lock (not LOCK_FILE)
-// means the per-minute watchdog never has to wait for the daily cron's
-// multi-second data-sync run to finish — its enforcement and missed-action
-// checks fire on schedule. Concurrent watchdog instances are still prevented
-// because they all contend on this same file.
-$lockFile = fopen(WATCHDOG_LOCK_FILE, 'c');
-if (!$lockFile) {
+// Acquire the global scheduler lock with a short blocking wait (up to 15s so
+// the watchdog almost always runs within its 1-minute cadence). Uses the
+// shared re-entrant helper so nested Scheduler calls don't deadlock.
+//
+// IMPORTANT: the lock is held ONLY for the action phase (missed actions,
+// enforcement, at-job queueing, retries) and released BEFORE the
+// transaction-feed poll. Polling is the slowest step and touches no
+// scheduling state — holding the lock through it starved web-triggered
+// manual actions for many seconds out of every minute.
+if (!Scheduler::acquireLock(15)) {
+    error_log("[" . date('c') . "] watchdog: lock not acquired after 15s, skipping cycle");
     exit(0);
 }
-if (!flock($lockFile, LOCK_EX | LOCK_NB)) {
-    // Another watchdog cycle is still running — skip this one.
-    error_log("[" . date('c') . "] watchdog: prior cycle still running, skipping");
-    fclose($lockFile);
-    exit(0);
-}
+$lockHeld = true;
 
 try {
     $tz = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
@@ -48,55 +47,15 @@ try {
 
     $errors = [];
 
-    // Helper: run a callback while briefly holding LOCK_FILE so we don't race
-    // with the daily cron's planning section or run_action.php. If we can't
-    // acquire it within $waitSec we skip that step but the rest of the cycle
-    // still runs (enforcement, retries, transaction polling) — that's the
-    // whole point of having a separate watchdog lock.
-    $withPlanLock = function (string $name, int $waitSec, callable $fn) use (&$errors): void {
-        $fh = @fopen(LOCK_FILE, 'c');
-        if (!$fh) {
-            $errors[] = "$name: could not open scheduler lock file";
-            return;
-        }
-        $held = false;
-        for ($i = 0; $i < $waitSec; $i++) {
-            if (flock($fh, LOCK_EX | LOCK_NB)) {
-                $held = true;
-                break;
-            }
-            sleep(1);
-        }
-        if (!$held) {
-            $errors[] = "$name: scheduler lock busy after {$waitSec}s, skipping this cycle";
-            error_log("[" . date('c') . "] watchdog $name: skipping (planning lock busy)");
-            fclose($fh);
-            return;
-        }
-        // Tell Scheduler we already hold the lock so nested
-        // withSchedulerLock() calls (from executeMissedActions etc) don't
-        // race a competing fd within this same process.
-        Scheduler::declareLockHeld();
-        try {
-            $fn();
-        } catch (Exception $e) {
-            $errors[] = "$name: " . $e->getMessage();
-            error_log("[" . date('c') . "] watchdog $name error: " . $e->getMessage());
-        } finally {
-            Scheduler::declareLockReleased();
-            flock($fh, LOCK_UN);
-            fclose($fh);
-        }
-    };
-
-    // Execute any missed actions (scheduled time has passed but not yet executed).
-    // Mutates scheduled_actions, so coordinate with cron.php's planning section.
-    $withPlanLock('executeMissedActions', 5, function () use ($today) {
+    // Execute any missed actions (scheduled time has passed but not yet executed)
+    try {
         Scheduler::executeMissedActions($today);
-    });
+    } catch (Exception $e) {
+        $errors[] = "executeMissedActions: " . $e->getMessage();
+        error_log("[" . date('c') . "] watchdog executeMissedActions error: " . $e->getMessage());
+    }
 
-    // Enforce the live desired state. This patches CenterEdge but does NOT
-    // mutate scheduled_actions, so it's safe to run without LOCK_FILE.
+    // Enforce the live desired state as a fallback when queued jobs are delayed/missing.
     try {
         Scheduler::enforceCurrentStates();
     } catch (Exception $e) {
@@ -104,17 +63,18 @@ try {
         error_log("[" . date('c') . "] watchdog enforceCurrentStates error: " . $e->getMessage());
     }
 
-    // Re-queue any actions that are missing their at jobs (pending, future, no
-    // at_job_id). Mutates scheduled_actions.at_job_id, so take the plan lock.
-    $withPlanLock('queueAtJobs', 5, function () use ($today) {
+    // Re-queue any actions that are missing their at jobs
+    // (pending, future, but no at_job_id — can happen if at failed silently)
+    try {
         Scheduler::queueAtJobs($today);
-    });
+    } catch (Exception $e) {
+        $errors[] = "queueAtJobs: " . $e->getMessage();
+        error_log("[" . date('c') . "] watchdog queueAtJobs error: " . $e->getMessage());
+    }
 
     // Re-attempt any pause/unpause actions that previously failed at the
     // source (e.g. kiosk in use). Cap is enforced inside processRetries —
-    // assets that hit max_attempts are marked gave_up_at and skipped on
-    // subsequent ticks until a fresh intent (manual click, schedule
-    // transition, override boundary) clears the flag.
+    // assets that hit max_attempts are dropped with a give-up audit entry.
     try {
         $retrySummary = Scheduler::processRetries();
         if (!empty($retrySummary['attempted'])) {
@@ -125,33 +85,21 @@ try {
         error_log("[" . date('c') . "] watchdog processRetries error: " . $e->getMessage());
     }
 
+    // Action phase complete — release the scheduler lock before the slow,
+    // lock-free transaction poll so manual actions from the UI aren't blocked.
+    Scheduler::releaseLock();
+    $lockHeld = false;
+
     // Poll the upstream game-play transaction feed. Best-effort: if the API is
     // unreachable or the card system doesn't expose the feed yet, swallow the
     // error so the rest of the watchdog cycle still runs. Capped at 20 pages
     // per cycle (4000 plays) to keep watchdog runtime bounded.
-    //
-    // The interval is configurable via Settings → Polling Intervals. The
-    // watchdog runs every minute but will skip the CE fetch when the last
-    // poll was more recent than the configured interval. This lets venues
-    // trade data freshness for fewer upstream API calls.
     try {
         $client = new CenterEdgeClient();
         if ($client->isConfigured()) {
-            $txPollInterval = (int)(DB::getConfig('tx_poll_interval_seconds') ?? 60);
-            $txPollInterval = max(60, min(900, $txPollInterval));
-
-            // Derive last-poll time from MAX(fetched_at) so we don't need a
-            // separate config key. Falls back to 0 (epoch) when no rows exist.
-            $lastPollRow = DB::queryOne('SELECT MAX(fetched_at) AS last_at FROM game_play_transactions');
-            $lastPollTs  = $lastPollRow && $lastPollRow['last_at']
-                ? strtotime($lastPollRow['last_at'] . ' UTC')
-                : 0;
-
-            if ((time() - $lastPollTs) >= $txPollInterval) {
-                $txSummary = $client->pollGameTransactions('default');
-                if (!empty($txSummary['fetched'])) {
-                    echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
-                }
+            $txSummary = $client->pollGameTransactions('default');
+            if (!empty($txSummary['fetched'])) {
+                echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
             }
         }
     } catch (Exception $e) {
@@ -165,6 +113,10 @@ try {
 
     if (!empty($errors)) {
         echo "[" . date('c') . "] watchdog completed with " . count($errors) . " error(s): " . implode('; ', $errors) . "\n";
+    } elseif (date('i') === '00') {
+        // One "alive" line per hour so watchdog.log visibly proves the timer is
+        // firing even when every cycle is healthy and quiet.
+        echo "[" . date('c') . "] watchdog healthy (hourly heartbeat line)\n";
     }
 
 } catch (Exception $e) {
@@ -172,6 +124,7 @@ try {
     echo $msg;
     error_log($msg);
 } finally {
-    flock($lockFile, LOCK_UN);
-    fclose($lockFile);
+    if ($lockHeld) {
+        Scheduler::releaseLock();
+    }
 }
