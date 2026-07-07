@@ -4,13 +4,20 @@
    Three-column layout (time | game | ticket badge) with slide-in animation
    for newly-arrived plays and a "jackpot" tier for big ticket dispenses.
    ============================================ */
-.feed-list-modern { list-style: none; margin: 0; padding: 0; }
+/* Cap the feed to a fixed, compact height and scroll rows internally, so a
+   full page of plays never pushes the Group Controls below the fold. */
+.feed-list-modern {
+    list-style: none; margin: 0; padding: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
 .feed-row-modern {
     display: grid;
-    grid-template-columns: 92px 1fr auto;
-    gap: 0.85rem;
+    grid-template-columns: 88px 1fr auto;
+    gap: 0.7rem;
     align-items: center;
-    padding: 0.55rem 0.4rem;
+    padding: 0.42rem 0.4rem;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
 }
 .feed-row-modern:last-child { border-bottom: none; }
