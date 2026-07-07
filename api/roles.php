@@ -83,7 +83,7 @@ function rolesList(array $currentUser): void {
             'user_count'  => $counts[$slug] ?? 0,
             // What the CALLER may do with this role, so the UI can disable
             // controls instead of surfacing 403s.
-            'assignable'  => Auth::canAssignRole($currentUser['role'] ?? '', $slug),
+            'assignable'  => Auth::canAssignRole($currentUser['id'] ?? null, $currentUser['role'] ?? '', $slug),
             'editable'    => $slug !== Auth::ROLE_ADMIN && ($currentUser['role'] ?? '') === Auth::ROLE_ADMIN,
             'deletable'   => !$role['is_system'] && ($counts[$slug] ?? 0) === 0
                              && ($currentUser['role'] ?? '') === Auth::ROLE_ADMIN,

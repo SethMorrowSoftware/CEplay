@@ -210,12 +210,29 @@ class Auth {
     }
 
     /**
-     * May $callerRole assign $targetSlug to a user? Admins can assign any
-     * existing role. Everyone else can only hand out roles whose permissions
-     * are a SUBSET of their own — you can never grant more than you have —
-     * and never the admin role.
+     * The permissions a caller may confer on (or reach through) another
+     * account: their ROLE's permissions MINUS any per-user DENIES applied to
+     * them. Grants are deliberately NOT added — a personal grant is a per-user
+     * exception, not something to propagate to other accounts. This is the
+     * ceiling that bounds role assignment and peer-account management, so a
+     * denied capability cannot be handed to a freshly created account or
+     * regained by resetting a peer's password.
      */
-    public static function canAssignRole(string $callerRole, string $targetSlug): bool {
+    public static function assignableCeiling(?int $callerUserId, ?string $callerRole): array {
+        $base = self::permissionsFor($callerRole);
+        $deny = self::overridesForUser($callerUserId)['deny'];
+        return empty($deny) ? $base : array_values(array_diff($base, $deny));
+    }
+
+    /**
+     * May the caller assign $targetSlug to a user? Admins can assign any
+     * existing role. Everyone else can only hand out roles whose permissions
+     * are a SUBSET of their own EFFECTIVE ceiling (role minus per-user denies)
+     * — you can never grant more than you effectively hold — and never admin.
+     * Taking denies into account is what stops a denied user from re-minting
+     * the capability on a new peer account.
+     */
+    public static function canAssignRole(?int $callerUserId, string $callerRole, string $targetSlug): bool {
         if (!self::roleExists($targetSlug)) {
             return false;
         }
@@ -225,7 +242,7 @@ class Auth {
         if ($targetSlug === self::ROLE_ADMIN) {
             return false;
         }
-        $callerPerms = self::permissionsFor($callerRole);
+        $callerPerms = self::assignableCeiling($callerUserId, $callerRole);
         $targetPerms = self::permissionsFor($targetSlug);
         return count(array_diff($targetPerms, $callerPerms)) === 0;
     }
