@@ -46,6 +46,7 @@ class Auth {
         'schedules_manage' => 'Create, edit, and delete recurring schedules',
         'settings'         => 'System settings: CenterEdge API credentials, timezone',
         'users'            => 'Manage user accounts (admin accounts always excluded)',
+        'view_logs'        => 'View the Action Log / audit trail (card numbers, logins, IP addresses)',
     ];
 
     /**
@@ -56,13 +57,16 @@ class Auth {
     private const FALLBACK_ROLES = [
         'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
         'manager' => ['name' => 'Manager', 'is_system' => 1,
-                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage']],
+                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'view_logs']],
         'tech'    => ['name' => 'Technician', 'is_system' => 1,
                       'permissions' => ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
     ];
 
     /** @var array<string,array>|null Per-request cache of the roles table. */
     private static $rolesCache = null;
+
+    /** @var array<int,array{grant:string[],deny:string[]}> Per-request cache of user overrides. */
+    private static $overridesCache = [];
 
     /**
      * All role definitions, keyed by slug:
@@ -136,6 +140,73 @@ class Auth {
         }
         // Only catalog keys count — stale keys from a removed permission are ignored.
         return array_values(array_intersect($perms, array_keys(self::PERMISSIONS)));
+    }
+
+    /**
+     * Per-user permission overrides (the grant/deny layer stored in
+     * user_permission_overrides). Returns ['grant' => string[], 'deny' =>
+     * string[]], filtered to real catalog keys. Request-cached. A missing
+     * table or read error resolves to NO overrides, so a user falls back to
+     * exactly their role's base permissions — never more.
+     */
+    public static function overridesForUser(?int $userId): array {
+        $uid = (int)$userId;
+        if ($uid <= 0) {
+            return ['grant' => [], 'deny' => []];
+        }
+        if (isset(self::$overridesCache[$uid])) {
+            return self::$overridesCache[$uid];
+        }
+        $grant = [];
+        $deny = [];
+        try {
+            $rows = DB::query(
+                'SELECT permission_key, effect FROM user_permission_overrides WHERE user_id = :p0',
+                [$uid]
+            );
+            foreach ($rows as $r) {
+                $key = (string)$r['permission_key'];
+                if (!isset(self::PERMISSIONS[$key])) {
+                    continue; // ignore stale keys from a removed permission
+                }
+                if ($r['effect'] === 'grant') {
+                    $grant[] = $key;
+                } elseif ($r['effect'] === 'deny') {
+                    $deny[] = $key;
+                }
+            }
+        } catch (Exception $e) {
+            error_log('Auth::overridesForUser: ' . $e->getMessage());
+        }
+        $res = ['grant' => array_values(array_unique($grant)), 'deny' => array_values(array_unique($deny))];
+        self::$overridesCache[$uid] = $res;
+        return $res;
+    }
+
+    /** Drop the per-request per-user overrides cache (after mutating overrides). */
+    public static function invalidateOverridesCache(): void {
+        self::$overridesCache = [];
+    }
+
+    /**
+     * Effective permission keys for a SPECIFIC user: their role's permissions,
+     * plus per-user grants, minus per-user denies (deny wins). The admin system
+     * role is absolute — it always resolves to the full catalog and per-user
+     * denies do NOT apply to it, matching the last-admin lockout protections.
+     * This is the resolver every gate now flows through.
+     */
+    public static function permissionsForUser(?int $userId, ?string $roleSlug): array {
+        $slug = strtolower(trim((string)$roleSlug));
+        if ($slug === self::ROLE_ADMIN) {
+            return array_keys(self::PERMISSIONS);
+        }
+        $base = self::permissionsFor($roleSlug);
+        $ov = self::overridesForUser($userId);
+        $effective = array_merge($base, $ov['grant']);
+        if (!empty($ov['deny'])) {
+            $effective = array_diff($effective, $ov['deny']);
+        }
+        return array_values(array_intersect(array_unique($effective), array_keys(self::PERMISSIONS)));
     }
 
     /**
@@ -358,14 +429,16 @@ class Auth {
      * grants nothing.
      */
     public static function hasPermission(string $permission): bool {
-        $role = self::role();
-        if ($role === null) {
+        $user = self::check();
+        if ($user === null) {
             return false;
         }
+        $role = $user['role'] ?? null;
         if ($role === self::ROLE_ADMIN) {
             return true;
         }
-        return in_array($permission, self::permissionsFor($role), true);
+        // Resolve through the per-user layer (role perms + grants − denies).
+        return in_array($permission, self::permissionsForUser((int)($user['id'] ?? 0), $role), true);
     }
 
     /**

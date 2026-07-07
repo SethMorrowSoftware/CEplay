@@ -23,6 +23,8 @@
 
     /** Latest role catalog from the API: [{slug,name,description,is_system,assignable}] */
     var roleCatalog = [];
+    /** Full permission catalog { key: 'description' }, injected by GET /api/users. */
+    var permissionCatalog = {};
 
     function catalogEntry(slug) {
         return roleCatalog.filter(function(r) { return r.slug === slug; })[0] || null;
@@ -71,6 +73,7 @@
             roleCatalog = (users.role_catalog && users.role_catalog.length)
                 ? users.role_catalog
                 : ((rolesData && rolesData.roles) || []);
+            permissionCatalog = (users && users.permission_catalog) || {};
 
             content.appendChild(buildApiConfigSection(settings));
             content.appendChild(buildTimezoneSection(settings));
@@ -489,6 +492,59 @@
         App.showModal('New User', form, footer);
     }
 
+    // Builds the per-user permission override editor: one Inherit/Grant/Deny
+    // control per catalog permission. Admin-only (the server enforces this too).
+    // Returns { element, collect } or null when it shouldn't be shown.
+    function buildOverrideEditor(user, callerRole) {
+        if (callerRole !== 'admin') return null;
+        var keys = Object.keys(permissionCatalog || {});
+        if (!keys.length) return null;
+
+        var targetIsAdmin = (user.role || '') === 'admin';
+
+        var wrap = App.el('div', { className: 'form-group' });
+        wrap.appendChild(App.el('label', { className: 'form-label', textContent: 'Per-user permission overrides' }));
+        wrap.appendChild(App.el('span', { className: 'text-muted text-xs', textContent: targetIsAdmin
+            ? 'This user is an administrator and always has full access — per-user overrides do not apply.'
+            : 'Inherit uses the role default. Grant adds a permission just for this person; Deny removes it (deny wins).' }));
+
+        var current = {};
+        (user.permission_overrides || []).forEach(function(o) { if (o && o.key) { current[o.key] = o.effect; } });
+
+        var selects = {};
+        keys.forEach(function(key) {
+            var sel = App.el('select', { className: 'form-input', style: { maxWidth: '140px' } });
+            [['inherit', 'Inherit'], ['grant', 'Grant'], ['deny', 'Deny']].forEach(function(pair) {
+                var opt = App.el('option', { value: pair[0], textContent: pair[1] });
+                if ((current[key] || 'inherit') === pair[0]) { opt.selected = true; }
+                sel.appendChild(opt);
+            });
+            if (targetIsAdmin) { sel.disabled = true; }
+            selects[key] = sel;
+            wrap.appendChild(App.el('div', {
+                style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', padding: '0.35rem 0' }
+            }, [
+                App.el('div', {}, [
+                    App.el('div', { className: 'text-sm', textContent: key }),
+                    App.el('div', { className: 'text-muted text-xs', textContent: permissionCatalog[key] || '' })
+                ]),
+                sel
+            ]));
+        });
+
+        return {
+            element: wrap,
+            collect: function() {
+                var out = [];
+                keys.forEach(function(key) {
+                    var v = selects[key] ? selects[key].value : 'inherit';
+                    if (v === 'grant' || v === 'deny') { out.push({ key: key, effect: v }); }
+                });
+                return out;
+            }
+        };
+    }
+
     function showEditUserForm(user, roles, callerRole) {
         const form = App.el('div');
         var currentUser = window.APP_CONFIG.user;
@@ -538,6 +594,9 @@
             confirmInput
         ]));
 
+        const overrideEditor = buildOverrideEditor(user, callerRole);
+        if (overrideEditor) { form.appendChild(overrideEditor.element); }
+
         const submitBtn = App.el('button', {
             className: 'btn btn-primary',
             textContent: 'Save Changes',
@@ -546,6 +605,7 @@
                     display_name: displayInput.value.trim(),
                     role: roleSelect.value
                 };
+                if (overrideEditor) { payload.permission_overrides = overrideEditor.collect(); }
                 const password = passwordInput.value;
 
                 if (password) {
@@ -559,12 +619,18 @@
                     await API.put('users/' + encodeURIComponent(user.id), payload);
                     App.hideModal();
                     App.toast('User updated.', 'success');
-                    // If the edited user is the signed-in user and the role
-                    // changed, refresh APP_CONFIG so the nav reflects the
-                    // new permissions on the next route.
-                    if (isSelf && payload.role) {
-                        window.APP_CONFIG.user.role = payload.role;
-                        App.currentUser = window.APP_CONFIG.user;
+                    // If the edited user is the signed-in user, pull a fresh
+                    // session so APP_CONFIG carries the newly resolved role AND
+                    // permission list (role change or per-user overrides) before
+                    // the nav re-renders — the old code only refreshed the role.
+                    if (isSelf) {
+                        try {
+                            var st = await API.get('auth/status');
+                            if (st && st.user) {
+                                window.APP_CONFIG.user = st.user;
+                                App.currentUser = st.user;
+                            }
+                        } catch (e) { /* non-fatal; a reload will reconcile */ }
                     }
                     await loadSettings();
                 } catch (err) {

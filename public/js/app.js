@@ -61,7 +61,7 @@ const App = {
     PERMISSION_AREAS: [
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'schedules_manage',
-        'settings', 'users'
+        'settings', 'users', 'view_logs'
     ],
 
     /**
@@ -71,8 +71,8 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'settings', 'users'],
-        manager: ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage'],
+        admin:   ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
+        manager: ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'view_logs'],
         tech:    ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
     },
 
@@ -278,7 +278,8 @@ const App = {
                 '#/analytics':   'analytics',
                 '#/performance': 'analytics',
                 '#/cards':       'cards',
-                '#/settings':    'settings'
+                '#/settings':    'settings',
+                '#/logs':        'view_logs'
             };
             const requiredArea = restricted[hash];
             if (requiredArea && !this.canAccess(requiredArea)) {
@@ -424,7 +425,7 @@ const App = {
             { hash: '#/schedules', icon: Icons.schedules, label: 'Schedules' },
             { hash: '#/overrides', icon: Icons.overrides, label: 'Overrides' },
             { hash: '#/analytics', icon: Icons.analytics, label: 'Analytics',   area: 'analytics' },
-            { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log' },
+            { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log',  area: 'view_logs' },
             { hash: '#/settings',  icon: Icons.settings,  label: 'Settings',    area: 'settings' }
         ];
         const navItems = allNavItems.filter(item => !item.area || this.canAccess(item.area));

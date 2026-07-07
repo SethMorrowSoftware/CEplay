@@ -37,8 +37,9 @@ function handleAuth(string $method, array $parts, ?array $input): void {
                 Auth::clearLoginAttempts($clientIp);
                 DB::auditLog('auth', 'login_success', null, ['username' => $username, 'role' => $user['role'] ?? null, 'ip' => $clientIp]);
                 // Resolved permission set rides along so the client can gate
-                // nav/UI without a hardcoded role→area map.
-                $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+                // nav/UI without a hardcoded role→area map. Includes the
+                // per-user grant/deny overrides.
+                $user['permissions'] = Auth::permissionsForUser($user['id'] ?? null, $user['role'] ?? '');
                 $roles = Auth::getRoles();
                 $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
                 echo json_encode([
@@ -72,7 +73,7 @@ function handleAuth(string $method, array $parts, ?array $input): void {
             }
             $user = Auth::check();
             if ($user) {
-                $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+                $user['permissions'] = Auth::permissionsForUser($user['id'] ?? null, $user['role'] ?? '');
                 $roles = Auth::getRoles();
                 $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
             }

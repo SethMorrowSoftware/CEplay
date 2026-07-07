@@ -370,8 +370,9 @@ if (!$csrfToken) {
 $user = Auth::check();
 if ($user) {
     // Resolved permission set for the client-side gates (nav, buttons,
-    // route guards). The server re-checks every call regardless.
-    $user['permissions'] = Auth::permissionsFor($user['role'] ?? '');
+    // route guards). The server re-checks every call regardless. Includes
+    // the per-user grant/deny overrides.
+    $user['permissions'] = Auth::permissionsForUser($user['id'] ?? null, $user['role'] ?? '');
     $roles = Auth::getRoles();
     $user['role_name'] = $roles[$user['role'] ?? '']['name'] ?? ($user['role'] ?? '');
 }

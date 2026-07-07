@@ -67,12 +67,26 @@ function handleAnalytics(string $method, array $parts, ?array $input): void {
 function analyticsScrubMoney(array &$payload): void {
     foreach (['kpis', 'previous_kpis'] as $key) {
         if (isset($payload[$key]) && is_array($payload[$key])) {
-            $payload[$key]['cash'] = 0.0;
-            $payload[$key]['avg_cash_per_play'] = 0.0;
+            if (array_key_exists('cash', $payload[$key])) $payload[$key]['cash'] = 0.0;
+            if (array_key_exists('avg_cash_per_play', $payload[$key])) $payload[$key]['avg_cash_per_play'] = 0.0;
         }
     }
     if (isset($payload['charts']) && is_array($payload['charts'])) {
+        // The cash leaderboard is monetary end-to-end — drop it entirely.
         $payload['charts']['top_games_cash'] = [];
+        // Per-row cash also rides along in the daily series and the plays /
+        // tickets leaderboards; zero it there so no dollar figure slips out
+        // through a side channel (the previous scrub missed these).
+        foreach (['daily', 'top_games_plays', 'top_games_tickets'] as $seriesKey) {
+            if (isset($payload['charts'][$seriesKey]) && is_array($payload['charts'][$seriesKey])) {
+                foreach ($payload['charts'][$seriesKey] as &$row) {
+                    if (is_array($row) && array_key_exists('cash', $row)) {
+                        $row['cash'] = 0.0;
+                    }
+                }
+                unset($row);
+            }
+        }
     }
 }
 
