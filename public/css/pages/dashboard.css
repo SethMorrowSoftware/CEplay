@@ -15,7 +15,29 @@
     display: grid;
     grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.8rem;
-    align-items: start;
+    align-items: stretch;
+}
+/* Equal-height cards: the two leaderboards stretch to match the (taller) live
+   feed card, and their lists fill the extra height and scroll internally — so
+   there's no dead space under the shorter leaderboards. The feed stays the
+   height driver (its list is capped), so the leaderboards never blow the row up. */
+.dash-overview-grid > #dash-top-wrap,
+.dash-overview-grid > #dash-topplays-wrap {
+    display: flex;
+    flex-direction: column;
+}
+#dash-top-body,
+#dash-topplays-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+#dash-top-body .top-games-list-modern,
+#dash-topplays-body .top-games-list-modern {
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 @media (max-width: 1200px) {
     /* Feed spans the top; the two leaderboards sit side by side below it. */
