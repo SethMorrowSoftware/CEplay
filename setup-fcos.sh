@@ -119,11 +119,31 @@ backup_data() {
     stamp="$(date -u +%Y%m%d-%H%M%S)"
     dest="${BACKUP_DIR}/${stamp}"
     mkdir -p "$dest"
-    # Copy the db and its journal sidecars together so the snapshot is
-    # internally consistent even while WAL mode is active.
-    cp -a "$db" "$dest/"
-    if [[ -f "${db}-wal" ]]; then cp -a "${db}-wal" "$dest/"; fi
-    if [[ -f "${db}-shm" ]]; then cp -a "${db}-shm" "$dest/"; fi
+    # Prefer a CONSISTENT single-file snapshot via SQLite VACUUM INTO, run in the
+    # PHP container (the FCOS host has no sqlite3 CLI). Unlike a plain cp of a
+    # live WAL database, this reads one transactionally-consistent view and can't
+    # capture a torn (db, -wal) pair while php-fpm/the watchdog are writing.
+    local snapped=0
+    if podman image exists "$PHP_IMAGE" 2>/dev/null; then
+        if podman run --rm --network none \
+                -v "${INSTALL_DIR}:${INSTALL_DIR}:z" \
+                -v "${BACKUP_DIR}:${BACKUP_DIR}:z" \
+                "$PHP_IMAGE" \
+                php -r '$s=new SQLite3($argv[1], SQLITE3_OPEN_READONLY); $s->enableExceptions(true); $s->busyTimeout(60000); $s->exec("VACUUM INTO ".chr(39).$argv[2].chr(39)); $s->close();' \
+                "$db" "${dest}/pause_groups.db" 2>/dev/null; then
+            # Sanity-check the snapshot is a real, non-empty SQLite file.
+            local hdr; hdr="$(head -c 15 "${dest}/pause_groups.db" 2>/dev/null || true)"
+            if [[ "$hdr" == "SQLite format 3" ]]; then snapped=1; fi
+        fi
+    fi
+    if [[ $snapped -eq 0 ]]; then
+        # Fallback (image not pulled yet): copy the db and its WAL together. The
+        # -shm file is just a regenerable shared-memory index — copying it can
+        # actually confuse recovery, so we deliberately leave it out.
+        warn "Consistent VACUUM snapshot unavailable — copying the DB files instead."
+        cp -a "$db" "${dest}/pause_groups.db"
+        if [[ -f "${db}-wal" ]]; then cp -a "${db}-wal" "${dest}/pause_groups.db-wal"; fi
+    fi
     if [[ -f "$ENV_FILE" ]];   then cp -a "$ENV_FILE" "$dest/env.bak"; fi
     chmod -R go-rwx "$dest" || true
     ok "Backed up database + encryption key to: ${dest}"
