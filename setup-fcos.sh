@@ -5,6 +5,7 @@
 #
 #  WHAT THIS SCRIPT DOES (in order):
 #    Pre-flight  Verify the environment is ready (root, Podman, network, disk)
+#    Step 0      Back up the existing database + encryption key (if any)
 #    Step 1      Copy app files to /var/persist/pause-groups/ (survives reboots)
 #    Step 2      Create the writable data directory
 #    Step 3      Generate a random AES-256 encryption key
@@ -30,7 +31,10 @@
 #  RE-RUNNING:
 #    Safe to re-run. Each step checks whether it has already been done and
 #    skips or updates accordingly. The database will NOT be wiped on re-run.
+#    Every run first snapshots your database + encryption key to
+#    /var/persist/pause-groups-backups/<timestamp>/ (10 most recent kept).
 #    To wipe and start completely fresh: sudo bash setup-fcos.sh --reset
+#    (a backup is still taken before the wipe, so --reset is recoverable too)
 #
 # =============================================================================
 set -euo pipefail
@@ -82,6 +86,9 @@ INSTALL_DIR="/var/persist/pause-groups"     # persists across FCOS rebuilds
 DATA_DIR="${INSTALL_DIR}/data"              # database, logs, lock files
 ENV_FILE="${INSTALL_DIR}/.env"             # stores encryption key (not web-accessible)
 SNIPPET_FILE="/var/persist/pause-groups-nginx.conf.snippet"  # saved Nginx block
+BACKUP_DIR="/var/persist/pause-groups-backups"  # timestamped DB + .env snapshots
+                                           # (lives outside INSTALL_DIR so the
+                                           # rsync --delete in step 1 never touches it)
 
 PHP_IMAGE="docker.io/library/php:8.3-fpm" # official PHP image; change 8.3 if needed
 PHP_PORT=9000                              # default port the php:fpm image listens on
@@ -95,6 +102,42 @@ SERVER_NAME="_"                            # Nginx server_name for this app.
 HTTP_PORT=80                               # Port for this vhost. Grafana uses 3000,
                                            # Tailscale VPN doesn't use a fixed port.
                                            # 80 is fine unless another vhost owns it.
+
+# ── Backup helper ─────────────────────────────────────────────────────────────
+# Snapshot the SQLite database (with its WAL/SHM sidecars) and the encryption
+# key into a timestamped folder under ${BACKUP_DIR}. This is the safety net that
+# makes re-running (or even --reset) recoverable: the two things you can never
+# regenerate — your data and the key that decrypts your CenterEdge credentials —
+# are copied somewhere the install never overwrites. A no-op on a fresh install.
+backup_data() {
+    local db="${DATA_DIR}/pause_groups.db"
+    if [[ ! -f "$db" ]]; then
+        info "No existing database to back up (fresh install)."
+        return 0
+    fi
+    local stamp dest
+    stamp="$(date -u +%Y%m%d-%H%M%S)"
+    dest="${BACKUP_DIR}/${stamp}"
+    mkdir -p "$dest"
+    # Copy the db and its journal sidecars together so the snapshot is
+    # internally consistent even while WAL mode is active.
+    cp -a "$db" "$dest/"
+    if [[ -f "${db}-wal" ]]; then cp -a "${db}-wal" "$dest/"; fi
+    if [[ -f "${db}-shm" ]]; then cp -a "${db}-shm" "$dest/"; fi
+    if [[ -f "$ENV_FILE" ]];   then cp -a "$ENV_FILE" "$dest/env.bak"; fi
+    chmod -R go-rwx "$dest" || true
+    ok "Backed up database + encryption key to: ${dest}"
+
+    # Keep only the 10 most recent backups so this can't fill the disk.
+    local backups=()
+    while IFS= read -r d; do backups+=("$d"); done \
+        < <(ls -1dt "${BACKUP_DIR}"/*/ 2>/dev/null || true)
+    if (( ${#backups[@]} > 10 )); then
+        local i
+        for (( i=10; i<${#backups[@]}; i++ )); do rm -rf "${backups[$i]}"; done
+        note "Pruned old backups (kept the 10 most recent) in ${BACKUP_DIR}."
+    fi
+}
 
 # =============================================================================
 #  PRE-FLIGHT CHECKS
@@ -129,12 +172,17 @@ if [[ $DO_RESET -eq 1 ]]; then
     warn "║  will NOT be deleted.                                ║"
     warn "╚══════════════════════════════════════════════════════╝"
     echo ""
+    note "A timestamped backup of the database + key is taken before the wipe,"
+    note "so this is recoverable from ${BACKUP_DIR}."
+    echo ""
     read -r -p "  Type 'yes' to confirm reset, or anything else to abort: " RESET_CONFIRM
     if [[ "$RESET_CONFIRM" != "yes" ]]; then
         echo "Aborted."
         exit 0
     fi
     if [[ -f "${DATA_DIR}/pause_groups.db" ]]; then
+        info "Backing up the current database before deleting it..."
+        backup_data
         rm -f "${DATA_DIR}/pause_groups.db" \
               "${DATA_DIR}/pause_groups.db-wal" \
               "${DATA_DIR}/pause_groups.db-shm"
@@ -192,6 +240,21 @@ fi
 echo ""
 echo -e "${BOLD}Pre-flight checks passed. Starting installation.${NC}"
 echo ""
+
+# =============================================================================
+#  STEP 0 — BACK UP EXISTING DATA (before anything is copied or migrated)
+# =============================================================================
+# On a normal re-run this snapshots your DB + encryption key first, so even a
+# mistaken edit, a bad migration, or a fat-fingered --reset later can be undone.
+# On a --reset run the backup already happened above (before the wipe), so this
+# is a no-op because the database is gone. On a fresh install there's nothing to
+# back up and it prints a short notice.
+hdr "0 of 12 — Back up existing data"
+echo ""
+note "Snapshots go to ${BACKUP_DIR} (outside the app dir, so they survive"
+note "re-runs and FCOS rebuilds). The 10 most recent are kept."
+echo ""
+backup_data
 
 # =============================================================================
 #  STEP 1 — COPY APP FILES
@@ -796,6 +859,7 @@ echo -e "${BOLD}What was installed:${NC}"
 echo "  App files    → ${INSTALL_DIR}"
 echo "  Database     → ${DATA_DIR}/pause_groups.db"
 echo "  Encrypt key  → ${ENV_FILE}  (keep this safe!)"
+echo "  Backups      → ${BACKUP_DIR}/  (DB + key snapshots, 10 most recent)"
 echo "  Nginx block  → ${SNIPPET_FILE}"
 echo ""
 echo -e "${BOLD}Services created:${NC}"

@@ -29,7 +29,7 @@ Follow `INSTALL-FCOS.md` through setup script execution, but **do not** add the 
 
 ```bash
 cd /var/persist
-sudo git clone https://github.com/SethMorrowSoftware/NewCEPlay.git pause-groups-src
+sudo git clone https://github.com/SethMorrowSoftware/CEplay.git pause-groups-src
 cd /var/persist/pause-groups-src
 sudo bash setup-fcos.sh
 ```
