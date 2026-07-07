@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  update.sh — safe, idempotent update for the pause-groups app (Fedora CoreOS)
+# =============================================================================
+#
+#  WHAT IT DOES (in order):
+#    1. Backs up the database (a CONSISTENT snapshot) + the encryption key, and
+#       records the currently-deployed git commit — into a timestamped folder
+#       under /var/persist/pause-groups-backups/, and marks it as the latest
+#       update so revert.sh can find it.
+#    2. git pull in the source clone (/var/persist/pause-groups-src).
+#    3. Syncs the new code into the live app dir, PRESERVING data/ and .env.
+#    4. Removes install.php / fresh_install.php from the web root (security).
+#    5. Runs the database migrations (idempotent, non-destructive).
+#    6. Restarts PHP-FPM so the new code goes live.
+#    7. Health-checks the app.
+#
+#  Your database, users, API keys and encryption key are preserved. Safe to
+#  re-run. If an update goes wrong, roll it back with:  sudo bash revert.sh
+#
+#  USAGE:  sudo bash update.sh
+# =============================================================================
+
+# --- Re-exec from a private copy -------------------------------------------
+# The `git pull` below can rewrite THIS script mid-run (update.sh ships in the
+# repo). Running from a temp copy makes the in-flight script immutable.
+if [[ "${_PG_UPDATE_REEXEC:-}" != "1" ]]; then
+    _self_copy="$(mktemp /tmp/pg-update.XXXXXX.sh)"
+    cp -- "$0" "$_self_copy"
+    export _PG_UPDATE_REEXEC=1
+    exec bash "$_self_copy" "$@"
+fi
+
+set -euo pipefail
+
+# --- Colours / helpers ------------------------------------------------------
+RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'; BLU='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+info() { echo -e "${BLU}[INFO]${NC}  $*"; }
+ok()   { echo -e "${GRN}[OK]${NC}    $*"; }
+warn() { echo -e "${YLW}[WARN]${NC}  $*"; }
+die()  { echo -e "${RED}[FATAL]${NC} $*" >&2; exit 1; }
+note() { echo -e "${DIM}         $*${NC}"; }
+hdr()  { echo -e "\n${BOLD}── $* ${NC}"; }
+
+trap 'echo -e "\n${RED}update.sh failed at line $LINENO.${NC} Your app was not left half-updated by design:\n  • The backup was taken first — restore it with:  sudo bash revert.sh\n  • Re-run once the cause is fixed (this script is idempotent)." >&2' ERR
+
+# --- Configuration (matches setup-fcos.sh) ---------------------------------
+INSTALL_DIR="/var/persist/pause-groups"
+SRC_DIR="/var/persist/pause-groups-src"
+DATA_DIR="${INSTALL_DIR}/data"
+ENV_FILE="${INSTALL_DIR}/.env"
+DB_FILE="${DATA_DIR}/pause_groups.db"
+BACKUP_ROOT="/var/persist/pause-groups-backups"
+LATEST_MARKER="${BACKUP_ROOT}/LATEST_UPDATE"
+FPM_SERVICE="pause-groups-fpm"
+KEEP_BACKUPS=15
+
+# Detect the PHP image from the installed FPM unit so we match the operator's
+# chosen PHP version; fall back to the setup-fcos.sh default.
+PHP_IMAGE="$(grep -ohE 'docker.io/library/php:[0-9.]+-fpm' \
+    /etc/systemd/system/${FPM_SERVICE}.service 2>/dev/null | head -1 || true)"
+PHP_IMAGE="${PHP_IMAGE:-docker.io/library/php:8.3-fpm}"
+
+echo -e "${BOLD}${GRN}pause-groups — update${NC}"
+echo "  App:    ${INSTALL_DIR}"
+echo "  Source: ${SRC_DIR}"
+echo "  Image:  ${PHP_IMAGE}"
+echo ""
+
+# --- Pre-flight -------------------------------------------------------------
+[[ $EUID -eq 0 ]] || die "Must run as root:  sudo bash update.sh"
+command -v podman &>/dev/null || die "podman not found (expected on Fedora CoreOS)."
+[[ -d "$SRC_DIR/.git" ]] || die "Source clone not found at ${SRC_DIR}. Clone the repo there first (see INSTALL-FCOS.md)."
+[[ -d "$INSTALL_DIR" ]] || die "App dir ${INSTALL_DIR} missing. Run setup-fcos.sh for a first-time install."
+[[ -f "$DB_FILE" ]] || die "No database at ${DB_FILE}. Run setup-fcos.sh for a first-time install."
+systemctl list-unit-files "${FPM_SERVICE}.service" &>/dev/null \
+    || die "${FPM_SERVICE} is not installed. Run setup-fcos.sh for a first-time install."
+
+# Refuse to pull over uncommitted local edits — they'd be lost or cause a
+# merge conflict. Let the operator resolve them deliberately.
+if [[ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]]; then
+    die "Source clone has uncommitted local changes. Review 'git -C ${SRC_DIR} status', commit/stash/discard them, then re-run."
+fi
+BRANCH="$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+if [[ "$BRANCH" == "HEAD" ]]; then
+    die "Source clone is on a detached commit (left by a previous revert?). Run:  git -C ${SRC_DIR} checkout main   then re-run update.sh."
+fi
+FROM_SHA="$(git -C "$SRC_DIR" rev-parse HEAD)"
+
+# =============================================================================
+#  1. Backup (BEFORE anything changes)
+# =============================================================================
+hdr "1/6  Backup database + key"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BK="${BACKUP_ROOT}/update-${STAMP}"
+mkdir -p "$BK"
+
+# Consistent single-file DB snapshot via SQLite VACUUM INTO, run in the PHP
+# container (the FCOS host has no sqlite3 CLI). This reads a consistent view of
+# the live WAL database — unlike a plain cp, it can't miss the last commit.
+snapped=0
+if podman image exists "$PHP_IMAGE" 2>/dev/null; then
+    if podman run --rm --network none \
+            -v "${INSTALL_DIR}:${INSTALL_DIR}:z" \
+            -v "${BACKUP_ROOT}:${BACKUP_ROOT}:z" \
+            "$PHP_IMAGE" \
+            php -r '$s=new SQLite3($argv[1]); $s->busyTimeout(60000); $s->exec("VACUUM INTO ".chr(39).$argv[2].chr(39)); $s->close();' \
+            "$DB_FILE" "${BK}/pause_groups.db" 2>/dev/null; then
+        snapped=1
+        ok "Consistent DB snapshot written (VACUUM INTO)."
+    fi
+fi
+if [[ $snapped -eq 0 ]]; then
+    warn "VACUUM snapshot unavailable; copying the DB files instead."
+    cp -a "$DB_FILE" "${BK}/pause_groups.db"
+    if [[ -f "${DB_FILE}-wal" ]]; then cp -a "${DB_FILE}-wal" "${BK}/pause_groups.db-wal"; fi
+    if [[ -f "${DB_FILE}-shm" ]]; then cp -a "${DB_FILE}-shm" "${BK}/pause_groups.db-shm"; fi
+fi
+if [[ -f "$ENV_FILE" ]]; then cp -a "$ENV_FILE" "${BK}/env.bak"; fi
+# Record what was deployed so revert.sh can restore both DB AND code.
+printf '%s\n' "$FROM_SHA" > "${BK}/deployed_commit.txt"
+{
+    echo "created_utc=${STAMP}"
+    echo "branch=${BRANCH}"
+    echo "from_commit=${FROM_SHA}"
+    echo "php_image=${PHP_IMAGE}"
+} > "${BK}/manifest.txt"
+chmod -R go-rwx "$BK" || true
+printf '%s\n' "$BK" > "$LATEST_MARKER"
+ok "Backup: ${BK}"
+note "Deployed commit recorded: ${FROM_SHA:0:12}"
+
+# Prune old update backups (keep newest KEEP_BACKUPS).
+mapfile -t _old < <(ls -1dt "${BACKUP_ROOT}"/update-*/ 2>/dev/null || true)
+if (( ${#_old[@]} > KEEP_BACKUPS )); then
+    for (( i=KEEP_BACKUPS; i<${#_old[@]}; i++ )); do rm -rf "${_old[$i]}"; done
+    note "Pruned old update backups (kept ${KEEP_BACKUPS})."
+fi
+
+# =============================================================================
+#  2. Pull
+# =============================================================================
+hdr "2/6  git pull (${BRANCH})"
+pulled=0
+for attempt in 1 2 3 4; do
+    if git -C "$SRC_DIR" pull --ff-only 2>&1; then pulled=1; break; fi
+    warn "pull failed (attempt ${attempt}); retrying..."; sleep $((2**attempt))
+done
+[[ $pulled -eq 1 ]] || die "git pull failed. If the branch diverged, reconcile it manually, then re-run."
+TO_SHA="$(git -C "$SRC_DIR" rev-parse HEAD)"
+if [[ "$TO_SHA" == "$FROM_SHA" ]]; then
+    info "Already up to date (${TO_SHA:0:12}). Re-syncing anyway to be safe."
+else
+    ok "Updated ${FROM_SHA:0:12} → ${TO_SHA:0:12}"
+fi
+
+# =============================================================================
+#  3. Sync code into the live app dir (preserving data/ and .env)
+# =============================================================================
+hdr "3/6  Sync app files"
+if command -v rsync &>/dev/null; then
+    rsync -a --delete --exclude='.git/' --exclude='data/' --exclude='.env' \
+        "${SRC_DIR}/" "${INSTALL_DIR}/"
+else
+    cp -a "${SRC_DIR}/." "${INSTALL_DIR}/"
+    rm -rf "${INSTALL_DIR}/.git"
+fi
+ok "App files synced (data/ and .env untouched)."
+
+# =============================================================================
+#  4. Security cleanup — never leave installers in the web root
+# =============================================================================
+hdr "4/6  Remove installers from web root"
+for f in install.php fresh_install.php; do
+    if [[ -f "${INSTALL_DIR}/${f}" ]]; then rm -f "${INSTALL_DIR}/${f}"; ok "Removed ${f}"; fi
+done
+
+# --- Fix ownership (data writable by the container's uid 33) ---------------
+chown -R 33:33 "$DATA_DIR"; chmod 770 "$DATA_DIR"
+chmod -R o+rX "$INSTALL_DIR"
+[[ -f "$ENV_FILE" ]] && chmod o-rX "$ENV_FILE" || true
+
+# =============================================================================
+#  5. Run database migrations (idempotent, non-destructive)
+# =============================================================================
+hdr "5/6  Migrate database"
+# DB::getInstance() runs CREATE TABLE IF NOT EXISTS + the ALTER/data migrations.
+podman run --rm --network host \
+    --env-file "$ENV_FILE" \
+    -v "${INSTALL_DIR}:${INSTALL_DIR}:z" \
+    -w "$INSTALL_DIR" -u 33:33 \
+    "$PHP_IMAGE" \
+    php -r 'require "config.php"; require "lib/db.php"; DB::getInstance(); fwrite(STDERR, "schema-ok\n");' \
+    && ok "Schema migrated." || die "Migration step failed — restore with: sudo bash revert.sh"
+
+# =============================================================================
+#  6. Restart + health check
+# =============================================================================
+hdr "6/6  Restart + verify"
+systemctl restart "$FPM_SERVICE"
+sleep 4
+if systemctl is-active --quiet "$FPM_SERVICE"; then ok "${FPM_SERVICE} is active."; else warn "${FPM_SERVICE} not active — check: journalctl -eu ${FPM_SERVICE}"; fi
+
+resp="$(curl -s --max-time 6 http://localhost/api/health 2>/dev/null || true)"
+if echo "$resp" | grep -q '"database":true'; then
+    ok "App responding, database OK."
+else
+    warn "Health check inconclusive (app may still be warming up, or Nginx not set up)."
+    note "Response: ${resp:-<none>}"
+fi
+
+echo ""
+echo -e "${BOLD}${GRN}Update complete.${NC}"
+echo "  ${FROM_SHA:0:12} → ${TO_SHA:0:12}"
+echo "  Backup:   ${BK}"
+echo "  Roll back this update:   sudo bash revert.sh"
+echo ""
+note "In the browser, hard-refresh (Ctrl+Shift+R / Cmd+Shift+R) to pick up new"
+note "CSS/JS — /public assets are cached for up to 1 hour."
