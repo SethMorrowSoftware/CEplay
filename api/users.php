@@ -53,7 +53,7 @@ function handleUsers(string $method, array $parts, ?array $input): void {
                     'name'        => $role['name'],
                     'description' => $role['description'],
                     'is_system'   => (int)$role['is_system'],
-                    'assignable'  => Auth::canAssignRole($currentUser['role'] ?? '', $slug),
+                    'assignable'  => Auth::canAssignRole($currentUser['id'] ?? null, $currentUser['role'] ?? '', $slug),
                 ];
             }
             echo json_encode([
@@ -167,8 +167,15 @@ function createUser(?array $input, array $currentUser): void {
     // Escalation guard: admins may assign any role; everyone else only roles
     // whose permissions are a subset of their own (and never admin) — you
     // can't create an account with more access than you hold.
-    if (!Auth::canAssignRole($currentUser['role'] ?? '', $role)) {
+    if (!Auth::canAssignRole($currentUser['id'] ?? null, $currentUser['role'] ?? '', $role)) {
         throw new RuntimeException('You cannot assign a role with permissions beyond your own.');
+    }
+
+    // Validate any per-user overrides UP FRONT (admin-only + key/effect checks)
+    // so a rejected override never leaves behind a half-created orphan account.
+    $overrideMap = null;
+    if (array_key_exists('permission_overrides', $input)) {
+        $overrideMap = parseUserOverrides($input['permission_overrides'], $currentUser);
     }
 
     // Check uniqueness
@@ -185,9 +192,9 @@ function createUser(?array $input, array $currentUser): void {
 
     $newId = DB::lastInsertId();
 
-    // Optional per-user permission overrides (admin-only; validated inside).
-    if (array_key_exists('permission_overrides', $input)) {
-        saveUserOverrides($newId, $input['permission_overrides'], $currentUser);
+    // Persist the pre-validated overrides now that the account row exists.
+    if ($overrideMap !== null) {
+        writeUserOverrides($newId, $overrideMap, $currentUser);
     }
 
     DB::auditLog('admin', 'user_created', null, [
@@ -230,6 +237,23 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
         http_response_code(403);
         echo json_encode(['error' => 'Only an administrator can modify an admin account.']);
         return;
+    }
+
+    // Peer-management ceiling: a non-admin who holds the 'users' permission must
+    // not be able to modify — e.g. reset the password of, or reactivate — an
+    // account that holds permissions beyond their own EFFECTIVE ceiling (role
+    // minus their per-user denies). Without this, a user denied a permission
+    // could regain it by taking over a peer account that still has it (and it
+    // also closes the pre-existing tech→manager password-reset escalation).
+    // Self-edits and admins are exempt.
+    if (!$callerIsAdmin && !$isSelf) {
+        $callerCeiling   = Auth::assignableCeiling($currentUser['id'] ?? null, $currentUser['role'] ?? '');
+        $targetEffective = Auth::permissionsForUser($userId, $existingRole);
+        if (count(array_diff($targetEffective, $callerCeiling)) > 0) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You cannot modify an account that has permissions beyond your own.']);
+            return;
+        }
     }
 
     // Cannot deactivate yourself
@@ -293,6 +317,14 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
         $hash = Auth::hashPassword($password);
     }
 
+    // Validate any per-user overrides UP FRONT (admin-only + key/effect checks)
+    // so a rejected override can't leave the primary UPDATE committed with the
+    // intended override silently dropped.
+    $overrideMap = null;
+    if (array_key_exists('permission_overrides', $input)) {
+        $overrideMap = parseUserOverrides($input['permission_overrides'], $currentUser);
+    }
+
     // Apply all changes in a single atomic UPDATE
     if ($hash !== null) {
         DB::execute(
@@ -306,9 +338,9 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
         );
     }
 
-    // Optional per-user permission overrides (admin-only; validated inside).
-    if (array_key_exists('permission_overrides', $input)) {
-        saveUserOverrides($userId, $input['permission_overrides'], $currentUser);
+    // Persist the pre-validated overrides.
+    if ($overrideMap !== null) {
+        writeUserOverrides($userId, $overrideMap, $currentUser);
     }
 
     DB::auditLog('admin', 'user_updated', null, [
@@ -328,15 +360,17 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
 }
 
 /**
- * Replace a user's per-user permission overrides (the grant/deny layer that
- * sits on top of their role). ADMIN-ONLY: a per-user grant/deny can widen or
- * narrow real access, so — like role mutations — only administrators may set
- * it. Every key is validated against the catalog and every effect against
- * grant|deny; 'inherit'/empty entries mean "no override" and are dropped, and
- * anything unrecognized is rejected rather than silently ignored. The write is
- * a full replace of the user's override set.
+ * Validate a per-user permission override payload and return a clean
+ * [key => effect] map, or throw. PURE — performs NO database writes — so it can
+ * be called BEFORE the primary user INSERT/UPDATE to fail fast without leaving
+ * a partial write. ADMIN-ONLY: a per-user grant/deny can widen or narrow real
+ * access, so — like role mutations — only administrators may set it. Every key
+ * is validated against the catalog and every effect against grant|deny;
+ * 'inherit'/empty entries mean "no override" and are dropped; anything
+ * unrecognized is rejected. When a key appears as BOTH grant and deny in the
+ * payload, DENY wins (matching the resolver's deny-wins invariant).
  */
-function saveUserOverrides(int $userId, $overrides, array $currentUser): void {
+function parseUserOverrides($overrides, array $currentUser): array {
     if (($currentUser['role'] ?? '') !== Auth::ROLE_ADMIN) {
         throw new RuntimeException('Only an administrator can set per-user permission overrides.');
     }
@@ -345,7 +379,7 @@ function saveUserOverrides(int $userId, $overrides, array $currentUser): void {
     }
 
     $catalog = Auth::PERMISSIONS;
-    $clean = []; // key => effect, de-duplicated (last entry wins)
+    $clean = []; // key => effect
     foreach ($overrides as $o) {
         if (!is_array($o)) {
             continue;
@@ -361,9 +395,21 @@ function saveUserOverrides(int $userId, $overrides, array $currentUser): void {
         if ($effect !== 'grant' && $effect !== 'deny') {
             throw new RuntimeException('Override effect must be "grant" or "deny".');
         }
+        // Deny wins if the same key is submitted as both grant and deny.
+        if (($clean[$key] ?? null) === 'deny') {
+            continue;
+        }
         $clean[$key] = $effect;
     }
+    return $clean;
+}
 
+/**
+ * Full-replace a user's per-user overrides with a pre-validated [key => effect]
+ * map (see parseUserOverrides). Writes only — call AFTER the primary account
+ * write so the two never leave an inconsistent partial state.
+ */
+function writeUserOverrides(int $userId, array $clean, array $currentUser): void {
     DB::execute('DELETE FROM user_permission_overrides WHERE user_id = :p0', [$userId]);
     foreach ($clean as $key => $effect) {
         DB::execute(
