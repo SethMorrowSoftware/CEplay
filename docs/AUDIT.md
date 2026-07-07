@@ -1,124 +1,167 @@
-# CEplay Robustness Audit (Castle Fun Center ↔ CenterEdge, Single FCOS Instance)
+# Pause Group Automation Audit (Reliability + Security)
 
-**Date:** 2026-05-08  
-**Deployment assumption:** single Fedora CoreOS (FCOS) instance (no multi-node cluster).  
-**Scope reviewed:** API handlers, scheduler/watchdog flow, CenterEdge client, auth/session controls, DB layer, install/runtime configuration.  
-**Explicitly out of scope (per request):** custom roles and user types.
-
----
+Date: 2026-03-21
+Scope reviewed: API routes, auth/session handling, scheduler/cron flow, installer behavior, crypto/storage patterns, and operational docs present in repository.
 
 ## Executive Summary
 
-For a **single-instance FCOS deployment**, CEplay has a strong base: WAL-enabled SQLite, short UI retries with circuit-breaker behavior, watchdog reconciliation, stale-cache fallback for key data, and broad audit logging.
+Overall, the project has a solid baseline for a small internal operations tool:
+- Parameterized SQL usage throughout the codebase.
+- Session auth + CSRF enforcement for state-changing API operations.
+- CLI-only guards on job runner scripts.
+- Locking in cron/runner to reduce concurrency races.
 
-The biggest remaining robustness risks are now mostly about **logic edge cases and operability**, not topology:
+The highest-impact issue identified in earlier review was an installer hardening gap that could allow **unauthenticated creation of additional admin users** if `install.php` remained web-accessible after first setup. This is fixed in this branch.
 
-1. **Overnight schedule handling is fragile** (requires two rows and careful operator setup).
-2. **SQLite single-writer contention remains the main scaling bottleneck** under concurrent watchdog/admin activity.
-3. **Degraded-upstream state is tracked but can still be too easy to miss operationally**.
-4. **Retry/reconciliation behavior can generate noisy or confusing duplicate signals during incidents**.
-5. **Auth rate limiting is IP-based only**, which can punish shared-NAT users and miss distributed attack patterns.
+This review additionally found reliability risks in setup validation: installer prerequisites did not verify the required `curl` extension and did not warn about missing `at` scheduler binaries. Both are now addressed, and scheduler execution now supports fallback mode when `at` is unavailable.
 
-Bottom line: for single-node FCOS, this can be made very reliable by tightening schedule safety, DB pressure visibility, and operator-facing health signals.
+Latest beta sweep updates:
+- Added a documented beta smoke checklist to `README.md` so release verification is repeatable.
+- Fixed `fresh_install.php` to avoid PHP `match` syntax, preventing parse-time failures on PHP 7.4 environments.
 
----
+## What Was Fixed
 
-## What Is Already Strong
+### 1) Installer post-setup lockout (Critical)
 
-- **CenterEdge credential safety hardening:** redirects are refused instead of auto-followed.
-- **Context-aware retry behavior:** fast-fail bias for UI, deeper retry in CLI workers.
-- **Circuit-breaker behavior for operator traffic:** avoids UI worker pileups during upstream instability.
-- **Stale cache fallback (categories/capabilities):** keeps UI usable through short outages.
-- **Watchdog + retry table pattern:** good eventual consistency model for state enforcement.
-- **Security baseline:** bcrypt password hashing, session fixation mitigation, CSRF token flow, secure cookie posture.
+**Issue:** In web mode, `install.php` allowed `POST step=create_admin` processing even after setup had been completed, as long as a new username was supplied.
 
----
+**Impact:** If `install.php` was left reachable (common in rushed deployments), an attacker could create an admin account without authentication.
 
-## High-Priority Findings
+**Fix:** Added an early guard in POST handling to block all installer actions once any admin exists.
 
-### 1) Overnight schedule model is error-prone
-**Severity:** High  
-**Why it matters:** schedule creation enforces `start_time < end_time`, so overnight windows must be split into two entries. This is workable but fragile in day-boundary and DST contexts.
+### 2) Installer prerequisite coverage for runtime dependencies (High)
 
-**Failure mode:** missed second segment, accidental coverage gaps, incorrect midnight behavior, increased support overhead.
+**Issue:** Setup scripts did not verify that `curl` was installed, despite being required for all CenterEdge API calls. They also did not surface missing `at`/`atrm` scheduler binaries.
 
-**Recommendation:** add explicit “overnight intent” validation/linting in admin workflows (or API-level validation guidance) so operators get warnings before saving risky combinations.
+**Impact:** Deployments could appear successful but fail at runtime when syncing games or scheduling actions.
 
----
+**Fix:** Updated `install.php` and `fresh_install.php` prerequisite checks to require `curl`, and added explicit warnings when `at`/`atrm` are missing.
 
-### 2) SQLite write contention is the primary resilience boundary
-**Severity:** High  
-**Why it matters:** even with WAL and busy timeout, SQLite stays single-writer. Watchdog ingestion, scheduled-action updates, auth attempt logging, and admin writes can overlap during busy periods.
+## Remaining Findings (Prioritized)
 
-**Failure mode:** bursty latency, long waits, occasional failed writes/timeouts under load.
+### High Priority
 
-**Recommendation:** add DB pressure observability (busy waits, loop duration, write latency) and define SLO-based thresholds for intervention.
+1. ~~**Credential encryption uses AES-CBC without an integrity tag (MAC/AEAD).**~~ **RESOLVED.**
+   - `lib/crypto.php` now implements encrypt-then-MAC using HMAC-SHA256 with separate encryption and MAC sub-keys derived via HKDF-like HMAC derivation from the master key. Integrity is verified before decryption. Backward-compatible decryption of legacy (pre-HMAC) data is preserved.
 
----
+2. ~~**No explicit brute-force throttling strategy for login endpoint beyond fixed sleep(1).**~~ **RESOLVED.**
+   - Login now uses progressive delays: 1s (attempts 3-5), 3s (attempts 6-8), 5s (attempts 9-10), then full lockout (10+ attempts within 15-minute window). `Retry-After` header included in 429 responses.
 
-### 3) Degraded-upstream signaling lacks strong operator escalation
-**Severity:** High  
-**Why it matters:** the system tracks upstream failures and last-success time, but without prominent/active escalation operators can run degraded for too long before responding.
+3. ~~**No enforced deployment guardrails for install endpoint.**~~ **RESOLVED.**
+   - `install.php` web mode now returns 403 immediately when any admin user exists (before rendering any HTML). Health endpoint and dashboard display warnings when `install.php` or `fresh_install.php` remain on disk.
 
-**Failure mode:** partial functionality appears “mostly fine” while critical automation reliability degrades.
+### Medium Priority
 
-**Recommendation:** promote degraded mode to high-visibility dashboard warnings + alert thresholds (e.g., no successful CE call for N minutes).
+1. **Missing stronger HTTP response header posture.**
+   - Consider adding a CSP, `Permissions-Policy`, and (if always HTTPS) HSTS at web server layer.
 
----
+2. **Authentication/session hardening opportunities.**
+   - Consider setting `session.use_only_cookies=1` and a strict cookie secure policy in production (HTTPS-only deployments).
 
-## Medium-Priority Findings
+3. **Shared-hosting timer precision depends on cron cadence when `at` is unavailable.**
+   - Fallback mode executes due actions via watchdog/missed-action checks; use 1-minute cron for best reliability on hosts without `at`.
 
-### 4) Reconciliation/idempotency signals can look unstable during incidents
-Retries and watchdog enforcement are robust, but repeated attempts can create log noise and confusing operator perception (“things are flapping”) even when the system is converging.
+### Low Priority
 
-**Recommendation:** improve event labeling so operators can distinguish true state change vs. noop/retry convergence.
+1. **No automated test suite currently in repo.**
+   - Add smoke/integration checks for auth, schedule planning, and override conflict resolution.
 
-### 5) IP-only auth throttling has operational downsides
-Progressive delay + lockout are helpful, but IP-only strategy can over-throttle legitimate users behind shared egress and under-detect distributed credential attacks.
+2. ~~**Runbook docs are minimal.**~~ **RESOLVED.**
+   - Backup/restore, key rotation, and incident response (missing cron heartbeat) runbooks added to this document.
 
-**Recommendation:** add combined dimensions (username + IP + time window) and expose lockout telemetry.
+## Reliability Notes
 
----
+- The lock-file approach in `cron.php` and `run_action.php` is good and prevents duplicate runners.
+- Replan-on-change behavior in schedules/overrides improves operational correctness.
+- Database busy timeout and WAL mode are sensible for lightweight concurrent access.
 
-## Low-Priority / Hygiene Risks
+## Recommended Next Actions (Practical, Not Over-Engineered)
 
-- **Installer/runtime artifact handling:** reliability/security posture still assumes install paths are removed or blocked post-setup.
-- **Encryption key preflight:** missing/invalid key fails safely, but this should be surfaced early by startup/health checks before operator workflows are impacted.
+1. **Deployment hardening now (same day):**
+   - Block web access to `install.php` in Nginx/Apache.
+   - Ensure HTTPS termination and secure cookie usage.
+   - Verify filesystem permissions (`data/` writable only by app user).
 
----
+2. **Security uplift (short sprint):**
+   - ~~Add login rate limiter.~~ Done — progressive delays (1s/3s/5s) with full lockout at 10 attempts.
+   - ~~Migrate credential encryption to AEAD with backward-compatible decrypt path.~~ Done — encrypt-then-MAC (HMAC-SHA256) implemented.
 
-## Prioritized Hardening Plan (Single-Instance FCOS)
+3. **Reliability uplift (short sprint):**
+   - Add a small test harness for key API and scheduler paths.
+   - ~~Add runbook docs for backup/restore and incident response.~~ Done — see Backup & Restore Runbook section above.
 
-### Phase 1 (Immediate)
-1. Add **overnight schedule safety validation** and operator warnings.
-2. Add **dashboard degraded-state escalation** with clear action text.
-3. Add **health thresholds** based on upstream last-success age and consecutive failures.
+## Backup & Restore Runbook
 
-### Phase 2 (Near-term)
-4. Add **SQLite contention telemetry** (busy events, watchdog runtime, write latency buckets).
-5. Improve **idempotent status messaging** for retries/reconciliation.
-6. Strengthen auth protection with **username+IP aware throttling metrics**.
+### Backup (Recommended: Daily, Automated)
 
-### Phase 3 (Maturity)
-7. Build **incident runbooks** for CenterEdge outage, DB contention, and cron drift.
-8. Add **periodic resilience drills** (simulated CE outage + recovery timing verification).
+The entire application state lives in a single SQLite database (`data/pause_groups.db`). WAL mode is enabled, so use the SQLite `.backup` command for a consistent snapshot:
 
----
+```bash
+# Hot backup (safe while app is running)
+sqlite3 /path/to/data/pause_groups.db ".backup '/path/to/backups/pause_groups_$(date +%Y%m%d_%H%M%S).db'"
 
-## Reliability Acceptance Criteria (Single Instance)
+# Or use the sqlite3 CLI backup API
+sqlite3 /path/to/data/pause_groups.db "VACUUM INTO '/path/to/backups/pause_groups_$(date +%Y%m%d).db';"
+```
 
-Treat this integration as robust when all criteria are consistently met:
+**Automate via cron:**
+```
+30 2 * * * sqlite3 /path/to/data/pause_groups.db ".backup '/path/to/backups/pause_groups_$(date +\%Y\%m\%d).db'" && find /path/to/backups -name 'pause_groups_*.db' -mtime +30 -delete
+```
 
-- A 10-minute CenterEdge outage does **not** make operator UI workflows unusable.
-- Degraded state is visibly surfaced to operators within 60 seconds.
-- Overnight schedule configurations are validated pre-save with low misconfiguration rate.
-- Watchdog reconciliation converges automatically after transient failures with bounded lag.
-- SQLite contention is measurable and remains within defined SLO limits during peak operations.
+**What to back up:**
+- `data/pause_groups.db` — all application data (users, groups, schedules, overrides, logs)
+- `config.php` — encryption key (if not using env var) and custom settings
+- Cron entries (`crontab -l`)
 
----
+**Do NOT use `cp` on a live SQLite database** — it may capture a corrupted mid-write state. Always use `sqlite3 .backup` or `VACUUM INTO`.
 
-## Final Assessment
+### Restore
 
-Given your **single FCOS instance** architecture, CEplay is close to a robust production solution. The key remaining work is practical hardening: safer overnight scheduling workflows, stronger degraded-mode visibility, and measurable DB/runtime health.
+```bash
+# 1. Stop the application (or put in maintenance)
+sudo systemctl stop php-fpm  # or apache2/nginx
 
-Addressing those items will materially improve reliability without adding custom roles/user types.
+# 2. Replace the database
+cp /path/to/backups/pause_groups_YYYYMMDD.db /path/to/data/pause_groups.db
+
+# 3. Fix ownership and permissions
+chown www-data:www-data /path/to/data/pause_groups.db
+chmod 660 /path/to/data/pause_groups.db
+
+# 4. Restart application
+sudo systemctl start php-fpm
+
+# 5. Re-plan today's schedules (picks up any missed actions)
+sudo -u www-data php /path/to/cron.php
+```
+
+### Encryption Key Rotation
+
+If `PG_ENCRYPTION_KEY` needs to be rotated:
+
+1. Back up the database first.
+2. Decrypt all stored credentials using the current key (Settings page > re-save API credentials).
+3. Update `PG_ENCRYPTION_KEY` in environment.
+4. Re-save the API credentials via Settings — they will be re-encrypted with the new key.
+5. Verify by testing the CenterEdge API connection in Settings.
+
+### Incident Response: Missing Cron Heartbeat
+
+If `/api/health` shows `cron.healthy: false` or `watchdog.healthy: false`:
+
+1. Check cron is running: `crontab -l | grep pause`
+2. Check recent logs: `tail -50 /path/to/data/cron.log` and `tail -50 /path/to/data/watchdog.log`
+3. Check for lock contention: `ls -la /path/to/data/.scheduler.lock`
+4. Force re-plan: `sudo -u www-data php /path/to/cron.php`
+5. If lock is stale, remove it: `rm /path/to/data/.scheduler.lock` then re-run cron
+
+## Suggested Production Checklist
+
+- [ ] `install.php` blocked or removed after install.
+- [ ] `PG_ENCRYPTION_KEY` set and rotated through secure process.
+- [ ] HTTPS enforced end-to-end.
+- [ ] `data/` permissions verified least-privilege.
+- [ ] Cron configured + log file monitored.
+- [ ] Alerting added for repeated API failures and action execution errors.
+- [ ] Backup/restore tested on a non-production copy.

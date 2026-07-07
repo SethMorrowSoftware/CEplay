@@ -1,0 +1,158 @@
+/* ============================================
+   Clickable cards / tiles / rows
+   ============================================ */
+/*
+ * Any element that gets `App.makeCardClickable()` or `App.makeCardLink()`
+ * picks up `.is-clickable`. The styles below give it a consistent
+ * affordance — pointer cursor, subtle lift on hover, accent halo, and an
+ * accessible focus ring for keyboard users — without each card having to
+ * roll its own version. Per-component hover (e.g. `.stat-card:hover`) still
+ * applies and stacks naturally on top.
+ */
+.is-clickable {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+        transform var(--transition-base),
+        box-shadow var(--transition-base),
+        border-color var(--transition-base);
+}
+.is-clickable:hover {
+    transform: translateY(-2px);
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow-md);
+}
+.is-clickable:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+.is-clickable:focus { outline: none; }
+.is-clickable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: var(--radius-md);
+}
+/* Some clickable rows live inside tables — no transform there or layout
+   shifts mess with row alignment, just a subtle background change. */
+tr.is-clickable:hover, tr.clickable-row:hover {
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+tr.is-clickable, tr.clickable-row { cursor: pointer; }
+tr.is-clickable:hover, tr.clickable-row:hover { transform: none; box-shadow: none; }
+
+/* Flag the corner of clickable cards with a faint chevron so the
+   affordance reads instantly even before the user hovers. */
+.stat-card.is-clickable,
+.ticket-summary-tile.is-clickable,
+.analytics-fleet-tile.is-clickable {
+    position: relative;
+}
+.stat-card.is-clickable::before,
+.ticket-summary-tile.is-clickable::before,
+.analytics-fleet-tile.is-clickable::before {
+    /* keep the existing top-stripe ::before, the chevron lives in ::after */
+}
+.stat-card.is-clickable::after,
+.ticket-summary-tile.is-clickable::after,
+.analytics-fleet-tile.is-clickable::after {
+    content: '\203A';   /* › */
+    position: absolute;
+    top: 0.45rem;
+    right: 0.6rem;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    opacity: 0;
+    transform: translateX(-2px);
+    transition: opacity var(--transition-fast), transform var(--transition-fast), color var(--transition-fast);
+    pointer-events: none;
+}
+/* Stat-card already uses ::after for its own glow gradient; layer the
+   chevron via a child indicator instead. */
+.stat-card.is-clickable::after {
+    /* defer to existing ::after on .stat-card by hiding our chevron there;
+       we apply the chevron via the dedicated indicator element below. */
+    content: none;
+}
+.ticket-summary-tile.is-clickable:hover::after,
+.analytics-fleet-tile.is-clickable:hover::after,
+.ticket-summary-tile.is-clickable:focus-visible::after,
+.analytics-fleet-tile.is-clickable:focus-visible::after {
+    opacity: 0.85;
+    transform: translateX(0);
+    color: var(--accent);
+}
+
+/* Override-card hover: subtle accent tint and ring without nudging layout */
+.override-card.is-clickable:hover {
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+/* Group control-card already gets a coloured top border per state; the
+   default lift is too aggressive for these chunky tiles, soften it. */
+.group-control-card.is-clickable:hover {
+    transform: translateY(-1px);
+}
+
+/* Top-games items + feed rows live inside a card body and don't need the
+   full lift treatment — just a soft background tint for affordance. */
+.top-games-item.is-clickable,
+.feed-row.is-clickable {
+    border-radius: var(--radius-sm);
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+    margin-left: -0.35rem;
+    margin-right: -0.35rem;
+}
+.top-games-item.is-clickable:hover,
+.feed-row.is-clickable:hover {
+    transform: none;
+    box-shadow: none;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border-color: transparent;
+}
+.feed-row-card-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.feed-row-card-link:hover {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent);
+}
+
+/* Schedule blocks + day headers — keep them visually compact, no lift. */
+.schedule-block.is-clickable:hover,
+.schedule-day-header.is-clickable:hover {
+    transform: none;
+    box-shadow: none;
+}
+.schedule-day-header.is-clickable {
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+.schedule-day-header.is-clickable:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--text-primary);
+}
+
+/* Game-tile already has its own border-left status stripe + transform.
+   The lifting feels right for tiles, just keep our hover + ours stacked. */
+.game-tile.is-clickable:hover {
+    transform: translateY(-2px);
+}
+
+/* Groups-summary-item (collapsed dashboard summary): inline pill row. */
+.groups-summary-item.is-clickable {
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.45rem;
+    margin: -0.2rem -0.45rem;
+}
+.groups-summary-item.is-clickable:hover {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    transform: none;
+    box-shadow: none;
+}
+

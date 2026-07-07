@@ -1,0 +1,36 @@
+/* ============================================
+   Deep-link banner — shown on filtered list views
+   ============================================ */
+.deep-link-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.85rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.84rem;
+}
+.deep-link-banner-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.deep-link-banner .btn { margin-left: auto; }
+
+/* Smooth scrolling */
+html { scroll-behavior: smooth; }
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    html { scroll-behavior: auto; }
+    .skip-link { transition: none; }
+}
+

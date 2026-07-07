@@ -1,0 +1,63 @@
+/* ============================================
+   Schedule Grid
+   ============================================ */
+.schedule-week {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+.schedule-day {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    min-height: 120px;
+    padding: 0.5rem;
+}
+.schedule-day-header {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-align: center;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.35rem;
+}
+.schedule-day-header.today { color: var(--accent); }
+.schedule-block {
+    background: var(--accent-subtle);
+    border: 1px solid rgba(91, 141, 239, 0.25);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.4rem;
+    font-size: 0.7rem;
+    margin-bottom: 0.25rem;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+    line-height: 1.3;
+}
+.schedule-block:hover { background: var(--accent-glow); }
+.schedule-block-time { font-weight: 600; }
+.schedule-block-group { color: var(--text-secondary); font-size: 0.65rem; }
+
+/* ============================================
+   Override Sections
+   ============================================ */
+.override-section { margin-bottom: 1.5rem; }
+.override-section-title {
+    font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-secondary);
+    margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;
+}
+.override-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.5rem;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.override-info { flex: 1; }
+.override-name { font-weight: 500; font-size: 0.88rem; }
+.override-meta { font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.15rem; }
+.override-countdown { font-size: 0.78rem; color: var(--accent); font-weight: 500; }
+

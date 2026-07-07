@@ -1,0 +1,96 @@
+/* ============================================
+   Improved Game Picker (Group Form)
+   ============================================ */
+.game-picker-container {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+.game-picker-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+.game-picker-toolbar .form-input {
+    flex: 1;
+    min-width: 180px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.82rem;
+}
+.game-picker-stats {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    padding: 0.25rem 0.5rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-full);
+}
+.game-picker-stats strong {
+    color: var(--accent);
+    font-weight: 600;
+}
+.game-picker-list {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 0.25rem;
+}
+.game-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast);
+    font-size: 0.82rem;
+}
+.game-picker-item:hover { background: var(--bg-tertiary); }
+.game-picker-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+}
+.game-picker-item .game-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-picker-item .game-status {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+.game-picker-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.65rem;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   Toolbar Row (Search + Filters + Toggle)
+   ============================================ */
+.toolbar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+/* Default cap; pages that want a fluid search input override with style.flex
+   (the inline style is non-conflicting since flex:1 sets the basis, while
+   max-width still caps growth at 360px on larger screens). */
+.toolbar-row .form-input {
+    max-width: 360px;
+    min-width: 180px;
+}
+.toolbar-row .form-input-sm,
+.toolbar-row select.form-input {
+    min-width: 140px;
+    max-width: 220px;
+}
+

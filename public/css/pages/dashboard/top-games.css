@@ -1,0 +1,115 @@
+/* ============================================
+   Top games — modern leaderboard
+   ============================================
+   Spotlight column (right) shows tickets in big numerals, medal column
+   (left) shows 🥇🥈🥉 for the top three. Hot games pulse softly.
+   ============================================ */
+.top-games-list-modern {
+    list-style: none;
+    margin: 0; padding: 0;
+}
+.top-games-item-modern {
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    gap: 0.85rem;
+    align-items: center;
+    padding: 0.6rem 0.35rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.top-games-item-modern:last-child { border-bottom: none; }
+
+.top-games-item-modern .top-games-rank {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+    border: 1px solid var(--border);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+}
+.top-games-rank-medal {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+}
+.top-games-medal {
+    font-size: 1.6rem;
+    line-height: 1;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
+}
+.top-games-rank-1 .top-games-medal { animation: medal-shine 3.2s ease-in-out infinite; }
+@keyframes medal-shine {
+    0%, 100% { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35)) drop-shadow(0 0 0 transparent); }
+    50%      { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4))  drop-shadow(0 0 8px color-mix(in srgb, var(--tickets) 70%, transparent)); }
+}
+
+.top-games-item-modern .top-games-body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.top-games-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.top-games-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Right-edge ticket spotlight */
+.top-games-spotlight {
+    text-align: right;
+    min-width: 64px;
+    line-height: 1;
+}
+.top-games-spotlight-value {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+.top-games-spotlight-value.has-tickets { color: var(--tickets); }
+.top-games-spotlight-value.no-tickets  { opacity: 0.5; }
+.top-games-spotlight-label {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+    margin-top: 0.2rem;
+}
+
+/* The bar itself — same shape as before but slightly thicker and animated */
+.top-games-list-modern .top-games-bar {
+    height: 5px;
+    background: var(--tickets-track);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+}
+.top-games-list-modern .top-games-bar-fill {
+    height: 100%;
+    background: var(--border);
+    border-radius: var(--radius-full);
+    transition: width 0.55s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.top-games-list-modern .top-games-bar-fill.has-tickets {
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--tickets) 90%, var(--accent)) 0%,
+        var(--tickets) 60%,
+        color-mix(in srgb, var(--tickets) 80%, #fff7c2 20%) 100%);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--tickets) 50%, transparent);
+}
+

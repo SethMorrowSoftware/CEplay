@@ -1,0 +1,99 @@
+/* ============================================
+   Responsive
+   ============================================ */
+/* Mobile menu toggle button */
+.mobile-menu-btn {
+    display: none;
+    position: fixed;
+    top: 0.75rem; left: 0.75rem;
+    z-index: 200;
+    width: 40px; height: 40px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 1.2rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-md);
+    transition: all var(--transition-fast);
+}
+.mobile-menu-btn svg {
+    width: 20px; height: 20px;
+    stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.mobile-menu-btn:hover { background: var(--bg-card-hover); border-color: var(--border-hover); }
+.mobile-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Icon-only logout button in sidebar footer. */
+.sidebar-logout {
+    width: 30px; height: 30px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.sidebar-logout svg {
+    width: 16px; height: 16px;
+    stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.sidebar-logout:hover { color: var(--danger); }
+
+/* Theme toggle icon wrapper — keeps SVG vertically centered with the label. */
+.theme-toggle-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+.theme-toggle-icon svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Brand mark inside login card. */
+.login-brand-mark svg {
+    width: 28px; height: 28px;
+    stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* Sidebar overlay for mobile */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+    animation: fadeIn 0.15s ease;
+}
+
+@media (max-width: 900px) {
+    .mobile-menu-btn { display: flex; }
+    .sidebar {
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        z-index: 150;
+    }
+    .sidebar.sidebar-open {
+        transform: translateX(0);
+    }
+    .sidebar-overlay.active { display: block; }
+    .main-content { margin-left: 0; padding: 1rem; padding-top: 3.5rem; }
+    .theme-toggle-inline { top: 0.6rem; right: 0.6rem; }
+    .page-header { padding: 0.7rem 0.8rem; }
+    .schedule-week { grid-template-columns: repeat(3, 1fr); }
+    .form-row { grid-template-columns: 1fr; }
+    .dual-pane { grid-template-columns: 1fr; }
+    .modal { min-width: auto; }
+    .group-controls-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .game-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .schedule-week { grid-template-columns: 1fr; }
+}
+

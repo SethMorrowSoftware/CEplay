@@ -1,0 +1,63 @@
+/* ============================================
+   Data Table Enhancements
+   ============================================ */
+.badge-danger {
+    background: var(--danger-subtle);
+    color: var(--danger);
+}
+.text-sm {
+    font-size: 0.85em;
+}
+.alert-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+.alert-warning {
+    background: var(--warning-subtle);
+    color: color-mix(in srgb, var(--warning) 80%, var(--text-primary));
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 1rem 0.75rem 2.5rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1.45;
+    position: relative;
+    box-shadow: var(--shadow-xs);
+}
+.alert-warning::before {
+    content: '!';
+    position: absolute;
+    left: 0.85rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--warning);
+    color: #1a1303;
+    font-weight: 800;
+    font-size: 0.74rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.btn-lg {
+    padding: 0.78rem 1.6rem;
+    font-size: 0.95rem;
+    border-radius: var(--radius-md);
+}
+/* btn-warning defined in Buttons section above */
+
+/* ============================================
+   Responsive adjustments for new features
+   ============================================ */
+@media (max-width: 768px) {
+    .stats-row { flex-direction: column; }
+    .analytics-grid { grid-template-columns: 1fr; }
+    .form-grid { grid-template-columns: 1fr; }
+    .attractions-grid { grid-template-columns: 1fr; }
+    .card-lookup-search { flex-direction: column; }
+    .tab-bar { overflow-x: auto; }
+}
+

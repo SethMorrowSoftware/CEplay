@@ -1,0 +1,297 @@
+/* ============================================
+   Dashboard "Pulse" hero banner
+   ============================================
+   Big, animated, slightly flashy hero block that puts today's ticket count
+   front and centre. Uses a layered gradient/glow stack rather than an image,
+   so it scales perfectly and respects the live theme.
+   ============================================ */
+.hero-pulse {
+    position: relative;
+    border-radius: var(--radius-2xl);
+    padding: 1.5rem 1.75rem 1.65rem;
+    overflow: hidden;
+    isolation: isolate;
+    background:
+        radial-gradient(ellipse 70% 90% at 0% 0%, color-mix(in srgb, var(--tickets) 22%, transparent), transparent 60%),
+        radial-gradient(ellipse 80% 100% at 100% 100%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 65%),
+        linear-gradient(135deg,
+            color-mix(in srgb, var(--bg-card) 92%, var(--accent) 8%) 0%,
+            color-mix(in srgb, var(--bg-card) 96%, var(--tickets) 4%) 100%);
+    border: 1px solid color-mix(in srgb, var(--tickets) 28%, var(--border));
+    box-shadow:
+        0 18px 48px -12px rgba(0, 0, 0, 0.45),
+        0 1px 0 0 rgba(255,255,255,0.05) inset,
+        0 0 0 1px color-mix(in srgb, var(--tickets) 12%, transparent) inset;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+}
+
+[data-theme="light"] .hero-pulse {
+    box-shadow:
+        0 18px 40px -16px rgba(20, 35, 66, 0.22),
+        0 1px 0 0 rgba(255,255,255,0.6) inset,
+        0 0 0 1px color-mix(in srgb, var(--tickets) 14%, transparent) inset;
+}
+
+/* Slow-drifting glow layer — gives the hero a subtle "alive" feel without
+   being distracting. Sits behind the content (z-index handled by isolate). */
+.hero-pulse-glow {
+    position: absolute;
+    inset: -40% -10% auto auto;
+    width: 70%;
+    height: 200%;
+    background: radial-gradient(circle at 70% 30%,
+        color-mix(in srgb, var(--tickets) 35%, transparent) 0%,
+        transparent 55%);
+    z-index: -1;
+    filter: blur(30px);
+    opacity: 0.65;
+    animation: hero-pulse-drift 14s ease-in-out infinite;
+    pointer-events: none;
+}
+@keyframes hero-pulse-drift {
+    0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.65; }
+    50%      { transform: translate(-6%, 4%) scale(1.06); opacity: 0.85; }
+}
+
+/* Top row: live pill + section eyebrow */
+.hero-pulse-toprow {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    margin-bottom: 0.85rem;
+    flex-wrap: wrap;
+}
+.hero-pulse-eyebrow {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--text-secondary);
+}
+
+/* LIVE pill — dimmed gray when idle, glowing accent when activity present */
+.hero-live-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.28rem 0.65rem 0.28rem 0.55rem;
+    border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--bg-tertiary) 75%, transparent);
+    border: 1px solid var(--border);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    color: var(--text-muted);
+    transition: background 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+.hero-live-pill .hero-live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: background 200ms ease, box-shadow 200ms ease;
+}
+.hero-live-pill-active {
+    background: color-mix(in srgb, var(--success) 22%, transparent);
+    border-color: color-mix(in srgb, var(--success) 50%, transparent);
+    color: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
+}
+.hero-live-pill-active .hero-live-dot {
+    background: var(--success);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent);
+    animation: hero-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes hero-live-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent); }
+    50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 0%, transparent); }
+}
+
+/* Main row: counter | (sparkline + chips) */
+.hero-pulse-mainrow {
+    display: grid;
+    grid-template-columns: minmax(260px, 0.95fr) minmax(260px, 1.2fr);
+    gap: 1.5rem;
+    align-items: center;
+}
+@media (max-width: 880px) {
+    .hero-pulse-mainrow { grid-template-columns: 1fr; gap: 1.1rem; }
+    .hero-pulse { padding: 1.2rem 1.2rem 1.3rem; }
+}
+
+.hero-pulse-counter { min-width: 0; }
+.hero-pulse-value {
+    font-size: clamp(3.2rem, 6.5vw, 5.2rem);
+    font-weight: 800;
+    letter-spacing: -0.045em;
+    line-height: 0.95;
+    font-variant-numeric: tabular-nums;
+    background: linear-gradient(135deg,
+        var(--tickets) 0%,
+        color-mix(in srgb, var(--tickets) 70%, #fff8c0 30%) 45%,
+        color-mix(in srgb, var(--tickets) 60%, var(--accent)) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    text-shadow: 0 0 30px color-mix(in srgb, var(--tickets) 14%, transparent);
+    /* Soft shimmer that runs continuously across the gradient */
+    background-size: 200% 200%;
+    animation: hero-shimmer 9s linear infinite;
+}
+@keyframes hero-shimmer {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+/* Quick scale + glow pulse when the counter ticks up */
+.hero-pulse-value.hero-flash {
+    animation: hero-shimmer 9s linear infinite, hero-flash-pop 850ms ease-out;
+}
+@keyframes hero-flash-pop {
+    0%   { transform: scale(1);    filter: drop-shadow(0 0 0 transparent); }
+    35%  { transform: scale(1.04); filter: drop-shadow(0 0 18px color-mix(in srgb, var(--tickets) 60%, transparent)); }
+    100% { transform: scale(1);    filter: drop-shadow(0 0 0 transparent); }
+}
+
+.hero-pulse-deltarow {
+    margin-top: 0.55rem;
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+}
+.hero-pulse-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-size: 0.74rem;
+    font-weight: 600;
+    background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.hero-pulse-delta.trend-up {
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+    border-color: color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--success);
+}
+.hero-pulse-delta.trend-down {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
+}
+.hero-pulse-delta.trend-flat { color: var(--text-muted); }
+
+.hero-pulse-hot {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+.hero-pulse-hot-flame { font-size: 0.95rem; }
+.hero-pulse-hot-name {
+    color: var(--text-primary);
+    font-weight: 700;
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.hero-pulse-hot-tickets {
+    color: var(--tickets);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Right side: sparkline above, three stat chips below */
+.hero-pulse-side {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    min-width: 0;
+}
+.hero-pulse-spark {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.hero-pulse-spark-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+}
+.hero-pulse-spark-axis {
+    color: var(--text-muted);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    font-size: 0.66rem;
+}
+.hero-pulse-spark-canvas {
+    display: block;
+    width: 100%;
+    height: 60px;
+    background: color-mix(in srgb, var(--bg-input) 75%, transparent);
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.hero-pulse-chips {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
+}
+@media (max-width: 480px) {
+    .hero-pulse-chips { grid-template-columns: 1fr; }
+}
+.hero-chip {
+    background: color-mix(in srgb, var(--bg-card) 60%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+.hero-chip:hover {
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+    transform: translateY(-1px);
+}
+.hero-chip-label {
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+}
+.hero-chip-value {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.05;
+}
+.hero-chip[data-chip="active"] .hero-chip-value { color: var(--success); }
+.hero-chip[data-chip="avg"] .hero-chip-value { color: var(--tickets); }
+.hero-chip-detail {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.25;
+    min-height: 0.85rem;
+}
+

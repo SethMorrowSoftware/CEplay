@@ -1,0 +1,24 @@
+/* ============================================
+   Reduced-motion exemption keeps the hero usable but quiet
+   ============================================ */
+@media (prefers-reduced-motion: reduce) {
+    .hero-pulse-glow,
+    .hero-pulse-value,
+    .hero-pulse-value.hero-flash,
+    .hero-live-pill-active .hero-live-dot,
+    .hero-live-pill-busy .hero-live-dot,
+    .feed-meta-pulse-dot,
+    .feed-row-fresh,
+    .feed-row-fresh::before,
+    .feed-row-tickets-jackpot,
+    .top-games-rank-1 .top-games-medal,
+    .override-card-imminent {
+        animation: none !important;
+    }
+    .hero-pulse-value {
+        background: none;
+        -webkit-text-fill-color: var(--tickets);
+        color: var(--tickets);
+    }
+}
+

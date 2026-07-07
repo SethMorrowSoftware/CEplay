@@ -1,0 +1,121 @@
+/* ============================================================
+   Performance page — game reporting (Day/Week/Month/Year).
+   Uses the shared design tokens so it themes light/dark for free.
+   ============================================================ */
+
+/* --- Controls bar ------------------------------------------ */
+.perf-controls-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem 1.25rem;
+}
+.perf-range-presets {
+    display: inline-flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+.perf-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+}
+.perf-nav-btn {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 1.05rem;
+    line-height: 1;
+    min-width: 2.1rem;
+}
+.perf-nav-label {
+    min-width: 12rem;
+    text-align: center;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 0 0.5rem;
+}
+.perf-custom {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.perf-custom input[type="date"] { min-width: 9.5rem; }
+
+/* --- KPI summary cards -------------------------------------- */
+.perf-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.85rem;
+    margin-bottom: 1.25rem;
+}
+.perf-kpi-grid-compact {
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    margin: 1rem 0;
+}
+.perf-kpi {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 10px);
+    padding: 0.9rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.perf-kpi-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+.perf-kpi-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.15;
+}
+.perf-kpi-delta {
+    align-self: flex-start;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+    color: var(--text-secondary);
+}
+.perf-delta-up {
+    color: var(--success, #3dd68c);
+    background: color-mix(in srgb, var(--success, #3dd68c) 16%, transparent);
+}
+.perf-delta-down {
+    color: var(--danger, #e5534b);
+    background: color-mix(in srgb, var(--danger, #e5534b) 16%, transparent);
+}
+.perf-delta-flat {
+    color: var(--text-muted, #6b7385);
+}
+
+/* --- Charts ------------------------------------------------- */
+.perf-chart-holder {
+    position: relative;
+    height: 300px;
+    width: 100%;
+}
+.perf-chart-holder-sm { height: 240px; }
+
+.perf-metric-toggle {
+    display: inline-flex;
+    gap: 0.3rem;
+}
+
+/* Fallback for browsers without color-mix(): the plain classes above still
+   set a readable colour; the translucent background just degrades to none. */
+@supports not (background: color-mix(in srgb, red 10%, transparent)) {
+    .perf-kpi-delta { background: transparent; }
+}
+
+@media (max-width: 640px) {
+    .perf-nav { margin-left: 0; width: 100%; justify-content: space-between; }
+    .perf-nav-label { min-width: 0; flex: 1; }
+    .perf-kpi-value { font-size: 1.35rem; }
+}

@@ -1,0 +1,130 @@
+/* ============================================
+   Active Overrides — modern card layout
+   ============================================
+   Action-coloured accent (warning for pause, success for unpause), big
+   countdown on the right, time-elapsed progress bar across the bottom.
+   The "imminent" variant (under 5 min remaining) pulses to draw the eye.
+   ============================================ */
+.override-card-modern {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding: 0.85rem 1rem 0.95rem;
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--bg-card) 90%, transparent);
+    border: 1px solid var(--border);
+    border-left-width: 3px;
+    box-shadow: var(--shadow-sm);
+    position: relative;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.override-card-modern[data-action="pause"]   { border-left-color: var(--warning); }
+.override-card-modern[data-action="unpause"] { border-left-color: var(--success); }
+.override-card-modern + .override-card-modern { margin-top: 0.65rem; }
+
+.override-card-headerrow {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+.override-card-titleblock { min-width: 0; flex: 1; }
+.override-card-actionrow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.2rem;
+}
+.override-card-actionbadge {
+    display: inline-block;
+    padding: 0.18rem 0.55rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid currentColor;
+}
+.override-card-actionbadge-pause {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+.override-card-actionbadge-unpause {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+.override-card-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 30ch;
+}
+.override-card-meta {
+    font-size: 0.78rem;
+}
+.override-card-meta-sep { color: var(--text-muted); }
+
+.override-card-countdown {
+    text-align: right;
+    flex-shrink: 0;
+    line-height: 1.05;
+}
+.override-card-countdown-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+}
+.override-card-countdown-label {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+    margin-top: 0.18rem;
+}
+.override-card-countdown-imminent .override-card-countdown-value { color: var(--warning); }
+
+.override-card-progress {
+    height: 5px;
+    background: color-mix(in srgb, var(--border) 60%, transparent);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+}
+.override-card-progress-fill {
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--accent) 70%, transparent) 0%,
+        var(--accent) 100%);
+    transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.override-card-modern[data-action="pause"] .override-card-progress-fill {
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--warning) 70%, transparent) 0%,
+        var(--warning) 100%);
+}
+.override-card-modern[data-action="unpause"] .override-card-progress-fill {
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--success) 70%, transparent) 0%,
+        var(--success) 100%);
+}
+
+/* Imminent (<5 min remaining): the whole card breathes to draw attention */
+.override-card-imminent {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 40%, transparent),
+                var(--shadow-sm);
+    animation: override-imminent-pulse 2.2s ease-in-out infinite;
+}
+@keyframes override-imminent-pulse {
+    0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 30%, transparent), var(--shadow-sm); }
+    50%      { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 55%, transparent),
+                            0 8px 24px -8px color-mix(in srgb, var(--warning) 40%, transparent); }
+}
+

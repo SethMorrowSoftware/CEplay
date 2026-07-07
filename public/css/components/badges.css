@@ -1,0 +1,61 @@
+/* ============================================
+   Badges
+   ============================================ */
+.badge {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.18rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-size: 0.7rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    line-height: 1.2;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+.badge-enabled {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 25%, transparent);
+}
+.badge-paused {
+    background: var(--warning-subtle);
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+.badge-outOfService, .badge-out-of-service {
+    background: var(--danger-subtle);
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.badge-active {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 25%, transparent);
+}
+.badge-inactive {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border-color: var(--border);
+}
+.badge-override {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.badge-info {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Tiny indicator dot rendered inside a status badge. */
+.badge-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+}
+.badge-dot-success { background: var(--success); }
+.badge-dot-warning { background: var(--warning); }
+.badge-dot-danger { background: var(--danger); }
+

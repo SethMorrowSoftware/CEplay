@@ -1,0 +1,94 @@
+/* ============================================
+   Final polish pass — modern UI refinements
+   ============================================ */
+
+/* Better native scrollbars for desktop browsers. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--border)) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--accent) 36%, var(--border));
+    border-radius: var(--radius-full);
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--accent) 60%, var(--border));
+    background-clip: content-box;
+}
+
+/* Keep header controls available during long-scroll data pages. */
+.page-header {
+    position: sticky;
+    top: 0.9rem;
+    z-index: 35;
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: blur(12px) saturate(120%);
+}
+
+/* Richer, more tactile control states without changing behavior. */
+.btn,
+.icon-btn,
+.theme-toggle,
+.nav-item,
+.badge,
+.filter-pill,
+.tab-btn {
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.btn:hover,
+.icon-btn:hover,
+.tab-btn:hover,
+.filter-pill:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+}
+
+.btn:active,
+.icon-btn:active,
+.tab-btn:active,
+.filter-pill:active {
+    transform: translateY(0);
+}
+
+/* Increase separation and legibility in dense data views. */
+.table tbody tr:nth-child(even),
+.data-table tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--bg-tertiary) 22%, transparent);
+}
+.table tbody tr:hover,
+.data-table tbody tr:hover {
+    background: color-mix(in srgb, var(--accent-subtle) 58%, transparent);
+}
+
+/* Modal polish for a more premium layered feel. */
+.modal-overlay {
+    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    backdrop-filter: blur(8px) saturate(110%);
+}
+.modal {
+    box-shadow: var(--shadow-xl), 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+/* Mobile ergonomics: preserve polish while reducing visual noise. */
+@media (max-width: 900px) {
+    .page-header {
+        position: relative;
+        top: auto;
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
+    }
+
+    .card:hover,
+    .btn:hover,
+    .icon-btn:hover,
+    .filter-pill:hover,
+    .tab-btn:hover {
+        transform: none;
+        box-shadow: var(--shadow-xs);
+    }
+}

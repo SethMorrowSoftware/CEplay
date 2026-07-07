@@ -1,0 +1,74 @@
+/* ============================================
+   Kiosks page — vendor-extension affordances
+   ============================================
+   The CenterEdge /kiosks/{id}/performAction endpoint is a vendor extension
+   not present in the official OpenAPI 1.8.0 spec. These styles surface
+   that to operators rather than silently omitting RPC buttons.
+   ============================================ */
+
+/* Informational alert — sibling of .alert-warning. Used for the venue-wide
+   banner that appears once we confirm the RPC endpoint is unreachable. */
+.alert-info {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: color-mix(in srgb, var(--accent) 80%, var(--text-primary));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 1rem 0.75rem 2.5rem;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    position: relative;
+    box-shadow: var(--shadow-xs);
+}
+.alert-info strong { color: var(--text-primary); font-weight: 600; }
+.alert-info::before {
+    content: 'i';
+    position: absolute;
+    left: 0.85rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.75rem;
+    font-style: italic;
+    font-family: var(--font-sans);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.kiosk-rpc-banner { margin-bottom: 0.85rem; }
+
+/* Inline muted "n/a" / "no remote actions" tag rendered in place of an
+   RPC button when the upstream advertises no actions. Subtle so it
+   doesn't compete with the working pause/unpause buttons next to it. */
+.kiosk-rpc-unadvertised,
+.kiosk-rpc-unsupported {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-tertiary) 65%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+    border-radius: var(--radius-sm);
+    cursor: help;
+    user-select: none;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.kiosk-rpc-unsupported {
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+.kiosk-rpc-unadvertised:hover,
+.kiosk-rpc-unsupported:hover {
+    color: var(--text-primary);
+    border-style: solid;
+}
+

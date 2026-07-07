@@ -35,10 +35,27 @@ class DB {
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             display_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT \'admin\',
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
+
+        // Migration: existing installations created the table without the role
+        // column. Adding it idempotently — pre-existing users default to
+        // 'admin' so no one loses access during the upgrade.
+        try {
+            $db->exec('ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT \'admin\'');
+        } catch (Exception $e) {
+            // Column already exists — ignore
+        }
+        // Defensive: any rows that somehow ended up with NULL/empty role
+        // (e.g. from a partial earlier migration) are normalized to 'admin'.
+        try {
+            $db->exec("UPDATE admin_users SET role = 'admin' WHERE role IS NULL OR role = ''");
+        } catch (Exception $e) {
+            // Ignore if table is empty or column doesn't exist yet
+        }
 
         $db->exec('CREATE TABLE IF NOT EXISTS api_config (
             key TEXT PRIMARY KEY,
@@ -46,6 +63,49 @@ class DB {
             encrypted INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
+
+        // Role definitions. The three system roles (admin/manager/tech) are
+        // seeded once with INSERT OR IGNORE so an operator\'s later permission
+        // edits survive restarts; custom roles are added via /api/roles.
+        // permissions is a JSON array of keys from Auth::PERMISSIONS. The
+        // admin role\'s stored list is ignored — admin bypasses permission
+        // checks in code and is locked against editing/deletion so an
+        // installation can never lock itself out.
+        $db->exec('CREATE TABLE IF NOT EXISTS roles (
+            slug TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT \'\',
+            permissions TEXT NOT NULL DEFAULT \'[]\',
+            is_system INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+        // Seeds mirror the pre-RBAC hardcoded ACCESS_MATRIX + money scrub, so
+        // upgrading changes nobody\'s effective access.
+        $seedRoles = [
+            ['admin', 'Administrator', 'Full access to every feature, including settings, user and role management.',
+             '["*"]'],
+            ['manager', 'Manager',
+             'Runs the floor and the automation: full analytics with revenue, card lookup, and group/schedule management. No system settings or user management.',
+             '["analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","schedules_manage"]'],
+            ['tech', 'Technician',
+             'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No sales data, card lookup, or group/schedule editing.',
+             '["analytics","manual_control","overrides_manage","settings","users"]'],
+        ];
+        foreach ($seedRoles as $r) {
+            try {
+                $stmt = $db->prepare('INSERT OR IGNORE INTO roles (slug, name, description, permissions, is_system)
+                                      VALUES (:p0, :p1, :p2, :p3, 1)');
+                $stmt->bindValue(':p0', $r[0], SQLITE3_TEXT);
+                $stmt->bindValue(':p1', $r[1], SQLITE3_TEXT);
+                $stmt->bindValue(':p2', $r[2], SQLITE3_TEXT);
+                $stmt->bindValue(':p3', $r[3], SQLITE3_TEXT);
+                $stmt->execute();
+                $stmt->close();
+            } catch (Exception $e) {
+                error_log('Role seed failed for ' . $r[0] . ': ' . $e->getMessage());
+            }
+        }
 
         $db->exec('CREATE TABLE IF NOT EXISTS pause_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,24 +198,11 @@ class DB {
             details TEXT,
             success INTEGER NOT NULL DEFAULT 1,
             error_message TEXT,
-            actor_user_id INTEGER,
-            actor_username TEXT,
-            ip_address TEXT,
             FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE SET NULL
         )');
-        // Migration: actor + IP columns added so user-driven audit entries
-        // can be filtered without parsing the details JSON.
-        foreach (['actor_user_id INTEGER', 'actor_username TEXT', 'ip_address TEXT'] as $colDef) {
-            try {
-                $db->exec('ALTER TABLE action_log ADD COLUMN ' . $colDef);
-            } catch (Exception $e) {
-                // Column already exists — ignore
-            }
-        }
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_timestamp ON action_log(timestamp)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_source ON action_log(source)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_log_group ON action_log(pause_group_id)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_log_actor ON action_log(actor_user_id)');
 
         $db->exec('CREATE TABLE IF NOT EXISTS scheduled_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,22 +258,12 @@ class DB {
             max_attempts INTEGER NOT NULL DEFAULT 10,
             last_attempted_at TEXT,
             last_error TEXT,
-            gave_up_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             UNIQUE(asset_type, asset_id),
             FOREIGN KEY (pause_group_id) REFERENCES pause_groups(id) ON DELETE SET NULL
         )');
-        // Migration: gave_up_at column added so the watchdog can stop
-        // re-queueing retries after the cap is hit. Older installs created
-        // the table without this column.
-        try {
-            $db->exec('ALTER TABLE action_retries ADD COLUMN gave_up_at TEXT');
-        } catch (Exception $e) {
-            // Column already exists — ignore
-        }
         $db->exec('CREATE INDEX IF NOT EXISTS idx_ar_asset ON action_retries(asset_type, asset_id)');
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_ar_gaveup ON action_retries(gave_up_at)');
 
         $db->exec('CREATE TABLE IF NOT EXISTS login_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +301,31 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_game ON game_play_transactions(game_id)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
+
+        // Permanent per-game, per-day rollup of the raw play feed. The raw
+        // game_play_transactions table is a short rolling window (see the
+        // purge in Scheduler::purgeOldData) so the live feed stays cheap, but
+        // longer-term reporting (by month / by year) needs history that
+        // outlives that window. Scheduler::rollupDailyStats() recomputes each
+        // recent local day from the raw feed and UPSERTs it here BEFORE the
+        // raw rows are purged, so these summaries are retained indefinitely.
+        // stat_date is the venue-local calendar date (YYYY-MM-DD) the plays
+        // fell on, matching how the analytics/performance pages bin time.
+        $db->exec('CREATE TABLE IF NOT EXISTS game_daily_stats (
+            stat_date TEXT NOT NULL,
+            game_id TEXT NOT NULL,
+            game_name TEXT NOT NULL DEFAULT \'\',
+            plays INTEGER NOT NULL DEFAULT 0,
+            tickets REAL NOT NULL DEFAULT 0,
+            cash REAL NOT NULL DEFAULT 0,
+            regular_points REAL NOT NULL DEFAULT 0,
+            bonus_points REAL NOT NULL DEFAULT 0,
+            unique_cards INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (stat_date, game_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_date ON game_daily_stats(stat_date)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_game ON game_daily_stats(game_id)');
 
         // One-time cleanup of tables from removed feature modules.
         // The card/parties/maintenance/etc. modules were dropped to scope this
@@ -395,13 +457,13 @@ class DB {
     }
 
     /**
-     * Write an audit log entry for administrative or user-driven actions.
+     * Write an audit log entry for administrative actions.
+     * Lightweight wrapper around action_log for tracking non-game actions.
      *
-     * If $userId is null, the helper auto-detects the active session user
-     * (when called inside an HTTP request) so callers don't have to
-     * thread Auth::check() through every endpoint. Use $success=false +
-     * $errorMessage to record failed attempts so failures are queryable
-     * alongside successes from the same /logs view.
+     * $success + $pauseGroupId are populated so the Action Log page's own
+     * success and group filters work for administrative events too — the
+     * older version hard-coded success=1 and never set pause_group_id, so
+     * failures and group-scoped admin actions were invisible to those filters.
      */
     public static function auditLog(
         string $source,
@@ -409,78 +471,27 @@ class DB {
         ?int $userId = null,
         ?array $details = null,
         bool $success = true,
-        ?string $errorMessage = null
+        ?int $pauseGroupId = null
     ): void {
         try {
-            // Auto-resolve actor info when running inside an authenticated
-            // HTTP request and the caller didn't pass anything explicit.
-            $username = null;
-            if ($userId === null && class_exists('Auth') && session_status() === PHP_SESSION_ACTIVE) {
-                $sessionUser = $_SESSION['auth_user'] ?? null;
-                if (is_array($sessionUser)) {
-                    $userId = isset($sessionUser['id']) ? (int)$sessionUser['id'] : null;
-                    $username = $sessionUser['username'] ?? null;
-                }
-            } elseif ($userId !== null) {
-                $row = self::queryOne('SELECT username FROM admin_users WHERE id = :p0', [$userId]);
-                if ($row) {
-                    $username = $row['username'];
-                }
-            }
-
-            $ip = self::resolveClientIp();
-
             $payload = $details ?? [];
-            // Preserve the original actor_user_id key in details for old logs
-            // that scripts/tools may have parsed; the new dedicated columns
-            // are the queryable source of truth going forward.
             if ($userId !== null) {
                 $payload['actor_user_id'] = $userId;
             }
-            if ($username !== null) {
-                $payload['actor_username'] = $username;
-            }
-            if ($ip !== '') {
-                $payload['ip_address'] = $ip;
-            }
-
             self::execute(
-                'INSERT INTO action_log
-                    (source, action, success, error_message, details,
-                     actor_user_id, actor_username, ip_address)
-                 VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7)',
+                'INSERT INTO action_log (source, action, pause_group_id, success, details)
+                 VALUES (:p0, :p1, :p2, :p3, :p4)',
                 [
                     $source,
                     $action,
+                    $pauseGroupId,
                     $success ? 1 : 0,
-                    $errorMessage,
                     !empty($payload) ? json_encode($payload) : null,
-                    $userId,
-                    $username,
-                    $ip !== '' ? $ip : null,
                 ]
             );
         } catch (Exception $e) {
             error_log("Audit log failed: $source/$action — " . $e->getMessage());
         }
-    }
-
-    /**
-     * Resolve the request's client IP, mirroring api/auth.php::getClientIp().
-     * Trusts X-Forwarded-For only when the immediate REMOTE_ADDR is loopback
-     * (i.e. behind a local reverse proxy). Returns '' when not running in
-     * an HTTP context (e.g. cron scripts).
-     */
-    private static function resolveClientIp(): string {
-        if (!isset($_SERVER['REMOTE_ADDR'])) {
-            return '';
-        }
-        if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])
-            && in_array($_SERVER['REMOTE_ADDR'], ['127.0.0.1', '::1'], true)) {
-            $ips = array_map('trim', explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']));
-            return $ips[0] ?: $_SERVER['REMOTE_ADDR'];
-        }
-        return $_SERVER['REMOTE_ADDR'];
     }
 
     /**

@@ -1,0 +1,281 @@
+/* ============================================
+   Ticket Monitoring
+   ============================================ */
+:root {
+    --tickets: #f6c84c;        /* Warm gold for tickets */
+    --tickets-glow: rgba(246, 200, 76, 0.18);
+    --tickets-subtle: rgba(246, 200, 76, 0.12);
+    --tickets-track: rgba(246, 200, 76, 0.08);
+}
+[data-theme="light"] {
+    --tickets: #c98a06;
+    --tickets-glow: rgba(201, 138, 6, 0.22);
+    --tickets-subtle: rgba(201, 138, 6, 0.13);
+    --tickets-track: rgba(201, 138, 6, 0.08);
+}
+
+.text-tickets { color: var(--tickets); font-variant-numeric: tabular-nums; }
+
+/* Pulsing dot indicating recent activity (last hour). */
+.tickets-dot {
+    display: inline-block;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--tickets);
+    margin-right: 0.4rem;
+    box-shadow: 0 0 0 0 var(--tickets-glow);
+    animation: pulse-tickets 1.8s ease-in-out infinite;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+@keyframes pulse-tickets {
+    0%, 100% { box-shadow: 0 0 0 0 var(--tickets-glow); }
+    50%      { box-shadow: 0 0 0 6px rgba(246, 200, 76, 0); }
+}
+
+/* Right-aligned numeric cells use tabular nums so columns line up cleanly. */
+.num-cell { font-variant-numeric: tabular-nums; }
+.tickets-amount { color: var(--tickets); font-weight: 600; }
+.tickets-cell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 0.15rem; }
+
+/* Tiny ticket bar inside a table cell. */
+.tickets-bar {
+    height: 4px;
+    background: var(--tickets-track);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+.tickets-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--tickets) 0%, color-mix(in srgb, var(--tickets) 70%, var(--accent)) 100%);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+}
+.tickets-bar-fill:not(.has-tickets) {
+    background: var(--border);
+    opacity: 0.4;
+}
+
+/* Stat card variant for tickets (gold accent stripe instead of blue/green). */
+.stat-card-tickets::before {
+    background: linear-gradient(90deg, var(--tickets), color-mix(in srgb, var(--tickets) 60%, var(--accent))) !important;
+}
+.stat-card .stat-trend {
+    margin-top: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+}
+.stat-card .stat-trend .trend-pulse {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--tickets);
+    margin-right: 0.4rem;
+    animation: pulse-tickets 1.8s ease-in-out infinite;
+}
+
+/* Rich game tile (grid view) — replaces the old simple two-line layout. */
+.game-tile.game-tile-rich {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.7rem 0.85rem 0.75rem;
+    min-height: 105px;
+}
+.game-tile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+.game-tile-header .game-tile-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.game-tile-stats {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-variant-numeric: tabular-nums;
+    margin-top: 0.1rem;
+}
+.game-tile-metric {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    min-width: 0;
+}
+.game-tile-metric-right { justify-content: flex-end; }
+.game-tile-metric-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+}
+.game-tile-metric-value.has-tickets { color: var(--tickets); }
+.game-tile-metric-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+.game-tile-bar {
+    height: 4px;
+    background: var(--tickets-track);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 0.05rem;
+}
+.game-tile-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    background: var(--border);
+    opacity: 0.5;
+}
+.game-tile-bar-fill.has-tickets {
+    background: linear-gradient(90deg, var(--tickets), color-mix(in srgb, var(--tickets) 60%, var(--accent)));
+    opacity: 1;
+}
+.game-tile-pulse {
+    font-size: 0.7rem;
+    color: var(--tickets);
+    display: flex;
+    align-items: center;
+    margin-top: 0.05rem;
+}
+.game-tile-last { margin-top: 0.05rem; }
+
+/* Make the rich tile pop a bit more when hovered. */
+.game-tile.game-tile-rich:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+}
+
+/* Group ticket totals (under each group control card). */
+.group-tickets {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.45rem 0.65rem;
+    background: var(--tickets-subtle);
+    border: 1px solid color-mix(in srgb, var(--tickets) 30%, transparent);
+    border-radius: var(--radius-md);
+    font-size: 0.78rem;
+}
+.group-tickets-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+}
+.group-tickets-icon {
+    color: var(--tickets);
+    font-size: 0.85rem;
+}
+.group-tickets-value {
+    color: var(--text-primary);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.group-tickets-label {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+}
+
+/* Games page — venue summary banner. */
+.ticket-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.ticket-summary-tile {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.85rem 1rem;
+    position: relative;
+    overflow: hidden;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.ticket-summary-tile::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto auto 0;
+    height: 3px;
+    width: 100%;
+    background: var(--accent);
+    opacity: 0.65;
+}
+.ticket-summary-tile:hover { border-color: var(--border-hover); box-shadow: var(--shadow-sm); }
+.ticket-summary-tile-tickets::before {
+    background: linear-gradient(90deg, var(--tickets), color-mix(in srgb, var(--tickets) 60%, var(--accent)));
+    opacity: 1;
+}
+.ticket-summary-tile-tickets .ticket-summary-value { color: var(--tickets); }
+.ticket-summary-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+}
+.ticket-summary-value {
+    font-size: 1.65rem;
+    font-weight: 700;
+    margin-top: 0.25rem;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+}
+.ticket-summary-hint {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    margin-top: 0.35rem;
+    display: flex;
+    align-items: center;
+}
+.ticket-summary-hint.pulse { color: var(--tickets); }
+
+/* Games directory enhancements. */
+.directory-table th { font-size: 0.7rem; }
+.directory-table th.sortable { user-select: none; }
+.directory-table td { padding: 0.55rem 0.85rem; }
+
+/* Ticket-activity grid inside the game detail modal. */
+.detail-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.65rem;
+}
+.detail-stat {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.7rem;
+}
+.detail-stat-label {
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+.detail-stat-value {
+    font-size: 1.02rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.detail-stat-value.text-sm { font-size: 0.85rem; }
+

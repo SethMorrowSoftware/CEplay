@@ -1,0 +1,139 @@
+/* ============================================
+   Attractions Grid
+   ============================================ */
+.attractions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+}
+.attraction-card {
+    cursor: pointer;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.attraction-card:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow-md);
+}
+.attraction-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.attraction-name {
+    font-weight: 600;
+    font-size: 1.05em;
+}
+.attraction-type {
+    color: var(--text-secondary);
+    font-size: 0.9em;
+    margin-bottom: 4px;
+}
+.attraction-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+.attraction-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+/* ============================================
+   Detail Page
+   ============================================ */
+.detail-row {
+    display: flex;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.detail-label {
+    min-width: 180px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+.detail-value {
+    flex: 1;
+}
+
+/* ============================================
+   Tab Bar
+   ============================================ */
+.tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 16px;
+}
+.tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 0.95em;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.tab-btn:hover {
+    color: var(--text-primary);
+}
+.tab-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* ============================================
+   Form Grid
+   ============================================ */
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    max-width: 600px;
+}
+.form-grid .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.form-grid .form-group label {
+    font-size: 0.85em;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+.form-grid .form-group:has(textarea) {
+    grid-column: 1 / -1;
+}
+.input-checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+}
+
+/* ============================================
+   Announcements
+   ============================================ */
+.announcement-card {
+    transition: border-color var(--transition-fast);
+}
+.announcement-urgent {
+    border-left: 4px solid var(--danger);
+}
+.announcement-high {
+    border-left: 4px solid var(--warning);
+}
+.announcement-body {
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+

@@ -1,0 +1,67 @@
+/* ============================================
+   Toast Notifications
+   ============================================ */
+.toast-container {
+    position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;
+    display: flex; flex-direction: column-reverse; gap: 0.55rem;
+    pointer-events: none;
+    max-width: calc(100vw - 3rem);
+}
+.toast {
+    background: color-mix(in srgb, var(--bg-card) 96%, transparent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 1rem;
+    box-shadow: var(--shadow-lg);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    animation: toastIn 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+    max-width: 400px;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    position: relative;
+    overflow: hidden;
+}
+.toast::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--accent);
+}
+.toast-success::before { background: var(--success); }
+.toast-error::before { background: var(--danger); }
+.toast-warning::before { background: var(--warning); }
+.toast-info::before { background: var(--accent); }
+
+.toast-icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+.toast-icon svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.toast-success .toast-icon { background: var(--success-subtle); color: var(--success); }
+.toast-error .toast-icon { background: var(--danger-subtle); color: var(--danger); }
+.toast-warning .toast-icon { background: var(--warning-subtle); color: var(--warning); }
+.toast-info .toast-icon { background: var(--accent-subtle); color: var(--accent); }
+.toast-message { flex: 1; min-width: 0; word-wrap: break-word; }
+.toast-exit { animation: toastOut 0.22s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(20px) scale(0.96); }
+    to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes toastOut {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(20px); }
+}
+

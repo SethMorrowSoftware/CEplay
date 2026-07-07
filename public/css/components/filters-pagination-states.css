@@ -1,0 +1,102 @@
+/* ============================================
+   Filters Bar
+   ============================================ */
+.filters-bar {
+    display: flex; flex-wrap: wrap; gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+}
+.filters-bar .form-input,
+.filters-bar .form-select {
+    width: auto; min-width: 140px; padding: 0.4rem 0.6rem; font-size: 0.8rem;
+}
+
+/* ============================================
+   Pagination
+   ============================================ */
+.pagination {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 1rem; padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+.pagination-info { font-size: 0.8rem; color: var(--text-secondary); }
+.pagination-buttons { display: flex; gap: 0.35rem; }
+
+/* ============================================
+   Empty States
+   ============================================ */
+.empty-state {
+    text-align: center; padding: 3rem 1rem;
+    color: var(--text-muted);
+}
+.empty-state-icon {
+    width: 56px;
+    height: 56px;
+    margin: 0 auto 0.95rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent-subtle) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    font-size: 1.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.empty-state-text { font-size: 0.92rem; line-height: 1.5; max-width: 32rem; margin: 0 auto; color: var(--text-secondary); }
+.empty-state-action { margin-top: 1.1rem; }
+
+/* ============================================
+   Loading
+   ============================================ */
+.spinner {
+    width: 32px; height: 32px;
+    border: 3px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-top-color: var(--accent);
+    border-right-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+    display: inline-block;
+}
+.spinner-sm {
+    width: 16px; height: 16px;
+    border-width: 2px;
+}
+.spinner-xs {
+    width: 12px; height: 12px;
+    border-width: 1.5px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-overlay {
+    display: flex; align-items: center; justify-content: center;
+    padding: 3rem; color: var(--text-muted);
+    gap: 0.85rem; font-size: 0.88rem;
+    flex-direction: column;
+    text-align: center;
+    min-height: 200px;
+}
+.loading-overlay .spinner { margin-bottom: 0.25rem; }
+
+/* Full-page initial loader (used by APP_LOADING in index.php / demo) */
+#app-loading {
+    min-height: 100vh;
+}
+
+/* Skeleton loader used while data is loading */
+.skeleton {
+    background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-card-hover) 50%, var(--bg-tertiary) 100%);
+    background-size: 200% 100%;
+    border-radius: var(--radius-sm);
+    animation: skeletonShimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeletonShimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+

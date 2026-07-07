@@ -1,0 +1,112 @@
+/* ============================================
+   Page header — live status pills
+   ============================================ */
+.page-header-titleblock { min-width: 0; }
+.page-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.page-header-info {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+.header-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    transition: border-color var(--transition-fast), color var(--transition-fast);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+.header-pill-icon { font-size: 0.85rem; opacity: 0.8; }
+.header-pill-text { white-space: nowrap; }
+.header-pill-clock { color: var(--text-primary); }
+.header-pill-next {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.header-pill-next[data-action="pause"] {
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.header-pill-next[data-action="unpause"] {
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+@media (max-width: 720px) {
+    .page-header-actions { width: 100%; justify-content: flex-start; }
+    .header-pill { font-size: 0.72rem; padding: 0.3rem 0.6rem; }
+}
+
+/* ============================================
+   LIVE pill — mood variants
+   ============================================
+   Reactive label (BUSY / LIVE / QUIET / IDLE) tells the operator the
+   venue's tempo without requiring them to read multiple metrics. Each
+   mood gets a distinct color so the cue carries even at a glance.
+   ============================================ */
+.hero-live-pill-busy {
+    background: color-mix(in srgb, var(--tickets) 20%, transparent);
+    border-color: color-mix(in srgb, var(--tickets) 50%, transparent);
+    color: var(--tickets);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tickets) 14%, transparent),
+                0 0 18px -2px color-mix(in srgb, var(--tickets) 35%, transparent);
+}
+.hero-live-pill-busy .hero-live-dot {
+    background: var(--tickets);
+    animation: hero-live-pulse-fast 1.0s ease-in-out infinite;
+}
+@keyframes hero-live-pulse-fast {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--tickets) 60%, transparent); }
+    50%      { box-shadow: 0 0 0 8px color-mix(in srgb, var(--tickets) 0%, transparent); }
+}
+/* "live" already inherits the green active style via .hero-live-pill-active */
+.hero-live-pill-quiet {
+    background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+    border-color: color-mix(in srgb, var(--text-muted) 18%, var(--border));
+    color: var(--text-secondary);
+}
+.hero-live-pill-quiet .hero-live-dot { background: var(--text-secondary); animation: none; }
+.hero-live-pill-idle {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+}
+.hero-live-pill-idle .hero-live-dot { background: var(--text-muted); animation: none; }
+
+/* ============================================
+   Hero empty state — dim the giant zero on slow days
+   ============================================ */
+.hero-pulse-value.hero-pulse-value-empty {
+    opacity: 0.45;
+    filter: saturate(0.6);
+}
+
+/* ============================================
+   Secondary KPI tile tones
+   ============================================
+   Adds a "warn" variant for the No-plays-today tile so a non-zero idle
+   count subtly nags for attention without being alarmist.
+   ============================================ */
+.ticket-summary-tile-warn::before {
+    background: linear-gradient(90deg, var(--warning), color-mix(in srgb, var(--warning) 60%, var(--tickets))) !important;
+    opacity: 1;
+}
+.ticket-summary-tile-warn .ticket-summary-value { color: var(--warning); }
+

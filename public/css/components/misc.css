@@ -1,0 +1,136 @@
+/* ============================================
+   Group Controls Collapse
+   ============================================ */
+.section-collapse-btn {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    font-family: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+.section-collapse-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+/* Quick summary row for collapsed groups */
+.groups-summary-bar {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0;
+}
+.groups-summary-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.7rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+.groups-summary-item:hover { border-color: var(--border-hover); background: var(--bg-card-hover); }
+
+/* ============================================
+   Info Grid — key-value display
+   ============================================ */
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+}
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.info-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+.info-value {
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+/* ============================================
+   Badge variants for new pages
+   ============================================ */
+
+/* ============================================
+   Nav section label for CenterEdge API section
+   ============================================ */
+.nav-section-divider {
+    padding: 0.5rem 1rem 0.25rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+
+/* ============================================
+   Code element styling
+   ============================================ */
+code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--bg-tertiary);
+    padding: 0.15em 0.4em;
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+}
+
+/* ============================================
+   Checkbox styling
+   ============================================ */
+input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+}
+
+/* ============================================
+   Textarea styling
+   ============================================ */
+textarea.form-input {
+    resize: vertical;
+    min-height: 80px;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+}
+
+/* ============================================
+   Stats Row (legacy layout for feature pages)
+   ============================================ */
+.stats-row {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+/* ============================================
+   Filter Bar
+   ============================================ */
+.filter-bar {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.filter-bar .form-input,
+.filter-bar .form-select {
+    min-width: 140px;
+    max-width: 200px;
+}
+

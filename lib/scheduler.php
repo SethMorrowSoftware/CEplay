@@ -25,103 +25,6 @@ class Scheduler {
     private static function restoreTimezone(string $tz): void {
         date_default_timezone_set($tz);
     }
-
-    /**
-     * Single shared file handle for the scheduler lock. flock() on Linux
-     * attaches to open-file-descriptions, so two fopen()s on LOCK_FILE
-     * compete with each other within the same PHP process. By going
-     * through one shared fd we make the lock truly re-entrant: nested
-     * scopes just bump $lockDepth, the outer scope releases on exit.
-     */
-    /** @var resource|null */
-    private static $sharedLockFh = null;
-    private static int $lockDepth = 0;
-
-    /**
-     * Mark the scheduler lock as already held by an outside caller (cron.php,
-     * cron_watchdog.php, run_action.php) so nested Scheduler::* calls don't
-     * try to re-acquire on a competing fd. The caller is responsible for
-     * paired declareLockReleased() before fclose()/exit. This is a no-op
-     * if we already track the lock as held.
-     */
-    public static function declareLockHeld(): void {
-        self::$lockDepth = max(1, self::$lockDepth + 1);
-    }
-
-    /**
-     * Pair to declareLockHeld(). Decrements the depth counter; the outer
-     * caller still owns the actual flock release.
-     */
-    public static function declareLockReleased(): void {
-        if (self::$lockDepth > 0) {
-            self::$lockDepth--;
-        }
-    }
-
-    /**
-     * Run $fn while holding the shared scheduler lock (LOCK_FILE) so we don't
-     * race with run_action.php's at-jobs, cron.php's planning section, or
-     * cron_watchdog.php's executeMissedActions/queueAtJobs.
-     *
-     * Tries non-blocking with $waitSec retries (1s apart). If the lock can't
-     * be acquired in time, behaviour depends on $skipOnContention:
-     *   - true  (default for API/Tier-2 paths): skip the call silently — the
-     *     watchdog will catch up. Returns null.
-     *   - false (used by scheduled background work): run anyway and rely on
-     *     SQLite's busy-timeout for serialisation. Returns the callback's
-     *     result.
-     *
-     * Re-entrant within a single PHP process. External callers that hold
-     * the lock outside this helper should bracket their critical section
-     * with declareLockHeld() / declareLockReleased() so nested Scheduler
-     * methods don't try to re-acquire on a competing fd.
-     */
-    public static function withSchedulerLock(callable $fn, int $waitSec = 5, bool $skipOnContention = true) {
-        // Re-entrant: if this process already holds the lock, just run.
-        if (self::$lockDepth > 0) {
-            self::$lockDepth++;
-            try {
-                return $fn();
-            } finally {
-                self::$lockDepth--;
-            }
-        }
-
-        $fh = @fopen(LOCK_FILE, 'c');
-        if (!$fh) {
-            error_log('withSchedulerLock: could not open lock file: ' . LOCK_FILE);
-            // Disk full / permissions broken — run anyway so we don't lose the
-            // user's action entirely. SQLite's busy timeout still serialises.
-            return $fn();
-        }
-        $held = false;
-        for ($i = 0; $i < $waitSec; $i++) {
-            if (flock($fh, LOCK_EX | LOCK_NB)) {
-                $held = true;
-                break;
-            }
-            sleep(1);
-        }
-        if (!$held) {
-            fclose($fh);
-            if ($skipOnContention) {
-                error_log("withSchedulerLock: contended after {$waitSec}s, skipping");
-                return null;
-            }
-            error_log("withSchedulerLock: contended after {$waitSec}s, proceeding without lock");
-            return $fn();
-        }
-        self::$sharedLockFh = $fh;
-        self::$lockDepth++;
-        try {
-            return $fn();
-        } finally {
-            self::$lockDepth--;
-            flock($fh, LOCK_UN);
-            fclose($fh);
-            self::$sharedLockFh = null;
-        }
-    }
     /**
      * Plan all actions for a given date.
      * Computes transition points, resolves conflicts, writes to scheduled_actions, queues at jobs.
@@ -136,27 +39,10 @@ class Scheduler {
         }
         $todayDow = (int)(new DateTime($date))->format('w'); // 0=Sunday
 
-        // Clear existing pending actions for this date.
-        // clearPendingActions handles its own at-job cancellation outside
-        // the transaction below — at-job state is external and doesn't
-        // participate in SQLite atomicity.
+        // Clear existing pending actions for this date
         self::clearPendingActions($date);
 
         $actions = [];
-
-        // Wrap the rest of planning in a transaction so a crash mid-plan
-        // can't leave a half-built day. SQLite's BEGIN IMMEDIATE acquires
-        // the write lock up-front so we don't lose progress to a busy-timeout.
-        $db = DB::getInstance();
-        $inTransaction = false;
-        try {
-            $db->exec('BEGIN IMMEDIATE');
-            $inTransaction = true;
-        } catch (Exception $e) {
-            // Already in a transaction (called from a parent BEGIN)? Just
-            // run inline — the parent will commit/rollback for us.
-            error_log('planDay: BEGIN IMMEDIATE failed (' . $e->getMessage() . '), running inline');
-        }
 
         // Get all active pause groups
         $groups = DB::query('SELECT id, name FROM pause_groups WHERE is_active = 1');
@@ -322,19 +208,8 @@ class Scheduler {
             }
         }
 
-        if ($inTransaction) {
-            $db->exec('COMMIT');
-        }
-
         return $actions;
 
-        } catch (Exception $e) {
-            if (!empty($inTransaction)) {
-                try { $db->exec('ROLLBACK'); } catch (Exception $rb) {
-                    error_log('planDay: ROLLBACK failed: ' . $rb->getMessage());
-                }
-            }
-            throw $e;
         } finally { self::restoreTimezone($__prevTz); }
     }
 
@@ -437,69 +312,126 @@ class Scheduler {
         } finally { self::restoreTimezone($__prevTz); }
     }
 
+    // -----------------------------------------------
+    // Global scheduler lock (re-entrant within a process)
+    // -----------------------------------------------
+    //
+    // One lock serializes everything that mutates scheduling state or pushes
+    // state changes to CenterEdge: cron.php, cron_watchdog.php,
+    // run_action.php, AND the web entry points (manual pause/unpause,
+    // override execution, the per-request enforcement safety nets).
+    //
+    // Re-entrancy matters: flock() locks are per open-file-description, so a
+    // second fopen()+flock() in the SAME process blocks against the first —
+    // the old replanToday() implementation assumed the opposite and would
+    // silently skip replanning when called from a lock-holding script. The
+    // static depth counter below makes nested acquire/release pairs safe.
+
+    /** @var resource|null */
+    private static $lockFh = null;
+    /** @var int Nesting depth of acquireLock() in this process. */
+    private static $lockDepth = 0;
+
+    /**
+     * Acquire the global scheduler lock, waiting up to $timeoutSeconds
+     * (0 = single non-blocking attempt). Re-entrant: if this process already
+     * holds the lock, the depth counter is bumped and true is returned
+     * immediately. Every successful acquireLock() MUST be paired with a
+     * releaseLock() (use try/finally).
+     */
+    public static function acquireLock(int $timeoutSeconds = 15): bool {
+        if (self::$lockDepth > 0) {
+            self::$lockDepth++;
+            return true;
+        }
+        $fh = fopen(LOCK_FILE, 'c');
+        if (!$fh) {
+            error_log('Scheduler::acquireLock: could not open lock file ' . LOCK_FILE);
+            return false;
+        }
+        $deadline = microtime(true) + $timeoutSeconds;
+        do {
+            if (flock($fh, LOCK_EX | LOCK_NB)) {
+                self::$lockFh = $fh;
+                self::$lockDepth = 1;
+                return true;
+            }
+            if ($timeoutSeconds <= 0) {
+                break;
+            }
+            usleep(200000); // 200ms between attempts
+        } while (microtime(true) < $deadline);
+        fclose($fh);
+        return false;
+    }
+
+    /**
+     * Release one level of the global scheduler lock. The file lock is only
+     * dropped when the outermost acquire is released.
+     */
+    public static function releaseLock(): void {
+        if (self::$lockDepth === 0) {
+            return;
+        }
+        self::$lockDepth--;
+        if (self::$lockDepth === 0 && self::$lockFh) {
+            flock(self::$lockFh, LOCK_UN);
+            fclose(self::$lockFh);
+            self::$lockFh = null;
+        }
+    }
+
     /**
      * Replan today: clear pending actions, recompute, requeue.
-     * Acquires the scheduler lock to prevent races with concurrent at-jobs
-     * and the watchdog.  When called from CLI scripts that already hold the
-     * lock, the flock() is a no-op on the same process.
+     * Serialized under the global scheduler lock; safe to call from contexts
+     * that already hold it (the lock is re-entrant per process).
      */
     public static function replanToday(): void {
         $__prevTz = self::setTimezone();
         try {
-            $today = date('Y-m-d');
-            self::withSchedulerLock(function () use ($today) {
-                self::clearPendingActions($today);
-                self::planDay($today);
-                self::queueAtJobs($today);
-            }, 30, /*skipOnContention*/ true);
+        $today = date('Y-m-d');
+
+        if (!self::acquireLock(30)) {
+            error_log('replanToday: could not acquire scheduler lock after 30s, skipping to avoid race condition');
+            return;
+        }
+        try {
+            self::clearPendingActions($today);
+            self::planDay($today);
+            self::queueAtJobs($today);
+        } finally {
+            self::releaseLock();
+        }
+
         } finally { self::restoreTimezone($__prevTz); }
     }
 
     /**
      * Enforce the desired state for each active group at the current time.
      * This acts as a watchdog fallback when at jobs are delayed or unavailable.
-     *
-     * Briefly takes the scheduler lock to avoid racing with at-jobs / manual
-     * actions / API Tier-2 enforcement. When contended for >3s we skip and
-     * let the next watchdog cycle (or API hit) handle it — this is a
-     * best-effort safety net, never a critical path.
      */
     public static function enforceCurrentStates(): array {
         $__prevTz = self::setTimezone();
         try {
-            $result = self::withSchedulerLock(
-                [self::class, 'enforceCurrentStatesLocked'],
-                /*waitSec*/ 3,
-                /*skipOnContention*/ true
-            );
-            return is_array($result)
-                ? $result
-                : ['groups_checked' => 0, 'groups_enforced' => 0, 'results' => [], 'skipped' => 'lock_contended'];
-        } finally { self::restoreTimezone($__prevTz); }
-    }
 
-    /**
-     * Lock-free body of enforceCurrentStates. Must only be called while
-     * holding the scheduler lock or where serialisation isn't required.
-     */
-    private static function enforceCurrentStatesLocked(): array {
         $now = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
         $todayDow = (int)$now->format('w');
         $nowStr = $now->format('Y-m-d H:i');
         $nowTime = $now->format('H:i');
 
-        // Sync game states only if the cache is stale. The staleness threshold
-        // is configurable via Settings → Safety Nets (default 300 s / 5 min).
-        // State-change actions (pause/unpause buttons) use the tighter
-        // STATE_CHANGE_CACHE_FRESHNESS constant (30 s) so correctness is kept.
-        $staleSecs = (int)(DB::getConfig('state_sync_stale_seconds') ?? 300);
-        $staleSecs = max(30, min(3600, $staleSecs));
+        // Sync game states only if the cache is stale (older than 5 minutes).
+        // The cache is also kept warm by every patchGames/patchKiosks call
+        // (see executeStateChange), so a 5-minute drift-detection window is
+        // plenty to catch external state changes while massively cutting
+        // routine "just-in-case" full-list pulls.
         try {
-            self::syncGameStatesIfStale($staleSecs);
+            self::syncGameStatesIfStale(300);
         } catch (Exception $e) {
             error_log('Watchdog sync failed: ' . $e->getMessage());
         }
-        self::syncKioskStatesIfStale($staleSecs);
+        // Same throttled freshness check for kiosks. Non-fatal if /kiosks
+        // isn't supported (helper handles the exception internally).
+        self::syncKioskStatesIfStale(300);
 
         $summary = ['groups_checked' => 0, 'groups_enforced' => 0, 'results' => []];
         $groups = DB::query('SELECT id FROM pause_groups WHERE is_active = 1');
@@ -568,6 +500,8 @@ class Scheduler {
         }
 
         return $summary;
+
+        } finally { self::restoreTimezone($__prevTz); }
     }
 
     /**
@@ -581,26 +515,7 @@ class Scheduler {
     public static function enforceGroupState(int $groupId, bool $clearManual = true): array {
         $__prevTz = self::setTimezone();
         try {
-            // Hold the scheduler lock briefly so this API-driven enforce
-            // doesn't race a concurrent at-job or watchdog cycle. If the
-            // lock is contended for >5s we still proceed (with $skipOnContention=false)
-            // so the operator's click never silently no-ops.
-            $result = self::withSchedulerLock(
-                function () use ($groupId, $clearManual) {
-                    return self::enforceGroupStateLocked($groupId, $clearManual);
-                },
-                /*waitSec*/ 5,
-                /*skipOnContention*/ false
-            );
-            return is_array($result) ? $result : ['changed' => [], 'skipped' => [], 'errors' => []];
-        } finally { self::restoreTimezone($__prevTz); }
-    }
 
-    /**
-     * Lock-free body of enforceGroupState — must only be called while holding
-     * the scheduler lock (or from a context where serialisation isn't needed).
-     */
-    private static function enforceGroupStateLocked(int $groupId, bool $clearManual): array {
         $now = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
         $todayDow = (int)$now->format('w');
         $nowStr = $now->format('Y-m-d H:i');
@@ -624,9 +539,7 @@ class Scheduler {
             return self::executeStateChange(
                 $groupId,
                 $desiredAction === 'pause' ? 'paused' : 'enabled',
-                'manual',
-                /*syncCache*/ true,
-                /*resetGiveUps*/ true
+                'manual'
             );
         }
 
@@ -663,10 +576,10 @@ class Scheduler {
         return self::executeStateChange(
             $groupId,
             $desiredAction === 'pause' ? 'paused' : 'enabled',
-            $source,
-            /*syncCache*/ true,
-            /*resetGiveUps*/ true
+            $source
         );
+
+        } finally { self::restoreTimezone($__prevTz); }
     }
 
     /**
@@ -683,21 +596,6 @@ class Scheduler {
             return ['status' => 'already_executed', 'action_id' => $actionId];
         }
 
-        // Claim the row before doing any upstream work. The conditional
-        // UPDATE on executed = 0 means a concurrent run_action.php /
-        // executeMissedActions / API Tier-2 caller can't double-execute:
-        // whoever wins the UPDATE sees affected_rows=1, the loser sees 0
-        // and bails.
-        $claimed = DB::execute(
-            "UPDATE scheduled_actions
-             SET executed = 4, executed_at = datetime('now')
-             WHERE id = :p0 AND executed = 0",
-            [$actionId]
-        );
-        if ($claimed === 0) {
-            return ['status' => 'already_executed', 'action_id' => $actionId];
-        }
-
         $groupId = $action['pause_group_id'];
         $desiredAction = $action['action']; // 'pause' or 'unpause'
         $source = $action['source'];
@@ -708,39 +606,19 @@ class Scheduler {
         // regular schedule takes over again.
         self::clearManualOverride($groupId);
 
-        try {
-            // Scheduled transition firing is a fresh intent — clear any prior
-            // gave-up records so each asset gets a full new 10-attempt window.
-            $results = self::executeStateChange(
-                $groupId,
-                $desiredStatus,
-                $source,
-                /*syncCache*/ true,
-                /*resetGiveUps*/ true
-            );
-        } catch (Exception $e) {
-            // Mark as failed so the row reflects reality, then re-throw so
-            // the caller (run_action.php) can log + exit non-zero.
-            DB::execute(
-                "UPDATE scheduled_actions
-                 SET executed = 2, executed_at = datetime('now')
-                 WHERE id = :p0",
-                [$actionId]
-            );
-            throw $e;
-        }
+        $results = self::executeStateChange($groupId, $desiredStatus, $source);
 
-        // Decide final status from the actual outcome. We mark as success
-        // when the upstream PATCH didn't report any per-asset errors, even
-        // if everything was a no-op (already in desired state). Errors
-        // alongside changes count as "partial success" → marked failed
-        // because at least one asset's pending retry will need attention.
-        $hasErrors = !empty($results['errors']);
+        // Mark action as executed. A batch that produced ANY per-game error is
+        // a partial failure and must be recorded as status 2 (not fully
+        // successful) so the watchdog's missed-action sweep and the operator
+        // can see the group didn't fully transition — the failed games already
+        // have retries queued by executeStateChange. Only an entirely
+        // error-free run (whether it changed games or found them already in
+        // the desired state) counts as success (status 1).
+        $allSuccess = empty($results['errors']);
         DB::execute(
-            "UPDATE scheduled_actions
-             SET executed = :p0, executed_at = datetime('now')
-             WHERE id = :p1",
-            [$hasErrors ? 2 : 1, $actionId]
+            'UPDATE scheduled_actions SET executed = :p0, executed_at = datetime(\'now\') WHERE id = :p1',
+            [$allSuccess ? 1 : 2, $actionId]
         );
 
         return $results;
@@ -749,45 +627,38 @@ class Scheduler {
     /**
      * Execute an immediate action (for overrides and manual actions).
      *
-     * Holds the shared scheduler lock briefly so the upstream PATCH doesn't
-     * race a concurrent at-job, watchdog cycle, or another operator's click.
-     * If the lock is contended for >5s the action proceeds anyway — better
-     * to risk a duplicate API call than to drop a manual intent.
+     * Serialized under the global scheduler lock so a button press can't
+     * interleave with the watchdog's enforcement pass (both PATCH CenterEdge
+     * and write the state cache). The watchdog only holds the lock for its
+     * action phase (a few seconds), so the 10s wait below is almost always
+     * instant; if something is genuinely wedged we fail with a clear,
+     * retryable message instead of racing.
      */
     public static function executeImmediate(int $groupId, string $action, string $source = 'manual'): array {
-        $desiredStatus = ($action === 'pause') ? 'paused' : 'enabled';
-        // Skip the full CenterEdge sync for manual actions — the cache is
-        // at most 30s stale from dashboard polling, and the patch call itself
-        // will confirm the actual new state.  This avoids an expensive API
-        // round-trip that adds ~5-10s of latency to every button press.
-        $skipSync = ($source === 'manual');
+        if (!self::acquireLock(10)) {
+            throw new RuntimeException(
+                'The scheduler is busy applying another change. Please try again in a few seconds.'
+            );
+        }
+        try {
+            $desiredStatus = ($action === 'pause') ? 'paused' : 'enabled';
+            // Skip the full CenterEdge sync for manual actions — the cache is
+            // at most 30s stale from dashboard polling, and the patch call itself
+            // will confirm the actual new state.  This avoids an expensive API
+            // round-trip that adds ~5-10s of latency to every button press.
+            $skipSync = ($source === 'manual');
+            $result = self::executeStateChange($groupId, $desiredStatus, $source, !$skipSync);
 
-        $result = self::withSchedulerLock(
-            function () use ($groupId, $desiredStatus, $source, $skipSync, $action) {
-                // Manual buttons / override boundaries are fresh intents —
-                // wipe any gave-up records so the new request gets a full
-                // retry window.
-                $r = self::executeStateChange(
-                    $groupId,
-                    $desiredStatus,
-                    $source,
-                    !$skipSync,
-                    /*resetGiveUps*/ true
-                );
+            // Record manual override so the watchdog and enforcement logic
+            // respect the operator's intent until the next scheduled transition.
+            if ($source === 'manual') {
+                self::setManualOverride($groupId, $action);
+            }
 
-                // Record manual override so the watchdog and enforcement
-                // logic respect the operator's intent until the next
-                // scheduled transition.
-                if ($source === 'manual') {
-                    self::setManualOverride($groupId, $action);
-                }
-                return $r;
-            },
-            /*waitSec*/ 5,
-            /*skipOnContention*/ false
-        );
-
-        return is_array($result) ? $result : ['changed' => [], 'skipped' => [], 'errors' => []];
+            return $result;
+        } finally {
+            self::releaseLock();
+        }
     }
 
     /**
@@ -846,16 +717,13 @@ class Scheduler {
         }
 
         $existing = DB::queryOne(
-            'SELECT desired_status, attempts, gave_up_at FROM action_retries
+            'SELECT desired_status, attempts FROM action_retries
              WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
         );
 
         if ($existing && $existing['desired_status'] === $desiredStatus) {
-            // Same intent — keep attempt count and any gave_up_at marker.
-            // Just refresh error/timestamp/source so the UI sees current state.
-            // If we've already given up on this exact intent, leaving gave_up_at
-            // intact is what stops the watchdog from spinning forever.
+            // Same intent — keep attempt count, just refresh error/timestamp.
             DB::execute(
                 'UPDATE action_retries
                  SET source = :p0, pause_group_id = :p1, last_error = :p2,
@@ -866,69 +734,33 @@ class Scheduler {
             return;
         }
 
-        // New row, or desired_status changed — reset attempts AND clear any
-        // gave_up_at marker. The intent is fresh, so the asset gets a full
-        // new attempt window (configurable via Settings → Scheduler Behaviour).
-        $maxAttempts = (int)(DB::getConfig('retry_max_attempts') ?? self::RETRY_MAX_ATTEMPTS);
-        $maxAttempts = max(1, min(50, $maxAttempts));
+        // New row, or desired_status changed — reset attempts.
         DB::execute(
             'INSERT INTO action_retries
                  (asset_type, asset_id, desired_status, source, pause_group_id,
-                  attempts, max_attempts, last_error, gave_up_at, created_at, updated_at)
-             VALUES (:p0, :p1, :p2, :p3, :p4, 0, :p5, :p6, NULL, datetime(\'now\'), datetime(\'now\'))
+                  attempts, max_attempts, last_error, created_at, updated_at)
+             VALUES (:p0, :p1, :p2, :p3, :p4, 0, :p5, :p6, datetime(\'now\'), datetime(\'now\'))
              ON CONFLICT(asset_type, asset_id) DO UPDATE SET
                  desired_status = :p2,
                  source = :p3,
                  pause_group_id = :p4,
                  attempts = 0,
-                 max_attempts = :p5,
-                 gave_up_at = NULL,
                  last_error = :p6,
                  updated_at = datetime(\'now\')',
             [$assetType, $assetId, $desiredStatus, $source, $pauseGroupId,
-             $maxAttempts, $errorMessage]
+             self::RETRY_MAX_ATTEMPTS, $errorMessage]
         );
     }
 
     /**
      * Drop the pending retry (if any) for an asset.
-     * Called whenever a fresh pause/unpause for that asset succeeds, or when
-     * the cache shows the asset is already in the desired state.
+     * Called whenever a fresh pause/unpause for that asset succeeds.
      */
     public static function clearRetry(string $assetType, string $assetId): void {
         DB::execute(
             'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
         );
-    }
-
-    /**
-     * Drop every retry row tied to a specific pause group.
-     * Called from executeStateChange when invoked with $resetGiveUps=true so
-     * a fresh intent (manual button, schedule transition, override boundary)
-     * starts every asset on a clean 10-attempt window.
-     */
-    public static function clearRetriesForGroup(int $groupId): void {
-        DB::execute(
-            'DELETE FROM action_retries WHERE pause_group_id = :p0',
-            [$groupId]
-        );
-    }
-
-    /**
-     * Has the watchdog already exhausted the retry window for this asset/intent?
-     * Returns true only when a row exists with the same desired_status AND a
-     * non-null gave_up_at timestamp. Different desired_status (e.g. asset was
-     * stuck on pause but we now want unpause) is NOT considered given-up.
-     */
-    public static function hasGivenUp(string $assetType, string $assetId, string $desiredStatus): bool {
-        $row = DB::queryOne(
-            'SELECT 1 FROM action_retries
-             WHERE asset_type = :p0 AND asset_id = :p1
-               AND desired_status = :p2 AND gave_up_at IS NOT NULL',
-            [$assetType, $assetId, $desiredStatus]
-        );
-        return $row !== null && $row !== false;
     }
 
     /**
@@ -940,38 +772,13 @@ class Scheduler {
      * Returns a summary array for logging.
      */
     public static function processRetries(): array {
-        $summary = ['attempted' => 0, 'succeeded' => 0, 'failed' => 0, 'gave_up' => 0, 'reawakened' => 0];
-
-        // Self-heal step: if a previously gave-up retry has been sitting
-        // idle longer than the cooldown, reset attempts and clear gave_up_at
-        // so it gets one more pass through the watchdog. The cap is bounded
-        // by max_attempts, so a permanently broken asset won't loop forever
-        // — it'll just give up again and re-enter cooldown.
-        //
-        // Default cooldown is 1 hour, configurable via Settings. This way an
-        // asset that was busy at 10:00 and gave up by 10:10 self-recovers
-        // by 11:10 instead of staying stuck until the next manual click,
-        // schedule transition, or override boundary.
-        $cooldownMin = (int)(DB::getConfig('retry_cooldown_minutes') ?? 60);
-        $cooldownMin = max(5, min(1440, $cooldownMin));
-        $cooldownCutoffUtc = gmdate('Y-m-d H:i:s', time() - ($cooldownMin * 60));
-        $reawoken = DB::execute(
-            "UPDATE action_retries
-             SET attempts = 0, gave_up_at = NULL,
-                 last_error = COALESCE(last_error, '') || ' [reawoken after cooldown]',
-                 updated_at = datetime('now')
-             WHERE gave_up_at IS NOT NULL AND gave_up_at < :p0",
-            [$cooldownCutoffUtc]
-        );
-        if ($reawoken > 0) {
-            $summary['reawakened'] = $reawoken;
-        }
+        $summary = ['attempted' => 0, 'succeeded' => 0, 'failed' => 0, 'gave_up' => 0];
 
         $pending = DB::query(
             'SELECT id, asset_type, asset_id, desired_status, source, pause_group_id,
                     attempts, max_attempts
              FROM action_retries
-             WHERE attempts < max_attempts AND gave_up_at IS NULL
+             WHERE attempts < max_attempts
              ORDER BY asset_type ASC, id ASC'
         );
 
@@ -1134,18 +941,9 @@ class Scheduler {
                     'gave_up' => true,
                 ]
             );
-            // Mark the row as given-up rather than deleting it. processRetries
-            // skips rows where gave_up_at is set, and executeStateChange skips
-            // upstream PATCHes for assets in this state — so the watchdog won't
-            // resurrect this retry every minute. A successful patch (manual or
-            // schedule-driven) calls clearRetry() and wipes the row; a fresh
-            // intent change in queueRetry() resets attempts and clears gave_up_at.
             DB::execute(
-                'UPDATE action_retries
-                 SET attempts = :p0, last_attempted_at = :p1, last_error = :p2,
-                     gave_up_at = :p1, updated_at = datetime(\'now\')
-                 WHERE asset_type = :p3 AND asset_id = :p4',
-                [$newAttempts, $now, $errorMsg, $assetType, $assetId]
+                'DELETE FROM action_retries WHERE asset_type = :p0 AND asset_id = :p1',
+                [$assetType, $assetId]
             );
             return;
         }
@@ -1177,8 +975,7 @@ class Scheduler {
      */
     public static function getPendingRetry(string $assetType, string $assetId): ?array {
         $row = DB::queryOne(
-            'SELECT desired_status, source, attempts, max_attempts, last_attempted_at,
-                    last_error, gave_up_at, created_at
+            'SELECT desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
              FROM action_retries
              WHERE asset_type = :p0 AND asset_id = :p1',
             [$assetType, $assetId]
@@ -1193,38 +990,8 @@ class Scheduler {
             'max_attempts'      => (int)$row['max_attempts'],
             'last_attempted_at' => $row['last_attempted_at'],
             'last_error'        => $row['last_error'],
-            'gave_up_at'        => $row['gave_up_at'],
             'created_at'        => $row['created_at'],
         ];
-    }
-
-    /**
-     * Bulk-fetch cache rows from $table for $ids, keyed by $idColumn.
-     * Avoids N+1 queries when iterating large groups. Chunks the IN-list
-     * to stay under SQLite's bound-variable cap (default 999 on some
-     * builds), same pattern as pruneCacheViaStaging() in the API client.
-     *
-     * Returns [id => row, ...] for ids that exist in the cache; missing
-     * ids are simply absent from the result.
-     */
-    private static function bulkFetchCache(string $table, string $idColumn, array $ids): array {
-        if (empty($ids)) {
-            return [];
-        }
-        $out = [];
-        foreach (array_chunk(array_values($ids), 200) as $chunk) {
-            $placeholders = [];
-            $params = [];
-            foreach ($chunk as $i => $id) {
-                $placeholders[] = ':p' . $i;
-                $params[] = $id;
-            }
-            $sql = "SELECT * FROM {$table} WHERE {$idColumn} IN (" . implode(',', $placeholders) . ')';
-            foreach (DB::query($sql, $params) as $row) {
-                $out[(string)$row[$idColumn]] = $row;
-            }
-        }
-        return $out;
     }
 
     /**
@@ -1233,8 +1000,7 @@ class Scheduler {
      */
     public static function getPendingRetriesByType(string $assetType): array {
         $rows = DB::query(
-            'SELECT asset_id, desired_status, source, attempts, max_attempts, last_attempted_at,
-                    last_error, gave_up_at, created_at
+            'SELECT asset_id, desired_status, source, attempts, max_attempts, last_attempted_at, last_error, created_at
              FROM action_retries WHERE asset_type = :p0',
             [$assetType]
         );
@@ -1247,7 +1013,6 @@ class Scheduler {
                 'max_attempts'      => (int)$r['max_attempts'],
                 'last_attempted_at' => $r['last_attempted_at'],
                 'last_error'        => $r['last_error'],
-                'gave_up_at'        => $r['gave_up_at'],
                 'created_at'        => $r['created_at'],
             ];
         }
@@ -1256,63 +1021,29 @@ class Scheduler {
 
     /**
      * Core state change logic: resolve games + kiosks, check states, patch CenterEdge.
-     *
-     * $resetGiveUps controls retry-queue behaviour:
-     *   - false (default, used by enforceCurrentStates): existing gave-up
-     *     records are honoured. Assets that already exhausted their 10-attempt
-     *     window are skipped; the upstream PATCH is not retried.
-     *   - true (used by manual actions, override start/end, scheduled
-     *     transitions firing): wipe gave-up state for this group's assets so
-     *     a fresh intent gets a clean 10-attempt window.
-     *
-     * $syncCache controls cache freshening before the PATCH:
-     *   - true (default): freshen game + kiosk caches if they're older than
-     *     STATE_CHANGE_CACHE_FRESHNESS seconds. The watchdog and Tier 2 gate
-     *     keep caches < 2 minutes old already, so back-to-back operations
-     *     skip the API hit. The cache is still updated post-PATCH from the
-     *     upstream response, so the local snapshot stays authoritative.
-     *   - false: don't sync. Used by callers that just synced themselves
-     *     (enforceCurrentStates) or that explicitly want to skip the round
-     *     trip (manual button presses).
      */
-    const STATE_CHANGE_CACHE_FRESHNESS = 30;
-
-    private static function executeStateChange(
-        int $groupId,
-        string $desiredStatus,
-        string $source,
-        bool $syncCache = true,
-        bool $resetGiveUps = false
-    ): array {
+    private static function executeStateChange(int $groupId, string $desiredStatus, string $source, bool $syncCache = true): array {
         $results = ['changed' => [], 'skipped' => [], 'errors' => []];
 
         try {
             $client = new CenterEdgeClient();
 
-            // Freshen game + kiosk caches if they're stale. Kiosk sync is
-            // non-fatal — syncKioskStatesIfStale already swallows the
-            // upstream 404 you get on systems that don't expose /kiosks.
+            // Sync fresh states for both games and kiosks before deciding
+            // what to patch. Use the staleness-aware helpers (60s TTL): if
+            // the watchdog already refreshed the cache moments ago, we skip
+            // a full re-pagination of every game/kiosk. Kiosk path is
+            // non-fatal — the helper already swallows /kiosks 404s for
+            // installs that don't expose the endpoint.
             if ($syncCache) {
-                self::syncGameStatesIfStale(self::STATE_CHANGE_CACHE_FRESHNESS);
-                self::syncKioskStatesIfStale(self::STATE_CHANGE_CACHE_FRESHNESS);
-            }
-
-            // Fresh-intent callers (manual button, schedule transition firing,
-            // override start/end) get a clean retry slate so an asset that
-            // gave up earlier today gets a full new 10-attempt window.
-            if ($resetGiveUps) {
-                self::clearRetriesForGroup($groupId);
+                self::syncGameStatesIfStale(60);
+                self::syncKioskStatesIfStale(60);
             }
 
             // ---- Games ----
-            // Bulk-load cache + pending retries up front so a group with
-            // hundreds of games costs O(1) queries instead of O(N).
             $gameIds = self::resolveGroupGames($groupId);
-            $gameCache = self::bulkFetchCache('game_state_cache', 'game_id', $gameIds);
-            $gameRetries = self::getPendingRetriesByType('game');
             $gameChanges = [];
             foreach ($gameIds as $gameId) {
-                $cached = $gameCache[$gameId] ?? null;
+                $cached = DB::queryOne('SELECT * FROM game_state_cache WHERE game_id = :p0', [$gameId]);
                 if (!$cached) {
                     continue;
                 }
@@ -1323,28 +1054,6 @@ class Scheduler {
                 }
                 if ($cached['operation_status'] === $desiredStatus) {
                     $results['skipped'][] = ['game_id' => $gameId, 'game_name' => $cached['game_name'], 'reason' => 'already_' . $desiredStatus];
-                    // Cache reflects upstream — any retry row is stale, drop it.
-                    if (isset($gameRetries[$gameId])) {
-                        self::clearRetry('game', $gameId);
-                    }
-                    continue;
-                }
-                $retry = $gameRetries[$gameId] ?? null;
-                if ($retry !== null
-                    && $retry['desired_status'] === $desiredStatus
-                    && !empty($retry['gave_up_at'])) {
-                    // We already exhausted the retry window for this exact
-                    // intent. Skip the upstream PATCH so we don't spam the
-                    // CenterEdge API every minute. A fresh intent (different
-                    // desired_status, manual action, or schedule transition)
-                    // will clear gave_up_at and start a new window. The
-                    // watchdog's processRetries() also re-awakens stuck
-                    // assets after the configured cooldown.
-                    $results['skipped'][] = [
-                        'game_id' => $gameId,
-                        'game_name' => $cached['game_name'],
-                        'reason' => 'gave_up',
-                    ];
                     continue;
                 }
                 $gameChanges[$gameId] = $desiredStatus;
@@ -1371,18 +1080,19 @@ class Scheduler {
                 }
 
                 foreach ($patchResult['errors'] ?? [] as $gid => $error) {
-                    $gid = (string)$gid;
-                    $gname = isset($gameCache[$gid]) ? ($gameCache[$gid]['game_name'] ?? '') : '';
+                    $gname = '';
+                    $cached = DB::queryOne('SELECT game_name FROM game_state_cache WHERE game_id = :p0', [(string)$gid]);
+                    if ($cached) $gname = $cached['game_name'];
 
                     $errorMsg = is_array($error) ? ($error['message'] ?? json_encode($error)) : (string)$error;
-                    $results['errors'][] = ['game_id' => $gid, 'game_name' => $gname, 'error' => $errorMsg];
+                    $results['errors'][] = ['game_id' => (string)$gid, 'game_name' => $gname, 'error' => $errorMsg];
 
                     $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
-                    self::logAction($source, $actionName, $groupId, $gid, $gname, false, $errorMsg);
+                    self::logAction($source, $actionName, $groupId, (string)$gid, $gname, false, $errorMsg);
 
                     // Queue a retry: game may have been in use; the watchdog
                     // will re-attempt once per minute up to max_attempts.
-                    self::queueRetry('game', $gid, $desiredStatus, $source, $groupId, $errorMsg);
+                    self::queueRetry('game', (string)$gid, $desiredStatus, $source, $groupId, $errorMsg);
                 }
             }
 
@@ -1392,11 +1102,9 @@ class Scheduler {
             // skip rules. Kiosks reporting no operationStatus (treated as
             // "unknown" per the API spec) are also skipped.
             $kioskIds = self::resolveGroupKiosks($groupId);
-            $kioskCache = self::bulkFetchCache('kiosk_state_cache', 'kiosk_id', $kioskIds);
-            $kioskRetries = self::getPendingRetriesByType('kiosk');
             $kioskChanges = [];
             foreach ($kioskIds as $kioskId) {
-                $cached = $kioskCache[$kioskId] ?? null;
+                $cached = DB::queryOne('SELECT * FROM kiosk_state_cache WHERE kiosk_id = :p0', [$kioskId]);
                 if (!$cached) {
                     continue;
                 }
@@ -1412,20 +1120,6 @@ class Scheduler {
                 }
                 if ($cachedStatus === $desiredStatus) {
                     $results['skipped'][] = ['kiosk_id' => $kioskId, 'kiosk_name' => $cached['kiosk_name'], 'reason' => 'already_' . $desiredStatus];
-                    if (isset($kioskRetries[$kioskId])) {
-                        self::clearRetry('kiosk', $kioskId);
-                    }
-                    continue;
-                }
-                $retry = $kioskRetries[$kioskId] ?? null;
-                if ($retry !== null
-                    && $retry['desired_status'] === $desiredStatus
-                    && !empty($retry['gave_up_at'])) {
-                    $results['skipped'][] = [
-                        'kiosk_id' => $kioskId,
-                        'kiosk_name' => $cached['kiosk_name'],
-                        'reason' => 'gave_up',
-                    ];
                     continue;
                 }
                 $kioskChanges[$kioskId] = $desiredStatus;
@@ -1453,11 +1147,12 @@ class Scheduler {
                     }
 
                     foreach ($kioskPatchResult['errors'] ?? [] as $kid => $error) {
-                        $kid = (string)$kid;
-                        $kname = isset($kioskCache[$kid]) ? ($kioskCache[$kid]['kiosk_name'] ?? '') : '';
+                        $kname = '';
+                        $cached = DB::queryOne('SELECT kiosk_name FROM kiosk_state_cache WHERE kiosk_id = :p0', [(string)$kid]);
+                        if ($cached) $kname = $cached['kiosk_name'];
 
                         $errorMsg = is_array($error) ? ($error['message'] ?? json_encode($error)) : (string)$error;
-                        $results['errors'][] = ['kiosk_id' => $kid, 'kiosk_name' => $kname, 'error' => $errorMsg];
+                        $results['errors'][] = ['kiosk_id' => (string)$kid, 'kiosk_name' => $kname, 'error' => $errorMsg];
 
                         $actionName = $desiredStatus === 'paused' ? 'pause' : 'unpause';
                         self::logAction($source, $actionName, $groupId, (string)$kid, $kname, false, $errorMsg, ['asset' => 'kiosk']);
@@ -1614,33 +1309,10 @@ class Scheduler {
     public static function executeMissedActions(?string $date = null): void {
         $__prevTz = self::setTimezone();
         try {
-            self::withSchedulerLock(function () use ($date) {
-                self::executeMissedActionsLocked($date);
-            }, /*waitSec*/ 3, /*skipOnContention*/ true);
-        } finally { self::restoreTimezone($__prevTz); }
-    }
 
-    /**
-     * Lock-free body of executeMissedActions. Must only be called while
-     * holding the scheduler lock or where serialisation isn't required.
-     */
-    private static function executeMissedActionsLocked(?string $date = null): void {
         if ($date === null) {
             $date = date('Y-m-d');
         }
-
-        // Recover stuck claims: executeAction marks executed=4 ("in flight")
-        // before issuing the upstream PATCH. If the worker crashed (segfault,
-        // OOM, signal), the row would stay at 4 forever — neither pending
-        // nor finalized. Reset claims older than 5 minutes back to executed=0
-        // so this watchdog cycle picks them up.
-        DB::execute(
-            "UPDATE scheduled_actions
-             SET executed = 0, executed_at = NULL
-             WHERE executed = 4
-               AND executed_at IS NOT NULL
-               AND executed_at < datetime('now', '-5 minutes')"
-        );
 
         $now = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
         $nowTime = $now->format('H:i');
@@ -1668,22 +1340,15 @@ class Scheduler {
             $latestPerGroup[$gid] = $action;
         }
 
-        // Mark superseded actions without executing them (status 3 = superseded).
-        // Conditional on executed = 0 so we don't overwrite a real outcome
-        // (1 success, 2 failed) recorded by a concurrent run_action.php /
-        // watchdog cycle that grabbed the same row first.
+        // Mark superseded actions without executing them (status 3 = superseded)
         foreach ($superseded as $actionId) {
             DB::execute(
-                'UPDATE scheduled_actions
-                 SET executed = 3, executed_at = datetime(\'now\')
-                 WHERE id = :p0 AND executed = 0',
+                'UPDATE scheduled_actions SET executed = 3, executed_at = datetime(\'now\') WHERE id = :p0',
                 [$actionId]
             );
         }
 
-        // Execute only the latest action per group. executeAction itself
-        // short-circuits on executed != 0 so a concurrent run_action.php
-        // that already processed the row won't double-patch upstream.
+        // Execute only the latest action per group
         foreach ($latestPerGroup as $action) {
             try {
                 self::executeAction($action['id']);
@@ -1691,6 +1356,8 @@ class Scheduler {
                 error_log("Failed to execute missed action #{$action['id']}: " . $e->getMessage());
             }
         }
+
+        } finally { self::restoreTimezone($__prevTz); }
     }
 
     /**
@@ -1769,13 +1436,14 @@ class Scheduler {
             $desiredStatus = ($desiredAction === 'pause') ? 'paused' : 'enabled';
 
             // Quick check: are any games OR kiosks in the wrong state?
-            // Cache-only — no CenterEdge calls — so this stays cheap. Bulk
-            // fetch so a group with many games doesn't issue N queries.
+            // Cache-only — no CenterEdge calls — so this stays cheap.
             $gameIds = self::resolveGroupGames($groupId);
-            $gameCache = self::bulkFetchCache('game_state_cache', 'game_id', $gameIds);
             $needsEnforcement = false;
             foreach ($gameIds as $gameId) {
-                $cached = $gameCache[$gameId] ?? null;
+                $cached = DB::queryOne(
+                    'SELECT operation_status FROM game_state_cache WHERE game_id = :p0',
+                    [$gameId]
+                );
                 if ($cached && $cached['operation_status'] !== $desiredStatus
                     && $cached['operation_status'] !== 'outOfService') {
                     $needsEnforcement = true;
@@ -1784,9 +1452,11 @@ class Scheduler {
             }
             if (!$needsEnforcement) {
                 $kioskIds = self::resolveGroupKiosks($groupId);
-                $kioskCache = self::bulkFetchCache('kiosk_state_cache', 'kiosk_id', $kioskIds);
                 foreach ($kioskIds as $kid) {
-                    $cached = $kioskCache[$kid] ?? null;
+                    $cached = DB::queryOne(
+                        'SELECT operation_status FROM kiosk_state_cache WHERE kiosk_id = :p0',
+                        [$kid]
+                    );
                     if ($cached
                         && $cached['operation_status'] !== ''
                         && $cached['operation_status'] !== $desiredStatus
@@ -1799,16 +1469,7 @@ class Scheduler {
 
             if ($needsEnforcement) {
                 try {
-                    // An override just expired — that's a fresh intent for the
-                    // schedule/default state to take over. Reset gave-up
-                    // markers so the new desired state gets a clean window.
-                    self::executeStateChange(
-                        $groupId,
-                        $desiredStatus,
-                        $source,
-                        /*syncCache*/ true,
-                        /*resetGiveUps*/ true
-                    );
+                    self::executeStateChange($groupId, $desiredStatus, $source, true);
                     $summary['groups_enforced']++;
                 } catch (Exception $e) {
                     error_log("enforceExpiredOverrides: failed for group #$groupId: " . $e->getMessage());
@@ -1871,59 +1532,198 @@ class Scheduler {
     // -----------------------------------------------
 
     /**
+     * Recompute the permanent per-game daily rollup (game_daily_stats) from the
+     * raw play feed for the most recent local days, then UPSERT it.
+     *
+     * This MUST run before purgeOldData() each night: the raw feed is only kept
+     * for a short rolling window, so the rollup is the only place month/year
+     * reporting history survives. We recompute a trailing window (default 28
+     * days) rather than just "yesterday" so that late-arriving transactions
+     * (e.g. after an outage/backlog catch-up) and same-day corrections are
+     * reconciled. The recompute window is kept safely smaller than the raw
+     * retention window so every recomputed day is fully present in the raw feed
+     * (never half-purged, which would undercount).
+     *
+     * Bucketing is done in PHP using the venue timezone so a day boundary
+     * matches the wall clock, regardless of whether transaction_time carries a
+     * "Z" suffix or an explicit offset — the same approach api/analytics.php
+     * uses. "Today" is intentionally included so an operator viewing the
+     * reporting page mid-day sees fresh numbers without waiting for cron; the
+     * report endpoints treat today as live and never double-count it.
+     *
+     * @param int $recomputeDays How many trailing local days to recompute.
+     * @return array{days_recomputed:int, rows_written:int}
+     */
+    public static function rollupDailyStats(int $recomputeDays = 28): array {
+        $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try {
+            $tz = new DateTimeZone($tzName);
+        } catch (Exception $e) {
+            $tz = new DateTimeZone('UTC');
+        }
+        $utc = new DateTimeZone('UTC');
+
+        // Window: [startLocal 00:00 of the oldest recomputed day, nowLocal].
+        // We pull raw rows for the whole window in one query and bucket them by
+        // local calendar date in PHP.
+        $recomputeDays = max(1, min(400, $recomputeDays));
+        $endLocal = new DateTime('now', $tz);
+        $startLocal = (clone $endLocal)->modify('-' . ($recomputeDays - 1) . ' days')->setTime(0, 0, 0);
+
+        $startUtc = (clone $startLocal)->setTimezone($utc);
+        // Pad the upper bound by a day so an offset never clips the newest rows.
+        $endUtc = (clone $endLocal)->setTimezone($utc)->modify('+1 day');
+        $startIso = $startUtc->format('Y-m-d\TH:i:s\Z');
+        $endIso   = $endUtc->format('Y-m-d\TH:i:s\Z');
+
+        // Set of local dates we are authoritative for this run. Any existing
+        // rollup row for one of these dates is replaced from scratch so a
+        // re-run is idempotent and self-correcting.
+        $targetDates = [];
+        $cursor = (clone $startLocal);
+        $todayStr = $endLocal->format('Y-m-d');
+        while ($cursor->format('Y-m-d') <= $todayStr) {
+            $targetDates[$cursor->format('Y-m-d')] = true;
+            $cursor->modify('+1 day');
+        }
+
+        $rows = DB::query(
+            'SELECT transaction_time, game_id, game_description, card_number,
+                    redemption_tickets, cash_amount, regular_points, bonus_points
+             FROM game_play_transactions
+             WHERE transaction_time >= :p0 AND transaction_time < :p1',
+            [$startIso, $endIso]
+        );
+
+        // Aggregate into [date][game_id] => totals, tracking distinct cards per
+        // (date, game) with a set so unique_cards is exact for that day.
+        $agg = [];
+        $names = [];
+        $cardSets = [];
+        foreach ($rows as $r) {
+            $tt = $r['transaction_time'] ?? '';
+            if ($tt === '') continue;
+            try {
+                $d = new DateTime($tt);
+            } catch (Exception $e) {
+                continue;
+            }
+            $d->setTimezone($tz);
+            $date = $d->format('Y-m-d');
+            if (!isset($targetDates[$date])) continue; // outside authoritative window
+            $gid = (string)($r['game_id'] ?? '');
+            if ($gid === '') continue;
+
+            $key = $date . "\0" . $gid;
+            if (!isset($agg[$key])) {
+                $agg[$key] = [
+                    'date' => $date, 'game_id' => $gid,
+                    'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0,
+                    'regular_points' => 0.0, 'bonus_points' => 0.0,
+                ];
+                $cardSets[$key] = [];
+            }
+            $agg[$key]['plays']          += 1;
+            $agg[$key]['tickets']        += (float)($r['redemption_tickets'] ?? 0);
+            $agg[$key]['cash']           += (float)($r['cash_amount'] ?? 0);
+            $agg[$key]['regular_points'] += (float)($r['regular_points'] ?? 0);
+            $agg[$key]['bonus_points']   += (float)($r['bonus_points'] ?? 0);
+
+            $card = (string)($r['card_number'] ?? '');
+            if ($card !== '' && $card !== '000000') {
+                $cardSets[$key][$card] = true;
+            }
+            $desc = trim((string)($r['game_description'] ?? ''));
+            if ($desc !== '') {
+                $names[$gid] = $desc;
+            }
+        }
+
+        // Fall back to the game cache for names the feed didn't carry.
+        $cacheNames = [];
+        foreach (DB::query('SELECT game_id, game_name FROM game_state_cache') as $c) {
+            $cacheNames[(string)$c['game_id']] = (string)$c['game_name'];
+        }
+
+        $db = DB::getInstance();
+        $db->exec('BEGIN');
+        try {
+            // Delete-then-insert the authoritative dates so games that dropped
+            // to zero plays for a recomputed day don't leave stale rows behind.
+            foreach (array_keys($targetDates) as $date) {
+                DB::execute('DELETE FROM game_daily_stats WHERE stat_date = :p0', [$date]);
+            }
+            $written = 0;
+            foreach ($agg as $key => $a) {
+                $gid = $a['game_id'];
+                $name = $names[$gid] ?? ($cacheNames[$gid] ?? '');
+                DB::execute(
+                    'INSERT INTO game_daily_stats
+                        (stat_date, game_id, game_name, plays, tickets, cash,
+                         regular_points, bonus_points, unique_cards, updated_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, datetime(\'now\'))',
+                    [
+                        $a['date'], $gid, $name, (int)$a['plays'],
+                        (float)$a['tickets'], (float)$a['cash'],
+                        (float)$a['regular_points'], (float)$a['bonus_points'],
+                        count($cardSets[$key] ?? []),
+                    ]
+                );
+                $written++;
+            }
+            $db->exec('COMMIT');
+        } catch (Exception $e) {
+            $db->exec('ROLLBACK');
+            throw $e;
+        }
+
+        return ['days_recomputed' => count($targetDates), 'rows_written' => $written];
+    }
+
+    /**
      * Purge old data to prevent unbounded database growth.
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides
      * older than 90 days.
      *
-     * Game-play transactions are kept for ~13 months by default so the
-     * Games dashboard's 12-month and All-time windows have real data to
-     * render. At a busy FEC (~5–10k plays/day) the cache will hold roughly
-     * 2–4M rows ≈ a few hundred MB — well within SQLite's comfort zone.
-     * Operators who don't need long-term play history can pass a smaller
-     * value (e.g. 30) when calling purgeOldData() from a custom cron.
+     * The raw play feed (game_play_transactions) is kept for 30 days — long
+     * enough for the live feed, per-game drill-downs, and hourly reporting,
+     * while the permanent per-game daily rollup (game_daily_stats, written by
+     * rollupDailyStats() which MUST run first) preserves month/year history
+     * indefinitely. The 30-day raw window is deliberately larger than the
+     * rollup recompute window so no day is ever purged before it is rolled up.
      */
-    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $playFeedRetentionDays = 395): array {
+    public static function purgeOldData(int $logRetentionDays = 90, int $actionRetentionDays = 30, int $overrideRetentionDays = 90, int $playFeedRetentionDays = 30): array {
         $summary = [];
 
-        // All cutoffs use UTC because the columns we compare against are
-        // populated by SQLite's datetime('now') (which is UTC) or by ISO-8601
-        // 'c' formatting (which carries timezone info). Using local-time
-        // cutoffs would shift the deletion window by the host TZ offset and
-        // either purge too much (after midnight in negative offsets) or too
-        // little (before midnight) depending on the column.
-        $now = time();
-
-        // Purge old action_log entries (timestamp column = UTC datetime('now'))
-        $cutoff = gmdate('Y-m-d H:i:s', $now - ($logRetentionDays * 86400));
+        // Purge old action_log entries
+        $cutoff = date('Y-m-d H:i:s', strtotime("-$logRetentionDays days"));
         $deleted = DB::execute(
             'DELETE FROM action_log WHERE timestamp < :p0',
             [$cutoff]
         );
         $summary['action_log_purged'] = $deleted;
 
-        // Purge old executed scheduled_actions. scheduled_date is the local
-        // calendar date the action was planned for, so use local time here.
-        $cutoff = date('Y-m-d', $now - ($actionRetentionDays * 86400));
+        // Purge old executed scheduled_actions (keep pending ones regardless of age)
+        $cutoff = date('Y-m-d', strtotime("-$actionRetentionDays days"));
         $deleted = DB::execute(
             'DELETE FROM scheduled_actions WHERE scheduled_date < :p0 AND executed != 0',
             [$cutoff]
         );
         $summary['scheduled_actions_purged'] = $deleted;
 
-        // Purge very old expired overrides. end_datetime is stored as the
-        // local-time string the operator entered (no TZ suffix), so we
-        // compare against a local-time cutoff.
-        $cutoff = date('Y-m-d H:i', $now - ($overrideRetentionDays * 86400));
+        // Purge very old expired overrides
+        $cutoff = date('Y-m-d H:i', strtotime("-$overrideRetentionDays days"));
         $deleted = DB::execute(
             'DELETE FROM schedule_overrides WHERE end_datetime < :p0',
             [$cutoff]
         );
         $summary['overrides_purged'] = $deleted;
 
-        // Purge old game-play transactions. transaction_time is ISO-8601 with
-        // timezone (date('c')), so a UTC ISO cutoff compares correctly.
-        $cutoff = gmdate('Y-m-d\TH:i:sP', $now - ($playFeedRetentionDays * 86400));
+        // Purge old game-play transactions. We only need a recent rolling
+        // window for the live feed and top-games widget; longer-term reporting
+        // is owned by CenterEdge itself.
+        $cutoff = date('c', strtotime("-$playFeedRetentionDays days"));
         $deleted = DB::execute(
             'DELETE FROM game_play_transactions WHERE transaction_time < :p0',
             [$cutoff]
@@ -1936,21 +1736,12 @@ class Scheduler {
     /**
      * Write a heartbeat file so external monitoring can detect if cron is alive.
      * The file contains the last successful run timestamp in ISO 8601.
-     *
-     * Atomic via tmp+rename so a concurrent reader (the /api/health endpoint
-     * or external monitor) can't observe a half-written / truncated file.
      */
     public static function writeHeartbeat(string $type = 'cron'): void {
         $heartbeatFile = dirname(LOCK_FILE) . "/.heartbeat_$type";
-        $tmpFile = $heartbeatFile . '.tmp.' . getmypid();
-        $bytes = @file_put_contents($tmpFile, date('c'));
-        if ($bytes === false) {
-            error_log("Failed to write heartbeat tmp file: $tmpFile");
-            return;
-        }
-        if (!@rename($tmpFile, $heartbeatFile)) {
-            error_log("Failed to rename heartbeat file into place: $heartbeatFile");
-            @unlink($tmpFile);
+        $result = @file_put_contents($heartbeatFile, date('c'));
+        if ($result === false) {
+            error_log("Failed to write heartbeat file: $heartbeatFile");
         }
     }
 

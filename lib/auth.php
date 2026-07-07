@@ -8,6 +8,157 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/csrf.php';
 
 class Auth {
+    /**
+     * Role identifiers. Stored as plain strings on admin_users.role.
+     *  - admin   : full access to every feature
+     *  - manager : full access EXCEPT the Settings page (no API config,
+     *              timezone, or user management)
+     *  - tech    : full access EXCEPT customer-card lookup and the cash /
+     *              revenue figures inside Analytics. Tech still sees plays,
+     *              tickets, fleet posture, and automation activity — only
+     *              the dollar columns are stripped (see api/analytics.php).
+     */
+    public const ROLE_ADMIN   = 'admin';
+    public const ROLE_MANAGER = 'manager';
+    public const ROLE_TECH    = 'tech';
+
+    /** Canonical list of valid roles, used for input validation and the UI. */
+    public const VALID_ROLES = [self::ROLE_ADMIN, self::ROLE_MANAGER, self::ROLE_TECH];
+
+    /**
+     * The permission catalog: every gateable capability in the app, keyed by
+     * the area name used in requireAccess()/canAccess() calls. Roles are DATA
+     * (the `roles` table, editable via /api/roles); permissions are CODE —
+     * adding a new key here plus a requireAccess() call is how a new gate is
+     * born. Areas NOT listed here are open to every authenticated user
+     * (dashboard, game/kiosk list views, action log).
+     *
+     * The `admin` system role bypasses this entirely (always allowed) and is
+     * locked against editing/deletion so an install can never lock itself out.
+     */
+    public const PERMISSIONS = [
+        'analytics'        => 'View Analytics & Performance reporting (plays and tickets)',
+        'view_revenue'     => 'See cash / revenue figures in reporting',
+        'cards'            => 'Card lookup: balances, transaction history, PIN checks',
+        'manual_control'   => 'Operate the floor: pause/unpause groups, kiosk & game actions, force syncs',
+        'overrides_manage' => 'Create and delete schedule overrides',
+        'groups_manage'    => 'Create, edit, and delete pause groups',
+        'schedules_manage' => 'Create, edit, and delete recurring schedules',
+        'settings'         => 'System settings: CenterEdge API credentials, timezone',
+        'users'            => 'Manage user accounts (admin accounts always excluded)',
+    ];
+
+    /**
+     * Fallback role definitions used ONLY if the roles table is unreadable
+     * (e.g. mid-upgrade). Mirrors the seeds in DB::initSchema so behavior is
+     * identical either way.
+     */
+    private const FALLBACK_ROLES = [
+        'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
+        'manager' => ['name' => 'Manager', 'is_system' => 1,
+                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage']],
+        'tech'    => ['name' => 'Technician', 'is_system' => 1,
+                      'permissions' => ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
+    ];
+
+    /** @var array<string,array>|null Per-request cache of the roles table. */
+    private static $rolesCache = null;
+
+    /**
+     * All role definitions, keyed by slug:
+     * ['slug' => ['slug','name','description','permissions'=>string[],'is_system'=>int]]
+     * Cached for the request. Falls back to the built-in definitions if the
+     * table can't be read, so auth never fails open (or closed) mid-upgrade.
+     */
+    public static function getRoles(): array {
+        if (self::$rolesCache !== null) {
+            return self::$rolesCache;
+        }
+        try {
+            $rows = DB::query('SELECT slug, name, description, permissions, is_system FROM roles ORDER BY is_system DESC, name ASC');
+            $roles = [];
+            foreach ($rows as $r) {
+                $perms = json_decode((string)$r['permissions'], true);
+                $roles[(string)$r['slug']] = [
+                    'slug'        => (string)$r['slug'],
+                    'name'        => (string)$r['name'],
+                    'description' => (string)($r['description'] ?? ''),
+                    'permissions' => is_array($perms) ? array_values(array_map('strval', $perms)) : [],
+                    'is_system'   => (int)$r['is_system'],
+                ];
+            }
+            if (empty($roles)) {
+                throw new RuntimeException('roles table empty');
+            }
+            self::$rolesCache = $roles;
+        } catch (Exception $e) {
+            error_log('Auth::getRoles falling back to built-in roles: ' . $e->getMessage());
+            $roles = [];
+            foreach (self::FALLBACK_ROLES as $slug => $def) {
+                $roles[$slug] = [
+                    'slug' => $slug, 'name' => $def['name'], 'description' => '',
+                    'permissions' => $def['permissions'], 'is_system' => $def['is_system'],
+                ];
+            }
+            self::$rolesCache = $roles;
+        }
+        return self::$rolesCache;
+    }
+
+    /** Drop the per-request roles cache (call after mutating the roles table). */
+    public static function invalidateRolesCache(): void {
+        self::$rolesCache = null;
+    }
+
+    /** True when the slug names an existing role. */
+    public static function roleExists(string $slug): bool {
+        $roles = self::getRoles();
+        return isset($roles[$slug]);
+    }
+
+    /**
+     * Resolved permission keys for a role slug. Admin resolves to the full
+     * catalog; an unknown slug resolves to NOTHING (fail closed) — safer than
+     * the old behavior of coercing unknowns to tech, which granted real access.
+     */
+    public static function permissionsFor(?string $roleSlug): array {
+        $slug = strtolower(trim((string)$roleSlug));
+        if ($slug === self::ROLE_ADMIN) {
+            return array_keys(self::PERMISSIONS);
+        }
+        $roles = self::getRoles();
+        if (!isset($roles[$slug])) {
+            return [];
+        }
+        $perms = $roles[$slug]['permissions'];
+        if (in_array('*', $perms, true)) {
+            return array_keys(self::PERMISSIONS);
+        }
+        // Only catalog keys count — stale keys from a removed permission are ignored.
+        return array_values(array_intersect($perms, array_keys(self::PERMISSIONS)));
+    }
+
+    /**
+     * May $callerRole assign $targetSlug to a user? Admins can assign any
+     * existing role. Everyone else can only hand out roles whose permissions
+     * are a SUBSET of their own — you can never grant more than you have —
+     * and never the admin role.
+     */
+    public static function canAssignRole(string $callerRole, string $targetSlug): bool {
+        if (!self::roleExists($targetSlug)) {
+            return false;
+        }
+        if ($callerRole === self::ROLE_ADMIN) {
+            return true;
+        }
+        if ($targetSlug === self::ROLE_ADMIN) {
+            return false;
+        }
+        $callerPerms = self::permissionsFor($callerRole);
+        $targetPerms = self::permissionsFor($targetSlug);
+        return count(array_diff($targetPerms, $callerPerms)) === 0;
+    }
+
     /** Max failed login attempts allowed per IP within the rate-limit window. */
     private const RATE_LIMIT_MAX_TRIES = 10;
     /** Sliding window in seconds for counting failed attempts (15 minutes). */
@@ -53,15 +204,14 @@ class Auth {
      */
     public static function login(string $username, string $password, string $clientIp = ''): ?array {
         $user = DB::queryOne(
-            'SELECT id, username, password_hash, display_name, is_active FROM admin_users WHERE username = :p0',
+            'SELECT id, username, password_hash, display_name, role, is_active FROM admin_users WHERE username = :p0',
             [$username]
         );
 
         if (!$user || !$user['is_active']) {
-            // Run password_verify against a real bcrypt hash with the same cost
-            // as production hashes. A malformed dummy makes password_verify
-            // short-circuit and leaks user existence via response timing.
-            password_verify($password, '$2y$12$W/uc4Pj9r9jAqKKPehZRXeAt/66SpSblKXpOvQ1iAuaF.KbanQE/i');
+            // Run password_verify against a dummy hash to equalize timing
+            // and prevent username-existence enumeration via response time.
+            password_verify($password, '$2y$12$dummyhashfortimingequaliz000000000000000000000000000');
             self::progressiveDelay($clientIp);
             return null;
         }
@@ -88,6 +238,7 @@ class Auth {
             'id'           => $user['id'],
             'username'     => $user['username'],
             'display_name' => $user['display_name'],
+            'role'         => self::normalizeRole($user['role'] ?? self::ROLE_ADMIN),
         ];
         $_SESSION['auth_time'] = time();
 
@@ -99,16 +250,8 @@ class Auth {
 
     /**
      * Destroy session and logout.
-     * Regenerates the session ID before destroying so any concurrent
-     * request that arrived with the old ID can't reuse cached session data.
      */
     public static function logout(): void {
-        // Regenerate the ID first so the soon-to-be-destroyed session
-        // can't be re-used via a stale cookie that another tab still holds.
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            @session_regenerate_id(true);
-        }
-
         $_SESSION = [];
 
         if (ini_get('session.use_cookies')) {
@@ -140,7 +283,130 @@ class Auth {
         // Refresh last activity time
         $_SESSION['auth_time'] = time();
 
+        // Re-validate the account against the DB periodically (and on the
+        // first request of a pre-role-migration session). Without this, a
+        // deactivated/deleted user keeps working until their session expires
+        // and a role change never applies until re-login. One tiny SELECT per
+        // authenticated user per minute.
+        $needsRevalidate = !isset($_SESSION['auth_user']['role'])
+            || !isset($_SESSION['auth_revalidated'])
+            || (time() - (int)$_SESSION['auth_revalidated']) > 60;
+        if ($needsRevalidate) {
+            try {
+                $row = DB::queryOne(
+                    'SELECT role, is_active FROM admin_users WHERE id = :p0',
+                    [(int)$_SESSION['auth_user']['id']]
+                );
+                if (!$row || !(int)($row['is_active'] ?? 0)) {
+                    // Deleted or deactivated — kill the session immediately.
+                    self::logout();
+                    return null;
+                }
+                $_SESSION['auth_user']['role'] = self::normalizeRole($row['role'] ?? self::ROLE_ADMIN);
+                $_SESSION['auth_revalidated'] = time();
+            } catch (Exception $e) {
+                // If DB lookup fails, fail closed to least privilege for this
+                // request; the next request retries the re-validation.
+                if (!isset($_SESSION['auth_user']['role'])) {
+                    $_SESSION['auth_user']['role'] = self::ROLE_TECH;
+                }
+            }
+        }
+
         return $_SESSION['auth_user'];
+    }
+
+    /**
+     * Normalize a stored role string. Unknown values fail closed to the
+     * least-privileged role rather than silently granting admin. Legacy
+     * installations (where the role column was added later and may be
+     * NULL for existing rows) are handled at the call sites with an
+     * explicit `?? ROLE_ADMIN` default before this method runs.
+     */
+    public static function normalizeRole(?string $role): string {
+        $role = strtolower(trim((string)$role));
+        if (self::roleExists($role)) {
+            return $role;
+        }
+        // Unknown slug: keep it as-is. permissionsFor() resolves unknown
+        // roles to an EMPTY permission set, which is strictly safer than the
+        // old coercion to 'tech' (tech carries real access like settings).
+        // Role deletion is blocked while users hold the role, so this only
+        // happens for corrupt data — the user stays signed in but gated.
+        return $role !== '' ? $role : self::ROLE_TECH;
+    }
+
+    /**
+     * Return the current user's role, or null when not authenticated.
+     */
+    public static function role(): ?string {
+        $user = self::check();
+        return $user['role'] ?? null;
+    }
+
+    /**
+     * True when the current user holds any of the supplied roles.
+     */
+    public static function hasRole(array $roles): bool {
+        $role = self::role();
+        return $role !== null && in_array($role, $roles, true);
+    }
+
+    /**
+     * True when the current user's role grants the named permission (see
+     * Auth::PERMISSIONS). Admin always passes; an unknown/deleted role slug
+     * grants nothing.
+     */
+    public static function hasPermission(string $permission): bool {
+        $role = self::role();
+        if ($role === null) {
+            return false;
+        }
+        if ($role === self::ROLE_ADMIN) {
+            return true;
+        }
+        return in_array($permission, self::permissionsFor($role), true);
+    }
+
+    /**
+     * True when the current user may access the named resource area. Areas
+     * not in the permission catalog are open to every authenticated user;
+     * cataloged areas resolve through the user's role permissions.
+     */
+    public static function canAccess(string $area): bool {
+        if (!isset(self::PERMISSIONS[$area])) {
+            return self::check() !== null;
+        }
+        return self::hasPermission($area);
+    }
+
+    /**
+     * Require that the current user holds one of the listed roles, otherwise
+     * send 403 JSON and exit. Authentication is enforced first; an
+     * unauthenticated request will get the standard 401 from requireAuth().
+     */
+    public static function requireRole(array $roles): array {
+        $user = self::requireAuth();
+        if (!in_array($user['role'] ?? '', $roles, true)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have permission to access this resource.']);
+            exit;
+        }
+        return $user;
+    }
+
+    /**
+     * Require access to a named resource area defined in ACCESS_MATRIX. Sends
+     * 403 JSON and exits if the role is wrong.
+     */
+    public static function requireAccess(string $area): array {
+        $user = self::requireAuth();
+        if (!self::canAccess($area)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have permission to access this resource.']);
+            exit;
+        }
+        return $user;
     }
 
     /**

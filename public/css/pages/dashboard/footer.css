@@ -1,0 +1,131 @@
+/* ============================================
+   Dashboard footer grid — kiosk snapshot + recent activity
+   ============================================
+   Two-column layout below the main dashboard sections. Collapses to a
+   single column on narrow viewports. The kiosk card is hidden in JS
+   when no kiosks are configured, so the activity feed widens to fill.
+   ============================================ */
+.dashboard-footer-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 1rem;
+}
+@media (max-width: 900px) {
+    .dashboard-footer-grid { grid-template-columns: 1fr; }
+}
+
+/* Kiosk snapshot — counts + a single tri-color progress bar. */
+.kiosk-snapshot { display: flex; flex-direction: column; gap: 0.4rem; }
+.kiosk-snapshot-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem 1.25rem;
+    align-items: center;
+}
+.kiosk-snapshot-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+}
+.kiosk-snapshot-num {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    margin-left: 0.1rem;
+}
+.kiosk-snapshot-label {
+    color: var(--text-secondary);
+    text-transform: lowercase;
+}
+
+/* Recent automation activity feed — single-column rows with a source
+   chip on the left, the action + target in the middle, and a tiny
+   success/fail glyph on the right. Designed to read at-a-glance. */
+.activity-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+}
+.activity-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.45rem 0.25rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.activity-row:last-child { border-bottom: none; }
+.activity-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 60px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-radius: var(--radius-full);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    line-height: 1.2;
+}
+.activity-badge-manual {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.activity-badge-schedule {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+}
+.activity-badge-override,
+.activity-badge-expired_override {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+.activity-badge-cron,
+.activity-badge-watchdog {
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+}
+.activity-badge-fail {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+.activity-body { min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.activity-line {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.activity-action { font-weight: 600; }
+.activity-time { font-variant-numeric: tabular-nums; }
+.activity-ok {
+    color: var(--success);
+    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1;
+}
+.activity-fail {
+    color: var(--danger);
+    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+/* Small visual lift to the Games page top-games card so it reads
+   immediately as a "leaderboard" panel rather than just another card. */
+.top-games-card .card-header {
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.top-games-card .top-games-list-modern { padding: 0.25rem 0; }
+

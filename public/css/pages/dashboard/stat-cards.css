@@ -1,0 +1,85 @@
+/* ============================================
+   Modernized stat cards (Total / Enabled / Paused / OOS)
+   ============================================
+   Adds a left-side icon disc and a colored accent that matches the
+   stat's tone (success/warning/danger/accent), plus a third "detail" line.
+   ============================================ */
+.stat-card-modern {
+    padding: 1rem 1.15rem 1.05rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.stat-card-modern .stat-card-iconrow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+.stat-card-modern .stat-label {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-size: 0.7rem;
+}
+.stat-card-modern .stat-value {
+    margin-top: 0;
+    font-size: 1.95rem;
+}
+.stat-card-modern .stat-card-detail {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: -0.15rem;
+}
+/* Coloured icon disc on the left of the label. Each tone gets a tinted
+   background + matching coloured glyph so the four cards become instantly
+   distinguishable at a glance. */
+.stat-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-md);
+    font-size: 0.85rem;
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+    border: 1px solid transparent;
+}
+.stat-card-icon-accent {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.stat-card-icon-success {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+}
+.stat-card-icon-warning {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 32%, transparent);
+}
+.stat-card-icon-danger {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 16%, transparent);
+    border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+/* Accent stripe on top of the card, tone-matched */
+.stat-card-modern.stat-card-success::before {
+    background: linear-gradient(90deg, var(--success), color-mix(in srgb, var(--success) 60%, var(--accent)));
+}
+.stat-card-modern.stat-card-warning::before {
+    background: linear-gradient(90deg, var(--warning), color-mix(in srgb, var(--warning) 60%, var(--tickets)));
+}
+.stat-card-modern.stat-card-danger::before {
+    background: linear-gradient(90deg, var(--danger), color-mix(in srgb, var(--danger) 60%, var(--warning)));
+}
+/* Tone-matched value colors (only when the count is non-zero — gray-out
+   stays handled by base .stat-value) */
+.stat-card-modern.stat-card-success .stat-value { color: var(--success); }
+.stat-card-modern.stat-card-warning .stat-value { color: var(--warning); }
+.stat-card-modern.stat-card-danger  .stat-value { color: var(--danger); }
+.stat-card-modern.stat-card-accent  .stat-value { color: var(--text-primary); }
+

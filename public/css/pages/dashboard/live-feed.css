@@ -1,0 +1,142 @@
+/* ============================================
+   Live play feed — modernized rows
+   ============================================
+   Three-column layout (time | game | ticket badge) with slide-in animation
+   for newly-arrived plays and a "jackpot" tier for big ticket dispenses.
+   ============================================ */
+.feed-list-modern { list-style: none; margin: 0; padding: 0; }
+.feed-row-modern {
+    display: grid;
+    grid-template-columns: 92px 1fr auto;
+    gap: 0.85rem;
+    align-items: center;
+    padding: 0.55rem 0.4rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.feed-row-modern:last-child { border-bottom: none; }
+.feed-row-modern .feed-row-time {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.feed-row-modern .feed-row-main { min-width: 0; }
+.feed-row-modern .plain-list-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 0.15rem;
+}
+.feed-row-modern .feed-row-meta {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Ticket badge column */
+.feed-row-tickets {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    padding: 0.32rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-variant-numeric: tabular-nums;
+    border: 1px solid transparent;
+    transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.feed-row-tickets-num {
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+.feed-row-tickets-label {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    opacity: 0.75;
+}
+.feed-row-tickets-base {
+    background: color-mix(in srgb, var(--tickets) 10%, transparent);
+    border-color: color-mix(in srgb, var(--tickets) 22%, transparent);
+    color: var(--tickets);
+}
+.feed-row-tickets-high {
+    background: color-mix(in srgb, var(--tickets) 18%, transparent);
+    border-color: color-mix(in srgb, var(--tickets) 38%, transparent);
+    color: var(--tickets);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--tickets) 18%, transparent),
+                0 4px 12px -4px color-mix(in srgb, var(--tickets) 30%, transparent);
+}
+.feed-row-tickets-jackpot {
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--tickets) 28%, transparent) 0%,
+        color-mix(in srgb, var(--tickets) 12%, transparent) 100%);
+    border-color: color-mix(in srgb, var(--tickets) 60%, transparent);
+    color: var(--tickets);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--tickets) 20%, transparent),
+                0 6px 18px -4px color-mix(in srgb, var(--tickets) 45%, transparent);
+    animation: jackpot-glow 2.5s ease-in-out infinite;
+}
+@keyframes jackpot-glow {
+    0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--tickets) 18%, transparent),
+                           0 6px 18px -4px color-mix(in srgb, var(--tickets) 35%, transparent); }
+    50%      { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tickets) 28%, transparent),
+                           0 8px 22px -4px color-mix(in srgb, var(--tickets) 55%, transparent); }
+}
+
+/* Newly-arrived row — slides in and fades the accent strip after the cue */
+.feed-row-fresh {
+    animation: feed-row-slidein 600ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--tickets) 14%, transparent) 0%,
+        transparent 80%);
+}
+.feed-row-fresh::before {
+    /* small accent strip on the left edge that fades out */
+    content: '';
+    position: absolute;
+    left: -0.35rem;
+    top: 0; bottom: 0;
+    width: 3px;
+    background: var(--tickets);
+    border-radius: 2px;
+    animation: feed-row-fade 3.5s ease-out forwards;
+}
+.feed-row-fresh { position: relative; }
+@keyframes feed-row-slidein {
+    from { transform: translateY(-6px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+}
+@keyframes feed-row-fade {
+    0%   { opacity: 1; }
+    70%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* Compact responsive layout — drop time column on narrow widths */
+@media (max-width: 640px) {
+    .feed-row-modern { grid-template-columns: 1fr auto; gap: 0.6rem; }
+    .feed-row-modern .feed-row-time { display: none; }
+    .top-games-item-modern { grid-template-columns: 36px 1fr auto; }
+    .top-games-medal { font-size: 1.3rem; }
+}
+
+/* Feed-meta header (right side of card-header) gets the same pulsing dot
+   style as the LIVE pill so the "data is fresh" cue is consistent. */
+.feed-meta-pulse-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 0.4rem;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent);
+    animation: hero-live-pulse 1.8s ease-in-out infinite;
+    vertical-align: middle;
+}
+.feed-meta-sep { color: var(--text-muted); margin: 0 0.1rem; }
+

@@ -1,0 +1,137 @@
+/* ============================================
+   Card Lookup, Games page, Top-games widget
+   ============================================ */
+
+/* Compact form-input variant for inline filter selects. */
+.form-input-sm {
+    padding: 0.35rem 0.55rem;
+    font-size: 0.82rem;
+    width: auto;
+}
+
+/* Right-align numeric table cells. */
+.text-right { text-align: right; }
+
+/* Generic card body padding when used inside a .card without other modifiers. */
+.card-body { /* visual hook only — .card already handles padding */ }
+
+/* Plain list — used for stacked rows with no bullets and visible separators. */
+.plain-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.plain-list-item {
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.plain-list-item:last-child { border-bottom: none; }
+.plain-list-title {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+/* Card balance tiles — three-up grid, large numerals. */
+.balance-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+}
+.balance-tile {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.85rem;
+    text-align: center;
+}
+.balance-tile-value {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.balance-tile-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: 0.2rem;
+}
+@media (max-width: 600px) {
+    .balance-grid { grid-template-columns: 1fr; }
+}
+
+/* Subsection inside a modal — labelled block with a thin top divider. */
+.subsection {
+    margin-top: 1.25rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--border);
+}
+.subsection-title {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.5rem;
+}
+
+/* Clickable table rows on the games directory. */
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: var(--bg-card-hover); }
+
+/* Games page two-column layout: feed on left, top-games on right. */
+.games-two-col {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    gap: 1rem;
+}
+@media (max-width: 900px) {
+    .games-two-col { grid-template-columns: 1fr; }
+}
+
+/* Live-feed row layout: left column for time, right column for content. */
+.feed-row { display: flex; gap: 0.75rem; align-items: baseline; }
+.feed-row-time {
+    min-width: 7rem;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+.feed-row-main { flex: 1; min-width: 0; }
+
+/* Top-games leaderboard list. */
+.top-games-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.top-games-item {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.top-games-item:last-child { border-bottom: none; }
+.top-games-rank {
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    min-width: 2rem;
+    flex-shrink: 0;
+}
+.top-games-body { flex: 1; min-width: 0; }
+.top-games-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    margin: 0.4rem 0 0.25rem;
+    overflow: hidden;
+}
+.top-games-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width var(--transition-base);
+}
+
