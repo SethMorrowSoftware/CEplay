@@ -53,14 +53,14 @@
 
 .analytics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-    gap: 0.95rem;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 0.8rem;
 }
 .analytics-card {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding: 1rem 1.1rem 1.1rem;
+    gap: 0.5rem;
+    padding: 0.85rem 1rem 0.95rem;
 }
 .analytics-card-wide {
     grid-column: 1 / -1;
@@ -74,7 +74,7 @@
 .analytics-chart-box {
     position: relative;
     width: 100%;
-    min-height: 180px;
+    min-height: 168px;
 }
 .analytics-chart-box canvas {
     width: 100% !important;

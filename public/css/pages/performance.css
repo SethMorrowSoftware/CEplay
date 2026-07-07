@@ -57,10 +57,10 @@
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius, 10px);
-    padding: 0.9rem 1rem;
+    padding: 0.72rem 0.9rem;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0.25rem;
 }
 .perf-kpi-label {
     font-size: 0.75rem;
@@ -69,7 +69,7 @@
     color: var(--text-secondary);
 }
 .perf-kpi-value {
-    font-size: 1.6rem;
+    font-size: 1.4rem;
     font-weight: 700;
     color: var(--text-primary);
     line-height: 1.15;
@@ -98,10 +98,10 @@
 /* --- Charts ------------------------------------------------- */
 .perf-chart-holder {
     position: relative;
-    height: 300px;
+    height: 258px;
     width: 100%;
 }
-.perf-chart-holder-sm { height: 240px; }
+.perf-chart-holder-sm { height: 212px; }
 
 .perf-metric-toggle {
     display: inline-flex;

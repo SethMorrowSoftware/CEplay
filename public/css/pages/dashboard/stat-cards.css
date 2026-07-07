@@ -5,10 +5,10 @@
    stat's tone (success/warning/danger/accent), plus a third "detail" line.
    ============================================ */
 .stat-card-modern {
-    padding: 1rem 1.15rem 1.05rem;
+    padding: 0.8rem 1rem 0.85rem;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.3rem;
 }
 .stat-card-modern .stat-card-iconrow {
     display: flex;
@@ -23,7 +23,7 @@
 }
 .stat-card-modern .stat-value {
     margin-top: 0;
-    font-size: 1.95rem;
+    font-size: 1.6rem;
 }
 .stat-card-modern .stat-card-detail {
     font-size: 0.7rem;
@@ -37,10 +37,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     border-radius: var(--radius-md);
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     font-weight: 700;
     line-height: 1;
     flex-shrink: 0;
