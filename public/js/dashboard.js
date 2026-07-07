@@ -312,7 +312,7 @@
         });
 
         if (canSeeSales) {
-            container.appendChild(App.el('div', { className: 'games-two-col mt-2' }, [
+            container.appendChild(App.el('div', { className: 'dash-overview-grid mt-2' }, [
                 App.el('div', { id: 'dash-feed-wrap', className: 'card' }, [
                     App.el('div', { className: 'card-header flex-between' }, [
                         App.el('div', { className: 'card-title', textContent: 'Live play feed' }),
@@ -334,13 +334,16 @@
                 ]),
                 App.el('div', { id: 'dash-top-wrap', className: 'card' }, [
                     App.el('div', { className: 'card-header flex-between' }, [
-                        App.el('div', { className: 'flex-center gap-sm' }, [
-                            App.el('div', { className: 'card-title', textContent: 'Top games by tickets' }),
-                            App.el('span', { className: 'badge badge-info', textContent: 'leaderboard' })
-                        ]),
+                        App.el('div', { className: 'card-title', textContent: 'Top by tickets' }),
                         buildTopWindowSelector()
                     ]),
                     App.el('div', { id: 'dash-top-body', className: 'card-body' }, [App.loading()])
+                ]),
+                App.el('div', { id: 'dash-topplays-wrap', className: 'card' }, [
+                    App.el('div', { className: 'card-header flex-between' }, [
+                        App.el('div', { className: 'card-title', textContent: 'Top by plays' })
+                    ]),
+                    App.el('div', { id: 'dash-topplays-body', className: 'card-body' }, [App.loading()])
                 ])
             ]));
         }
@@ -692,11 +695,23 @@
     }
 
     async function loadTopGames() {
-        var body = document.getElementById('dash-top-body');
+        // Two compact leaderboards side by side, sharing the window selector.
+        await Promise.all([
+            renderTopList('dash-top-body', 'tickets'),
+            renderTopList('dash-topplays-body', 'plays')
+        ]);
+    }
+
+    // Render one leaderboard for the given metric ('tickets' | 'plays') into the
+    // element with the given id. Both the "Top by tickets" and "Top by plays"
+    // cards flow through here so they share one style. The spotlight number, bar
+    // fill, and label are the chosen metric; the secondary line shows the other.
+    async function renderTopList(bodyId, metric) {
+        var body = document.getElementById(bodyId);
         if (!body) return;
         try {
             var data = await API.get('games/transactions/top?window=' + encodeURIComponent(topWindow)
-                + '&sort=tickets&limit=' + TOP_LIMIT);
+                + '&sort=' + metric + '&limit=' + TOP_LIMIT);
             body.innerHTML = '';
             var rows = data.top || [];
             if (rows.length === 0) {
@@ -704,74 +719,46 @@
                     textContent: 'No plays in this window.' }));
                 return;
             }
-
-            // Decide what to highlight: tickets if any game dispensed any in
-            // the window, otherwise plays. The bar, spotlight, and label all
-            // switch together so the operator never sees a bar without a
-            // matching headline number.
-            var hasTickets = rows.some(function(r) { return (r.sum_tickets || 0) > 0; });
-            var maxPlays = rows.reduce(function(m, r) { return Math.max(m, r.plays || 0); }, 0) || 1;
-            var maxTickets = rows.reduce(function(m, r) { return Math.max(m, r.sum_tickets || 0); }, 0) || 1;
-
-            // Medal glyphs for the top three slots — gives the eye a focal
-            // point and rewards the leaders without being noisy.
+            var valOf = function(r) { return metric === 'plays' ? (r.plays || 0) : (r.sum_tickets || 0); };
+            var maxVal = rows.reduce(function(m, r) { return Math.max(m, valOf(r)); }, 0) || 1;
             var medals = ['🥇', '🥈', '🥉'];
 
             var list = App.el('ol', { className: 'top-games-list top-games-list-modern' });
             rows.forEach(function(r, i) {
                 var name = r.game_name || ('Game ' + r.game_id);
-                var tickets = r.sum_tickets || 0;
-                var plays = r.plays || 0;
-                var pct = hasTickets
-                    ? Math.max(4, Math.round((tickets / maxTickets) * 100))
-                    : Math.max(4, Math.round((plays / maxPlays) * 100));
+                var val = valOf(r);
+                var hasMetric = val > 0;
+                var pct = Math.max(4, Math.round((val / maxVal) * 100));
 
-                // Rank badge: medal for top 3, numbered chip otherwise.
-                var rankEl;
-                if (i < 3) {
-                    rankEl = App.el('div', { className: 'top-games-rank top-games-rank-medal top-games-rank-' + (i + 1) }, [
-                        App.el('span', { className: 'top-games-medal', textContent: medals[i] })
-                    ]);
-                } else {
-                    rankEl = App.el('div', { className: 'top-games-rank', textContent: '#' + (i + 1) });
-                }
+                var rankEl = i < 3
+                    ? App.el('div', { className: 'top-games-rank top-games-rank-medal top-games-rank-' + (i + 1) }, [
+                          App.el('span', { className: 'top-games-medal', textContent: medals[i] })
+                      ])
+                    : App.el('div', { className: 'top-games-rank', textContent: '#' + (i + 1) });
 
-                // Spotlight: tickets when any game has dispensed any, otherwise
-                // plays. Headline number, bar fill, and label all stay in sync
-                // so the leaderboard never lies about what it's ranking on.
-                var spotlightValue, spotlightLabel, spotlightHasMetric;
-                if (hasTickets) {
-                    spotlightValue = tickets > 0 ? formatBigNumber(Math.round(tickets)) : '—';
-                    spotlightLabel = 'tickets';
-                    spotlightHasMetric = tickets > 0;
-                } else {
-                    spotlightValue = plays > 0 ? formatBigNumber(plays) : '—';
-                    spotlightLabel = plays === 1 ? 'play' : 'plays';
-                    spotlightHasMetric = plays > 0;
-                }
+                var spotlightValue = hasMetric ? formatBigNumber(Math.round(val)) : '—';
+                var spotlightLabel = metric === 'plays' ? (val === 1 ? 'play' : 'plays') : 'tickets';
                 var spotlight = App.el('div', { className: 'top-games-spotlight' }, [
                     App.el('div', {
-                        className: 'top-games-spotlight-value' + (spotlightHasMetric ? ' has-tickets' : ' no-tickets'),
+                        className: 'top-games-spotlight-value' + (hasMetric ? ' has-tickets' : ' no-tickets'),
                         textContent: spotlightValue
                     }),
                     App.el('div', { className: 'top-games-spotlight-label', textContent: spotlightLabel })
                 ]);
 
-                // Secondary line under the bar surfaces the *other* metric so
-                // the operator gets both numbers without leaving the row.
-                var playsLine = hasTickets
-                    ? plays.toLocaleString() + (plays === 1 ? ' play' : ' plays')
-                    : (tickets > 0 ? Math.round(tickets).toLocaleString() + ' tickets' : 'no tickets dispensed');
+                var otherLine = metric === 'plays'
+                    ? ((r.sum_tickets || 0) > 0 ? Math.round(r.sum_tickets).toLocaleString() + ' tickets' : 'no tickets')
+                    : ((r.plays || 0).toLocaleString() + ((r.plays || 0) === 1 ? ' play' : ' plays'));
 
                 var item = App.el('li', { className: 'top-games-item top-games-item-modern' }, [
                     rankEl,
                     App.el('div', { className: 'top-games-body' }, [
                         App.el('div', { className: 'top-games-name', textContent: name, title: name }),
                         App.el('div', { className: 'top-games-bar' }, [
-                            App.el('div', { className: 'top-games-bar-fill' + (spotlightHasMetric ? ' has-tickets' : ''),
+                            App.el('div', { className: 'top-games-bar-fill' + (hasMetric ? ' has-tickets' : ''),
                                 style: { width: pct + '%' } })
                         ]),
-                        App.el('div', { className: 'top-games-meta text-xs text-secondary', textContent: playsLine })
+                        App.el('div', { className: 'top-games-meta text-xs text-secondary', textContent: otherLine })
                     ]),
                     spotlight
                 ]);
@@ -783,7 +770,6 @@
             });
             body.appendChild(list);
         } catch (err) {
-            // Non-fatal — show a quiet hint rather than a toast.
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Top games unavailable.' }));
         }

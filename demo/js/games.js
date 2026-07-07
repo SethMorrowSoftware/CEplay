@@ -409,27 +409,43 @@
             sel.appendChild(o);
         });
 
-        return App.el('div', { className: 'card top-games-card', id: 'games-top-card' }, [
-            App.el('div', { className: 'card-header flex-between' }, [
-                App.el('div', { className: 'flex-center gap-sm' }, [
-                    App.el('div', { className: 'card-title', textContent: 'Top games by tickets' }),
-                    App.el('span', { className: 'badge badge-info', textContent: 'leaderboard' })
+        return App.el('div', { className: 'games-leaderboard-grid' }, [
+            App.el('div', { className: 'card top-games-card', id: 'games-top-card' }, [
+                App.el('div', { className: 'card-header flex-between' }, [
+                    App.el('div', { className: 'card-title', textContent: 'Top by tickets' }),
+                    App.el('div', { className: 'flex-center gap-sm' }, [
+                        App.el('span', { className: 'text-xs text-muted', textContent: 'click a row to drill in' }),
+                        sel
+                    ])
                 ]),
-                App.el('div', { className: 'flex-center gap-sm' }, [
-                    App.el('span', { className: 'text-xs text-muted', textContent: 'click any row to drill in' }),
-                    sel
-                ])
+                App.el('div', { id: 'games-top-body', className: 'card-body' }, [App.loading()])
             ]),
-            App.el('div', { id: 'games-top-body', className: 'card-body' }, [App.loading()])
+            App.el('div', { className: 'card top-games-card', id: 'games-topplays-card' }, [
+                App.el('div', { className: 'card-header flex-between' }, [
+                    App.el('div', { className: 'card-title', textContent: 'Top by plays' })
+                ]),
+                App.el('div', { id: 'games-topplays-body', className: 'card-body' }, [App.loading()])
+            ])
         ]);
     }
 
     async function loadTopGames() {
-        var body = document.getElementById('games-top-body');
+        // Two compact leaderboards side by side, sharing the window selector.
+        await Promise.all([
+            renderTopList('games-top-body', 'tickets'),
+            renderTopList('games-topplays-body', 'plays')
+        ]);
+    }
+
+    // Render one leaderboard for the given metric ('tickets' | 'plays') into the
+    // element with the given id — the spotlight number/bar/label are the chosen
+    // metric, the secondary line shows the other. Same style for both cards.
+    async function renderTopList(bodyId, metric) {
+        var body = document.getElementById(bodyId);
         if (!body) return;
         try {
             var data = await API.get('games/transactions/top?window=' + encodeURIComponent(topWindow)
-                + '&sort=tickets&limit=' + TOP_LIMIT);
+                + '&sort=' + metric + '&limit=' + TOP_LIMIT);
             var rows = data.top || [];
             body.innerHTML = '';
 
@@ -439,19 +455,16 @@
                 return;
             }
 
-            var hasTickets = rows.some(function(r) { return (r.sum_tickets || 0) > 0; });
-            var maxPlays = rows.reduce(function(m, r) { return Math.max(m, r.plays || 0); }, 0) || 1;
-            var maxTickets = rows.reduce(function(m, r) { return Math.max(m, r.sum_tickets || 0); }, 0) || 1;
+            var valOf = function(r) { return metric === 'plays' ? (r.plays || 0) : (r.sum_tickets || 0); };
+            var maxVal = rows.reduce(function(m, r) { return Math.max(m, valOf(r)); }, 0) || 1;
             var medals = ['🥇', '🥈', '🥉'];
 
             var list = App.el('ol', { className: 'top-games-list top-games-list-modern' });
             rows.forEach(function(r, i) {
                 var name = r.game_name || ('Game ' + r.game_id);
-                var tickets = r.sum_tickets || 0;
-                var plays = r.plays || 0;
-                var pct = hasTickets
-                    ? Math.max(4, Math.round((tickets / maxTickets) * 100))
-                    : Math.max(4, Math.round((plays / maxPlays) * 100));
+                var val = valOf(r);
+                var hasMetric = val > 0;
+                var pct = Math.max(4, Math.round((val / maxVal) * 100));
 
                 var rankEl = i < 3
                     ? App.el('div', { className: 'top-games-rank top-games-rank-medal top-games-rank-' + (i + 1) }, [
@@ -459,29 +472,21 @@
                       ])
                     : App.el('div', { className: 'top-games-rank', textContent: '#' + (i + 1) });
 
-                // Headline number, bar fill, and label all switch together so
-                // the leaderboard never claims to rank on a metric it can't show.
-                var spotlightValue, spotlightLabel, spotlightHasMetric;
-                if (hasTickets) {
-                    spotlightValue = tickets > 0 ? Math.round(tickets).toLocaleString() : '—';
-                    spotlightLabel = 'tickets';
-                    spotlightHasMetric = tickets > 0;
-                } else {
-                    spotlightValue = plays > 0 ? plays.toLocaleString() : '—';
-                    spotlightLabel = plays === 1 ? 'play' : 'plays';
-                    spotlightHasMetric = plays > 0;
-                }
+                var spotlightValue = hasMetric
+                    ? (metric === 'plays' ? val.toLocaleString() : Math.round(val).toLocaleString())
+                    : '—';
+                var spotlightLabel = metric === 'plays' ? (val === 1 ? 'play' : 'plays') : 'tickets';
                 var spotlight = App.el('div', { className: 'top-games-spotlight' }, [
                     App.el('div', {
-                        className: 'top-games-spotlight-value' + (spotlightHasMetric ? ' has-tickets' : ' no-tickets'),
+                        className: 'top-games-spotlight-value' + (hasMetric ? ' has-tickets' : ' no-tickets'),
                         textContent: spotlightValue
                     }),
                     App.el('div', { className: 'top-games-spotlight-label', textContent: spotlightLabel })
                 ]);
 
-                var metaText = hasTickets
-                    ? plays.toLocaleString() + (plays === 1 ? ' play' : ' plays')
-                    : (tickets > 0 ? Math.round(tickets).toLocaleString() + ' tickets' : 'no tickets dispensed');
+                var otherLine = metric === 'plays'
+                    ? ((r.sum_tickets || 0) > 0 ? Math.round(r.sum_tickets).toLocaleString() + ' tickets' : 'no tickets')
+                    : ((r.plays || 0).toLocaleString() + ((r.plays || 0) === 1 ? ' play' : ' plays'));
 
                 var item = App.el('li', { className: 'top-games-item top-games-item-modern' }, [
                     rankEl,
@@ -489,11 +494,11 @@
                         App.el('div', { className: 'top-games-name', textContent: name, title: name }),
                         App.el('div', { className: 'top-games-bar' }, [
                             App.el('div', {
-                                className: 'top-games-bar-fill' + (spotlightHasMetric ? ' has-tickets' : ''),
+                                className: 'top-games-bar-fill' + (hasMetric ? ' has-tickets' : ''),
                                 style: { width: pct + '%' }
                             })
                         ]),
-                        App.el('div', { className: 'top-games-meta text-xs text-secondary', textContent: metaText })
+                        App.el('div', { className: 'top-games-meta text-xs text-secondary', textContent: otherLine })
                     ]),
                     spotlight
                 ]);
