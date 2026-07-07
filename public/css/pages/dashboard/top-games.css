@@ -8,7 +8,7 @@
     list-style: none;
     margin: 0; padding: 0;
     /* Match the live feed: fixed compact height, scroll the ranking inside. */
-    max-height: 330px;
+    max-height: 280px;
     overflow-y: auto;
     overflow-x: hidden;
 }

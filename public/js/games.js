@@ -16,7 +16,7 @@
     var statusFilter = 'all';
     var ticketSort = 'tickets_today';
     var ticketSortDir = 'desc';
-    var dirPaging = { page: 1, pageSize: 50, totalItems: 0 };
+    var dirPaging = { page: 1, pageSize: 25, totalItems: 0 };
     var topWindow = 'today';
     var TOP_LIMIT = 8;
 

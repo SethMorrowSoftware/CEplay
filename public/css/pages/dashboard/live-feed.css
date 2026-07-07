@@ -8,7 +8,7 @@
    full page of plays never pushes the Group Controls below the fold. */
 .feed-list-modern {
     list-style: none; margin: 0; padding: 0;
-    max-height: 330px;
+    max-height: 280px;
     overflow-y: auto;
     overflow-x: hidden;
 }
