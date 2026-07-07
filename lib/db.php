@@ -87,7 +87,7 @@ class DB {
              '["*"]'],
             ['manager', 'Manager',
              'Runs the floor and the automation: full analytics with revenue, card lookup, and group/schedule management. No system settings or user management.',
-             '["analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","schedules_manage"]'],
+             '["analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
              'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No sales data, card lookup, or group/schedule editing.',
              '["analytics","manual_control","overrides_manage","settings","users"]'],
@@ -105,6 +105,58 @@ class DB {
             } catch (Exception $e) {
                 error_log('Role seed failed for ' . $r[0] . ': ' . $e->getMessage());
             }
+        }
+
+        // Per-user permission overrides: a grant/deny layer on TOP of the
+        // user's role. Effective permissions = (role perms UNION grants) MINUS
+        // denies, resolved in Auth::permissionsForUser(). Admin-role accounts
+        // are absolute and ignore denies. One row per (user, permission);
+        // ON DELETE CASCADE cleans up when the user is removed.
+        $db->exec('CREATE TABLE IF NOT EXISTS user_permission_overrides (
+            user_id INTEGER NOT NULL,
+            permission_key TEXT NOT NULL,
+            effect TEXT NOT NULL CHECK (effect IN (\'grant\', \'deny\')),
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (user_id, permission_key),
+            FOREIGN KEY (user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_upo_user ON user_permission_overrides(user_id)');
+
+        // One-time migration: the Action Log (GET /api/logs) used to be
+        // readable by ANY authenticated user, leaking card numbers, usernames,
+        // and IPs. It is now gated by the new 'view_logs' permission. To avoid
+        // yanking access from people who could already see that data, grant
+        // 'view_logs' to every role that already holds 'cards' (they can
+        // already view card numbers, so this is no new exposure). Roles without
+        // card access (e.g. tech) correctly lose the incidental log visibility.
+        // Guarded by a flag so it runs exactly once and never overrides an
+        // admin who later edits the role in Settings.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_view_logs_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms)) {
+                        continue;
+                    }
+                    if (in_array('*', $perms, true) || in_array('view_logs', $perms, true)) {
+                        continue; // wildcard already covers it, or already granted
+                    }
+                    if (in_array('cards', $perms, true)) {
+                        $perms[] = 'view_logs';
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_view_logs_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('view_logs migration skipped: ' . $e->getMessage());
         }
 
         $db->exec('CREATE TABLE IF NOT EXISTS pause_groups (

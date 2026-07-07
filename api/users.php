@@ -27,10 +27,20 @@ function handleUsers(string $method, array $parts, ?array $input): void {
                 'SELECT id, username, display_name, role, is_active, created_at, updated_at
                  FROM admin_users ORDER BY username ASC'
             );
+            // Pull every per-user override in one query and group by user, so
+            // the Settings UI can render each account's grant/deny layer and
+            // its resolved effective permissions without an N+1.
+            $ovByUser = [];
+            foreach (DB::query('SELECT user_id, permission_key, effect FROM user_permission_overrides') as $o) {
+                $ovByUser[(int)$o['user_id']][] = ['key' => (string)$o['permission_key'], 'effect' => (string)$o['effect']];
+            }
             // Normalize legacy NULL/empty roles on the way out so the UI
             // never has to guess.
             foreach ($users as &$u) {
                 $u['role'] = Auth::normalizeRole($u['role'] ?? null);
+                $uid = (int)$u['id'];
+                $u['permission_overrides']   = $ovByUser[$uid] ?? [];
+                $u['effective_permissions']  = Auth::permissionsForUser($uid, $u['role']);
             }
             unset($u);
             // Dynamic role catalog: slug/name/description plus whether the
@@ -47,10 +57,11 @@ function handleUsers(string $method, array $parts, ?array $input): void {
                 ];
             }
             echo json_encode([
-                'users'        => $users,
-                'roles'        => array_column($roleCatalog, 'slug'),
-                'role_catalog' => $roleCatalog,
-                'current_role' => $currentUser['role'] ?? null,
+                'users'              => $users,
+                'roles'              => array_column($roleCatalog, 'slug'),
+                'role_catalog'       => $roleCatalog,
+                'permission_catalog' => Auth::PERMISSIONS,
+                'current_role'       => $currentUser['role'] ?? null,
             ]);
             break;
 
@@ -173,6 +184,12 @@ function createUser(?array $input, array $currentUser): void {
     );
 
     $newId = DB::lastInsertId();
+
+    // Optional per-user permission overrides (admin-only; validated inside).
+    if (array_key_exists('permission_overrides', $input)) {
+        saveUserOverrides($newId, $input['permission_overrides'], $currentUser);
+    }
+
     DB::auditLog('admin', 'user_created', null, [
         'user_id'  => $newId,
         'username' => $username,
@@ -289,6 +306,11 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
         );
     }
 
+    // Optional per-user permission overrides (admin-only; validated inside).
+    if (array_key_exists('permission_overrides', $input)) {
+        saveUserOverrides($userId, $input['permission_overrides'], $currentUser);
+    }
+
     DB::auditLog('admin', 'user_updated', null, [
         'user_id'          => $userId,
         'role'             => $targetRole,
@@ -303,4 +325,57 @@ function updateUser(int $userId, ?array $input, array $currentUser): void {
         [$userId]
     );
     echo json_encode($user);
+}
+
+/**
+ * Replace a user's per-user permission overrides (the grant/deny layer that
+ * sits on top of their role). ADMIN-ONLY: a per-user grant/deny can widen or
+ * narrow real access, so — like role mutations — only administrators may set
+ * it. Every key is validated against the catalog and every effect against
+ * grant|deny; 'inherit'/empty entries mean "no override" and are dropped, and
+ * anything unrecognized is rejected rather than silently ignored. The write is
+ * a full replace of the user's override set.
+ */
+function saveUserOverrides(int $userId, $overrides, array $currentUser): void {
+    if (($currentUser['role'] ?? '') !== Auth::ROLE_ADMIN) {
+        throw new RuntimeException('Only an administrator can set per-user permission overrides.');
+    }
+    if (!is_array($overrides)) {
+        throw new RuntimeException('permission_overrides must be an array.');
+    }
+
+    $catalog = Auth::PERMISSIONS;
+    $clean = []; // key => effect, de-duplicated (last entry wins)
+    foreach ($overrides as $o) {
+        if (!is_array($o)) {
+            continue;
+        }
+        $key    = strtolower(trim((string)($o['key'] ?? $o['permission_key'] ?? '')));
+        $effect = strtolower(trim((string)($o['effect'] ?? '')));
+        if ($effect === '' || $effect === 'inherit') {
+            continue; // no override for this permission
+        }
+        if ($key === '' || !isset($catalog[$key])) {
+            throw new RuntimeException('Unknown permission key in overrides: ' . $key);
+        }
+        if ($effect !== 'grant' && $effect !== 'deny') {
+            throw new RuntimeException('Override effect must be "grant" or "deny".');
+        }
+        $clean[$key] = $effect;
+    }
+
+    DB::execute('DELETE FROM user_permission_overrides WHERE user_id = :p0', [$userId]);
+    foreach ($clean as $key => $effect) {
+        DB::execute(
+            'INSERT INTO user_permission_overrides (user_id, permission_key, effect) VALUES (:p0, :p1, :p2)',
+            [$userId, $key, $effect]
+        );
+    }
+    Auth::invalidateOverridesCache();
+
+    DB::auditLog('admin', 'user_overrides_updated', (int)($currentUser['id'] ?? 0), [
+        'user_id'   => $userId,
+        'overrides' => $clean,
+        'actor'     => $currentUser['username'] ?? null,
+    ]);
 }

@@ -7,7 +7,10 @@
 require_once __DIR__ . '/../lib/validator.php';
 
 function handleLogs(string $method, array $parts, ?array $input): void {
-    Auth::requireAuth();
+    // The audit trail exposes card numbers (from PIN-check logs), usernames,
+    // IP addresses, and settings/role-change payloads — gate it behind an
+    // explicit permission rather than any authenticated user.
+    Auth::requireAccess('view_logs');
 
     if ($method !== 'GET') {
         http_response_code(405);
