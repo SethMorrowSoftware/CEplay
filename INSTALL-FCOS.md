@@ -115,7 +115,7 @@ rebuilds while you're working on this. Clone it to a staging folder:
 
 ```bash
 cd /var/persist
-sudo git clone https://github.com/SethMorrowSoftware/NewCEPlay.git pause-groups-src
+sudo git clone https://github.com/SethMorrowSoftware/CEplay.git pause-groups-src
 ```
 
 > If the repo is private or on a different host, replace the URL with yours.
