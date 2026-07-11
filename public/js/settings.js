@@ -78,6 +78,7 @@
             content.appendChild(buildApiConfigSection(settings));
             content.appendChild(buildCardSystemSection());
             content.appendChild(buildTimezoneSection(settings));
+            content.appendChild(buildPayoutTargetSection(settings));
             content.appendChild(buildUsersSection(users.users || [], users));
             if (rolesData && rolesData.roles) {
                 content.appendChild(buildRolesSection(rolesData));
@@ -363,6 +364,52 @@
                     await API.put('settings', { timezone: tzSelect.value });
                     App.setTimezone(tzSelect.value);
                     App.toast('Timezone updated to ' + tzSelect.value + '.', 'success');
+                } catch (err) { App.toast(err.message, 'error'); }
+            }
+        }));
+
+        section.appendChild(body);
+        return section;
+    }
+
+    /**
+     * Payout target — the tickets-per-points threshold (percent) that the
+     * dashboard payout gauge and per-game payout column compare against.
+     * Stored in api_config as payout_target_pct; the API validates 1–100.
+     */
+    function buildPayoutTargetSection(data) {
+        const section = App.el('div', { className: 'card', style: { marginBottom: '1.5rem' } });
+        section.appendChild(App.el('div', { className: 'card-header' }, [
+            App.el('h3', { className: 'card-title', textContent: 'Payout Target' })
+        ]));
+
+        const body = App.el('div', { className: 'card-body' });
+        const input = App.el('input', {
+            className: 'form-input', type: 'number',
+            min: '1', max: '100', step: '0.5',
+            value: String(data.payout_target_pct !== undefined ? data.payout_target_pct : 33),
+            style: { maxWidth: '140px' },
+            'aria-label': 'Payout target percent'
+        });
+
+        body.appendChild(App.el('div', { className: 'form-group' }, [
+            App.el('label', { className: 'form-label', textContent: 'Target payout % (redemption games)' }),
+            input,
+            App.el('span', { className: 'text-muted text-sm',
+                textContent: 'Tickets dispensed per 100 points played. The dashboard payout gauge and the per-game Payout % column turn red above this.' })
+        ]));
+
+        body.appendChild(App.el('button', {
+            className: 'btn btn-primary', textContent: 'Save Payout Target',
+            onClick: async () => {
+                const val = parseFloat(input.value);
+                if (isNaN(val) || val < 1 || val > 100) {
+                    App.toast('Payout target must be between 1 and 100.', 'error');
+                    return;
+                }
+                try {
+                    await API.put('settings', { payout_target_pct: val });
+                    App.toast('Payout target set to ' + val + '%.', 'success');
                 } catch (err) { App.toast(err.message, 'error'); }
             }
         }));

@@ -78,6 +78,19 @@ try {
     Scheduler::queueAtJobs($today);
     echo "  Done.\n";
 
+    // Step 5a: Snapshot the database BEFORE tonight's rollup + purge mutate
+    // it. game_daily_stats is irreplaceable reporting history, and update.sh
+    // only backs up on updates — this is the disaster-recovery net for every
+    // other night. Failure is a warning, never a blocker.
+    echo "Backing up database...\n";
+    try {
+        $bk = Scheduler::backupDatabase();
+        echo "  Snapshot: {$bk['path']} (" . round($bk['bytes'] / 1048576, 1) . " MB, "
+            . "{$bk['kept']} kept, {$bk['pruned']} pruned)\n";
+    } catch (Exception $e) {
+        echo "  WARNING: Database backup failed: " . $e->getMessage() . "\n";
+    }
+
     // Step 5: Roll up the raw play feed into the permanent per-game daily
     // summary BEFORE purging. This is what makes month/year reporting possible
     // — the raw feed is only kept for a short window, but game_daily_stats is
