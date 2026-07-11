@@ -7,6 +7,7 @@
  * GET    /api/games/transactions/top    — Top-games aggregation (cached locally)
  * GET    /api/games/transactions/stats  — Per-game ticket/play stats across time windows
  * GET    /api/games/transactions/payout — Ticket payout % (tickets/points) per window
+ * GET    /api/games/transactions/ticket-watch — Top ticket earners today with farming signals
  * POST   /api/games/sync               — Force sync game states from CenterEdge
  * POST   /api/games/transactions/poll  — Force-poll the play feed (manual catch-up)
  * GET    /api/games/{id}               — Single game (live from CenterEdge)
@@ -52,6 +53,10 @@ function handleGames(string $method, array $parts, ?array $input): void {
         }
         if ($method === 'GET' && $sub === 'payout') {
             gamesPayoutStats();
+            return;
+        }
+        if ($method === 'GET' && $sub === 'ticket-watch') {
+            gamesTicketWatch();
             return;
         }
     }
@@ -687,6 +692,141 @@ function gamesPayoutStats(): void {
         ],
         'target_pct' => $target,
         'redemption_games' => $redemptionGames,
+    ]);
+}
+
+/**
+ * Ticket-farming watch: today's top ticket-earning cards, each with the
+ * context that separates a lucky jackpot from active farming (ticket-jam
+ * exploits, misconfigured payouts being hammered):
+ *
+ *   - plays / tickets / distinct games / tickets-per-play today
+ *   - top game and what share of the card's plays it absorbs
+ *   - the card's tickets-per-play ON that game vs the game's average
+ *     across ALL cards today (ratio_multiplier)
+ *
+ * Three transparent signals, each reported so the UI can explain itself:
+ *   volume        — tickets_today >= threshold (config ticket_watch_min_tickets,
+ *                   default 500)
+ *   concentration — >= 8 plays with >= 75% of them on one game
+ *   hot_ratio     — >= 5 plays on the top game at >= 1.5x that game's
+ *                   average tickets-per-play
+ *
+ * watch = at least TWO signals, so a single legitimate big win (volume
+ * only — one play can't trip the repetition signals) never gets flagged.
+ * Card numbers appear here exactly as they already do in the live feed,
+ * behind the same analytics gate. No cash fields involved.
+ */
+function gamesTicketWatch(): void {
+    $tz = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try {
+        $tzObj = new DateTimeZone($tz);
+    } catch (Exception $e) {
+        $tzObj = new DateTimeZone('UTC');
+    }
+    $todayCutoff = (new DateTime('today 00:00:00', $tzObj))
+        ->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z');
+
+    $minTickets = (float)(DB::getConfig('ticket_watch_min_tickets') ?: 500);
+
+    // Top earners today. 000000 = cardless/credit-card plays per spec — no
+    // card to farm onto, exclude.
+    $cards = DB::query(
+        'SELECT card_number,
+                COUNT(*) AS plays,
+                SUM(redemption_tickets) AS tickets,
+                COUNT(DISTINCT game_id) AS games,
+                MIN(transaction_time) AS first_play,
+                MAX(transaction_time) AS last_play
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0
+           AND card_number != \'\' AND card_number != \'000000\'
+         GROUP BY card_number
+         HAVING tickets > 0
+         ORDER BY tickets DESC
+         LIMIT 10',
+        [$todayCutoff]
+    );
+
+    // Per-game averages today are shared across rows — compute once.
+    $gameAvg = [];
+    foreach (DB::query(
+        'SELECT game_id, COUNT(*) AS plays, SUM(redemption_tickets) AS tickets
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0 AND game_id != \'\'
+         GROUP BY game_id',
+        [$todayCutoff]
+    ) as $g) {
+        $gameAvg[(string)$g['game_id']] = [
+            'plays'   => (int)$g['plays'],
+            'tickets' => (float)$g['tickets'],
+        ];
+    }
+
+    $out = [];
+    foreach ($cards as $c) {
+        $cardNumber = (string)$c['card_number'];
+        $plays = (int)$c['plays'];
+        $tickets = (float)$c['tickets'];
+
+        // The card's most ticket-productive game today.
+        $top = DB::queryOne(
+            'SELECT t.game_id,
+                    COALESCE(NULLIF(MAX(t.game_description), \'\'), MAX(c.game_name), t.game_id) AS game_name,
+                    COUNT(*) AS plays,
+                    SUM(t.redemption_tickets) AS tickets
+             FROM game_play_transactions t
+             LEFT JOIN game_state_cache c ON c.game_id = t.game_id
+             WHERE t.transaction_time >= :p0 AND t.card_number = :p1 AND t.game_id != \'\'
+             GROUP BY t.game_id
+             ORDER BY tickets DESC
+             LIMIT 1',
+            [$todayCutoff, $cardNumber]
+        );
+
+        $topGameId = (string)($top['game_id'] ?? '');
+        $topPlays = (int)($top['plays'] ?? 0);
+        $topTickets = (float)($top['tickets'] ?? 0);
+        $topShare = $plays > 0 ? $topPlays / $plays : 0;
+        $cardTpp = $topPlays > 0 ? $topTickets / $topPlays : 0;
+
+        $avg = $gameAvg[$topGameId] ?? ['plays' => 0, 'tickets' => 0.0];
+        $gameTpp = $avg['plays'] > 0 ? $avg['tickets'] / $avg['plays'] : 0;
+        $multiplier = $gameTpp > 0 ? $cardTpp / $gameTpp : 1.0;
+
+        $flags = [];
+        if ($tickets >= $minTickets) {
+            $flags[] = 'volume';
+        }
+        if ($plays >= 8 && $topShare >= 0.75) {
+            $flags[] = 'concentration';
+        }
+        if ($topPlays >= 5 && $multiplier >= 1.5) {
+            $flags[] = 'hot_ratio';
+        }
+
+        $out[] = [
+            'card_number'      => $cardNumber,
+            'plays'            => $plays,
+            'tickets'          => round($tickets, 2),
+            'games'            => (int)$c['games'],
+            'tickets_per_play' => $plays > 0 ? round($tickets / $plays, 1) : 0,
+            'top_game_id'      => $topGameId,
+            'top_game_name'    => (string)($top['game_name'] ?? ''),
+            'top_game_plays'   => $topPlays,
+            'top_game_share'   => round($topShare * 100),
+            'ratio_multiplier' => round($multiplier, 1),
+            'flags'            => $flags,
+            'watch'            => count($flags) >= 2,
+            'first_play'       => $c['first_play'] ?: null,
+            'last_play'        => $c['last_play'] ?: null,
+        ];
+    }
+
+    echo json_encode([
+        'cards'       => $out,
+        'min_tickets' => $minTickets,
+        'window'      => 'today',
     ]);
 }
 

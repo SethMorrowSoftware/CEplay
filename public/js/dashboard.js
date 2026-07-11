@@ -371,6 +371,19 @@
                     App.el('div', { id: 'dash-topplays-body', className: 'card-body' }, [App.loading()])
                 ])
             ]));
+
+            // Ticket watch — top earners today with farming signals. Card
+            // numbers already appear in the live feed for these roles.
+            container.appendChild(App.el('div', { className: 'card mt-2', id: 'ticket-watch-card' }, [
+                App.el('div', { className: 'card-header flex-between' }, [
+                    App.el('div', {}, [
+                        App.el('div', { className: 'card-title', textContent: 'Ticket watch' }),
+                        App.el('div', { className: 'text-sm text-secondary', id: 'ticket-watch-subtitle',
+                            textContent: 'Top ticket earners today — ⚠ rows trip two or more farming signals' })
+                    ])
+                ]),
+                App.el('div', { className: 'card-body', id: 'ticket-watch-body' }, [App.loading()])
+            ]));
         }
 
         // Group controls (collapsible)
@@ -689,6 +702,7 @@
                 loadFeed();
                 loadTopGames();
                 loadPayout();
+                loadTicketWatch();
             }
 
             // Kiosk health snapshot + recent automation activity feed are
@@ -1303,6 +1317,94 @@
             renderPayout();
         } catch (err) {
             // Non-fatal: the rest of the dashboard works without the gauge.
+        }
+    }
+
+    /**
+     * Fetch today's top ticket earners + farming signals and render the
+     * Ticket Watch card. Fire-and-forget from the poll loop.
+     */
+    async function loadTicketWatch() {
+        var body = document.getElementById('ticket-watch-body');
+        if (!body) return;
+        var data;
+        try {
+            data = await API.get('games/transactions/ticket-watch');
+        } catch (err) {
+            return; // leave previous render in place
+        }
+        body = document.getElementById('ticket-watch-body');
+        if (!body) return; // navigated away mid-fetch
+        body.innerHTML = '';
+
+        var cards = (data && data.cards) || [];
+        if (cards.length === 0) {
+            body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                textContent: 'No ticket-earning cards yet today.' }));
+            return;
+        }
+
+        var FLAG_LABEL = {
+            volume: 'high volume',
+            concentration: 'one game',
+            hot_ratio: 'above game avg'
+        };
+
+        var scroll = App.el('div', { className: 'table-scroll-container' });
+        var table = App.el('table', { className: 'data-table' }, [
+            App.el('thead', {}, [
+                App.el('tr', {}, [
+                    App.el('th', { textContent: 'Card' }),
+                    App.el('th', { className: 'text-right', textContent: 'Tickets' }),
+                    App.el('th', { className: 'text-right', textContent: 'Plays' }),
+                    App.el('th', { className: 'text-right', textContent: 'Tix/Play' }),
+                    App.el('th', { textContent: 'Top game' }),
+                    App.el('th', { className: 'text-right', textContent: 'vs game avg' }),
+                    App.el('th', { textContent: 'Signals' })
+                ])
+            ])
+        ]);
+        var tbody = App.el('tbody', {});
+        cards.forEach(function(c) {
+            var cardCell = App.el('td', {}, [
+                c.watch ? App.el('span', { textContent: '⚠ ', title: 'Two or more farming signals' }) : null,
+                App.el('a', {
+                    href: '#/cards?number=' + encodeURIComponent(c.card_number),
+                    className: 'feed-row-card-link' + (c.watch ? ' text-danger' : ''),
+                    textContent: c.card_number,
+                    title: 'Look up card ' + c.card_number
+                })
+            ].filter(Boolean));
+
+            var topGameTxt = c.top_game_name
+                ? c.top_game_name + ' (' + c.top_game_share + '% of plays)'
+                : '—';
+
+            var signals = (c.flags || []).map(function(f) { return FLAG_LABEL[f] || f; }).join(' · ') || '—';
+
+            var row = App.el('tr', {}, [
+                cardCell,
+                App.el('td', { className: 'text-right num-cell', textContent: Math.round(c.tickets).toLocaleString() }),
+                App.el('td', { className: 'text-right num-cell', textContent: String(c.plays) }),
+                App.el('td', { className: 'text-right num-cell', textContent: String(c.tickets_per_play) }),
+                App.el('td', { className: 'text-sm', textContent: topGameTxt,
+                    style: { maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                    title: topGameTxt }),
+                App.el('td', { className: 'text-right num-cell' + (c.ratio_multiplier >= 1.5 ? ' text-danger' : ''),
+                    textContent: c.ratio_multiplier + '×',
+                    title: 'This card’s tickets-per-play on its top game vs everyone else’s average on that game today' }),
+                App.el('td', { className: 'text-sm ' + (c.watch ? 'text-danger' : 'text-secondary'), textContent: signals })
+            ]);
+            tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        scroll.appendChild(table);
+        body.appendChild(scroll);
+
+        var subtitle = document.getElementById('ticket-watch-subtitle');
+        if (subtitle && data.min_tickets) {
+            subtitle.textContent = 'Top ticket earners today — ⚠ rows trip two or more farming signals'
+                + ' (volume threshold ' + Math.round(data.min_tickets).toLocaleString() + ' tix)';
         }
     }
 
