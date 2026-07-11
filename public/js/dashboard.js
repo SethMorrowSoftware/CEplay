@@ -28,6 +28,7 @@
     var feedMeta = null;        // { last_poll_at, total_cached }
     var ticketStats = {};   // Map of game_id -> { tickets_today, plays_today, ... }
     var ticketTotals = null; // Aggregate totals across the venue
+    var payoutData = null;   // Ticket payout % per window + target, from /transactions/payout
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -295,6 +296,28 @@
             // Compact KPI strip below the hero — Plays / Avg per play /
             // Unique cards / 7-day tickets. Populated by renderTicketSummary().
             container.appendChild(App.el('div', { id: 'ticket-summary', className: 'ticket-summary mt-2' }));
+
+            // Ticket payout gauge — tickets dispensed per point played, per
+            // window, against the house target (default ≤33%). Populated by
+            // renderPayout() on every poll.
+            container.appendChild(App.el('div', { className: 'card mt-2', id: 'payout-card' }, [
+                App.el('div', { className: 'card-header flex-between' }, [
+                    App.el('div', {}, [
+                        App.el('div', { className: 'card-title', textContent: 'Ticket payout %' }),
+                        App.el('div', { className: 'text-sm text-secondary', textContent: 'Tickets dispensed per 100 points played' })
+                    ]),
+                    App.el('span', { id: 'payout-caption', className: 'text-sm text-secondary' })
+                ]),
+                App.el('div', { className: 'card-body' }, [
+                    App.el('div', { style: { height: '150px' } }, [
+                        App.el('canvas', {
+                            id: 'payout-canvas',
+                            style: { width: '100%', height: '100%', display: 'block' },
+                            'aria-label': 'Ticket payout percentage by time window vs target'
+                        })
+                    ])
+                ])
+            ]));
         }
 
         // Two-column row: live play feed on the left, top games on the right.
@@ -660,6 +683,7 @@
             if (canSeeSales) {
                 loadFeed();
                 loadTopGames();
+                loadPayout();
             }
 
             // Kiosk health snapshot + recent automation activity feed are
@@ -1036,6 +1060,13 @@
         var amt = (parseFloat(t.regular_points) || 0) + (parseFloat(t.bonus_points) || 0);
         var tickets = parseFloat(t.redemption_tickets) || 0;
         if (amt) meta.push(formatPoints(amt) + ' pts');
+        // Direct credit-card payment at the reader. The server blanks these
+        // fields for roles without view_revenue, so rendering is enough.
+        if (t.cc_card_type || t.cc_last4) {
+            meta.push((t.cc_card_type || 'card') + (t.cc_last4 ? ' •' + t.cc_last4 : ''));
+        } else if ((parseFloat(t.credit_card_amount) || 0) > 0) {
+            meta.push('credit card');
+        }
 
         // Tiered ticket-amount class for visual emphasis on big drops.
         // 100+ tix = jackpot tier (gold + glow); 25+ = high; <25 = base.
@@ -1255,6 +1286,150 @@
      * Paint a 12-hour sparkline (line + area + dots) onto the hero canvas.
      * Honors device pixel ratio so the line stays crisp on retina displays.
      */
+    /**
+     * Fetch the payout ratios and repaint the gauge. Fire-and-forget from
+     * the poll loop — a failed fetch leaves the previous paint in place.
+     */
+    async function loadPayout() {
+        try {
+            var data = await API.get('games/transactions/payout');
+            if (!document.getElementById('payout-canvas')) return; // navigated away
+            payoutData = data;
+            renderPayout();
+        } catch (err) {
+            // Non-fatal: the rest of the dashboard works without the gauge.
+        }
+    }
+
+    var PAYOUT_WINDOWS = [
+        ['hour',  'Hour'],
+        ['today', 'Today'],
+        ['week',  'Week'],
+        ['month', 'Month'],
+        ['all',   'All time']
+    ];
+
+    function renderPayout() {
+        if (!payoutData) return;
+        var canvas = document.getElementById('payout-canvas');
+        var caption = document.getElementById('payout-caption');
+        if (!canvas) return;
+
+        var target = payoutData.target_pct || 33;
+        if (caption) {
+            var todayWin = (payoutData.windows || {}).today || {};
+            var todayTxt = todayWin.ratio_pct === null || todayWin.ratio_pct === undefined
+                ? 'no point plays yet today'
+                : 'today ' + todayWin.ratio_pct + '%';
+            caption.textContent = todayTxt + ' · target ≤ ' + target + '%';
+        }
+        paintPayoutBars(canvas, payoutData);
+    }
+
+    /**
+     * Hand-painted bar gauge (same approach as the hero sparkline — no
+     * chart library): one bar per window, green at/below the target payout,
+     * red above it, with a dashed line marking the target itself. Windows
+     * with zero points played render as an empty slot with an em-dash.
+     */
+    function paintPayoutBars(canvas, data) {
+        var dpr = window.devicePixelRatio || 1;
+        var rect = canvas.getBoundingClientRect();
+        var W = Math.max(120, Math.floor(rect.width));
+        var H = Math.max(80, Math.floor(rect.height));
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        var ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+
+        var styles = getComputedStyle(document.documentElement);
+        var okColor     = (styles.getPropertyValue('--success') || '#3dd68c').trim();
+        var overColor   = (styles.getPropertyValue('--danger') || '#e5534b').trim();
+        var textColor   = (styles.getPropertyValue('--text-secondary') || '#8a93ab').trim();
+        var borderColor = (styles.getPropertyValue('--border') || '#1e2638').trim();
+
+        var target = data.target_pct || 33;
+        var wins = data.windows || {};
+        var ratios = PAYOUT_WINDOWS.map(function(w) {
+            var win = wins[w[0]] || {};
+            return (win.ratio_pct === null || win.ratio_pct === undefined) ? null : win.ratio_pct;
+        });
+
+        // Scale so the target line always sits inside the plot, even when
+        // every ratio is far below (or above) it.
+        var maxRatio = target;
+        ratios.forEach(function(r) { if (r !== null && r > maxRatio) maxRatio = r; });
+        var scaleMax = maxRatio * 1.25;
+
+        var padTop = 18;    // room for % labels above bars
+        var padBottom = 18; // room for window labels
+        var plotH = H - padTop - padBottom;
+        var n = PAYOUT_WINDOWS.length;
+        var slotW = W / n;
+        var barW = Math.min(56, slotW * 0.5);
+
+        var yFor = function(pct) { return padTop + plotH - (pct / scaleMax) * plotH; };
+
+        // Baseline
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, padTop + plotH + 0.5);
+        ctx.lineTo(W, padTop + plotH + 0.5);
+        ctx.stroke();
+
+        // Bars + labels
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        PAYOUT_WINDOWS.forEach(function(w, i) {
+            var cx = slotW * i + slotW / 2;
+            var r = ratios[i];
+
+            ctx.fillStyle = textColor;
+            ctx.fillText(w[1], cx, H - 5);
+
+            if (r === null) {
+                ctx.fillText('—', cx, padTop + plotH - 6);
+                return;
+            }
+
+            var y = yFor(Math.max(0, r));
+            var barH = Math.max(2, padTop + plotH - y);
+            var color = r <= target ? okColor : overColor;
+            ctx.fillStyle = color;
+            var radius = Math.min(4, barW / 2, barH);
+            var x0 = cx - barW / 2;
+            // Rounded-top bar
+            ctx.beginPath();
+            ctx.moveTo(x0, padTop + plotH);
+            ctx.lineTo(x0, y + radius);
+            ctx.arcTo(x0, y, x0 + radius, y, radius);
+            ctx.lineTo(x0 + barW - radius, y);
+            ctx.arcTo(x0 + barW, y, x0 + barW, y + radius, radius);
+            ctx.lineTo(x0 + barW, padTop + plotH);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = color;
+            ctx.fillText(r + '%', cx, y - 5);
+        });
+
+        // Dashed target line, labeled at the right edge.
+        var ty = yFor(target);
+        ctx.strokeStyle = textColor;
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, ty + 0.5);
+        ctx.lineTo(W, ty + 0.5);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = textColor;
+        ctx.fillText(target + '%', W - 4, ty - 4);
+    }
+
     function paintHeroSparkline(canvas, buckets) {
         if (!canvas) return;
         var dpr = window.devicePixelRatio || 1;
@@ -1570,6 +1745,22 @@
                 label: 'Plays this week',
                 value: formatBigNumber(t.plays_week || 0),
                 hint: formatBigNumber(Math.round(t.tickets_week || 0)) + ' tickets across the week',
+                cls: ''
+            },
+            {
+                label: 'Time-play plays today',
+                value: formatBigNumber(t.time_plays_today || 0),
+                hint: (t.plays_today || 0) > 0
+                    ? Math.round(((t.time_plays_today || 0) / t.plays_today) * 100) + '% of today · wristbands & timed sessions'
+                    : 'wristbands & timed sessions',
+                cls: ''
+            },
+            {
+                label: 'Privilege plays today',
+                value: formatBigNumber(t.privilege_plays_today || 0),
+                hint: (t.plays_today || 0) > 0
+                    ? Math.round(((t.privilege_plays_today || 0) / t.plays_today) * 100) + '% of today · ride & session passes'
+                    : 'ride & session passes',
                 cls: ''
             }
         ];

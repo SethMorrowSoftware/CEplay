@@ -245,6 +245,9 @@
         grid.appendChild(chartCard('Plays by day of week', 'analytics-chart-dow', '', 220));
         grid.appendChild(chartCard('Top games — plays', 'analytics-chart-top-plays', '', 280));
         grid.appendChild(chartCard('Top games — tickets', 'analytics-chart-top-tickets', '', 280));
+        grid.appendChild(chartCard('Category share — plays', 'analytics-chart-cat-share', '', 240,
+            'Games in multiple categories count in each'));
+        grid.appendChild(chartCard('Tickets by category', 'analytics-chart-cat-tickets', '', 240));
         // Revenue mix surfaces cash totals — hidden from the tech role.
         if (canSeeMoney) {
             grid.appendChild(chartCard('Revenue mix', 'analytics-chart-revenue', '', 240));
@@ -256,14 +259,16 @@
         return grid;
     }
 
-    function chartCard(title, canvasId, extraClass, height) {
+    function chartCard(title, canvasId, extraClass, height, subtitle) {
         var canvas = App.el('canvas', { id: canvasId });
         // Chart.js sizes from the parent's height; lock min-height for layout.
         var box = App.el('div', { className: 'analytics-chart-box', style: { height: (height || 220) + 'px' } }, [canvas]);
+        var header = [App.el('div', { className: 'card-title', textContent: title })];
+        if (subtitle) {
+            header.push(App.el('div', { className: 'text-muted text-sm', textContent: subtitle }));
+        }
         return App.el('div', { className: 'card analytics-card ' + (extraClass || '') }, [
-            App.el('div', { className: 'analytics-card-header' }, [
-                App.el('div', { className: 'card-title', textContent: title })
-            ]),
+            App.el('div', { className: 'analytics-card-header' }, header),
             box
         ]);
     }
@@ -502,6 +507,25 @@
         registerChart('analytics-chart-top-tickets', horizontalBarConfig(
             (charts.top_games_tickets || []).map(function(g) { return g.game_name; }),
             (charts.top_games_tickets || []).map(function(g) { return Math.round(g.tickets || 0); }),
+            'Tickets',
+            theme.tickets,
+            theme
+        ));
+
+        // Category breakdown — plays share donut + tickets bar. Categories
+        // come straight from CenterEdge (e.g. Arcade / Rides / Batting Cages).
+        var byCat = charts.by_category || [];
+        var catPalette = palette(byCat.length, theme);
+        registerChart('analytics-chart-cat-share', donutConfig(
+            byCat.map(function(c) { return c.name; }),
+            byCat.map(function(c) { return c.plays; }),
+            catPalette,
+            theme,
+            'plays'
+        ));
+        registerChart('analytics-chart-cat-tickets', horizontalBarConfig(
+            byCat.map(function(c) { return c.name; }),
+            byCat.map(function(c) { return Math.round(c.tickets || 0); }),
             'Tickets',
             theme.tickets,
             theme

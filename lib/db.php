@@ -354,6 +354,24 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
 
+        // Migration: direct credit-card payment fields on the play feed
+        // (amount.creditCard + creditCardDetails brand/last-4 per spec).
+        // Older builds dropped these at ingest, under-counting revenue for
+        // plays paid by bank card at the reader. Cardholder name / approval
+        // code are deliberately NOT given columns — they live only in
+        // raw_payload, which no API endpoint returns.
+        foreach ([
+            'ALTER TABLE game_play_transactions ADD COLUMN credit_card_amount REAL NOT NULL DEFAULT 0',
+            "ALTER TABLE game_play_transactions ADD COLUMN cc_card_type TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_play_transactions ADD COLUMN cc_last4 TEXT NOT NULL DEFAULT ''",
+        ] as $gptMigration) {
+            try {
+                $db->exec($gptMigration);
+            } catch (Exception $e) {
+                // Column already exists — ignore
+            }
+        }
+
         // One-time migration: rewrite transaction_time to canonical UTC
         // "YYYY-MM-DDTHH:MM:SSZ". CenterEdge delivers these with a local
         // offset (e.g. "...T15:00:00.000-04:00") and older builds stored that

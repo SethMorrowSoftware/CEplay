@@ -6,6 +6,7 @@
  * GET    /api/games/transactions/recent — Recent plays (cached locally)
  * GET    /api/games/transactions/top    — Top-games aggregation (cached locally)
  * GET    /api/games/transactions/stats  — Per-game ticket/play stats across time windows
+ * GET    /api/games/transactions/payout — Ticket payout % (tickets/points) per window
  * POST   /api/games/sync               — Force sync game states from CenterEdge
  * POST   /api/games/transactions/poll  — Force-poll the play feed (manual catch-up)
  * GET    /api/games/{id}               — Single game (live from CenterEdge)
@@ -47,6 +48,10 @@ function handleGames(string $method, array $parts, ?array $input): void {
         }
         if ($method === 'GET' && $sub === 'stats') {
             gamesTicketStats();
+            return;
+        }
+        if ($method === 'GET' && $sub === 'payout') {
+            gamesPayoutStats();
             return;
         }
     }
@@ -317,7 +322,8 @@ function gamesRecentTransactions(bool $hideMoney = false): void {
     $sql = 'SELECT t.transaction_id, t.feed_name, t.card_number, t.type, t.game_id,
                    COALESCE(NULLIF(t.game_description, \'\'), c.game_name) AS game_name,
                    t.transaction_time, t.regular_points, t.bonus_points, t.redemption_tickets,
-                   t.cash_amount, t.used_time_play, t.used_play_privilege, t.fetched_at
+                   t.cash_amount, t.credit_card_amount, t.cc_card_type, t.cc_last4,
+                   t.used_time_play, t.used_play_privilege, t.fetched_at
             FROM game_play_transactions t
             LEFT JOIN game_state_cache c ON c.game_id = t.game_id ';
 
@@ -340,7 +346,13 @@ function gamesRecentTransactions(bool $hideMoney = false): void {
         $r['used_time_play'] = (bool)$r['used_time_play'];
         $r['used_play_privilege'] = (bool)$r['used_play_privilege'];
         if ($hideMoney) {
+            // Payment data is view_revenue-gated: zero the amounts AND blank
+            // the credit-card brand/last-4 so nothing about how a play was
+            // paid reaches roles without that permission.
             $r['cash_amount'] = 0.0;
+            $r['credit_card_amount'] = 0.0;
+            $r['cc_card_type'] = '';
+            $r['cc_last4'] = '';
         }
         return $r;
     }, $rows);
@@ -407,7 +419,7 @@ function gamesTopTransactions(bool $hideMoney = false): void {
                    SUM(t.regular_points) AS sum_regular,
                    SUM(t.bonus_points) AS sum_bonus,
                    SUM(t.redemption_tickets) AS sum_tickets,
-                   SUM(t.cash_amount) AS sum_cash,
+                   SUM(t.cash_amount + t.credit_card_amount) AS sum_cash,
                    MAX(t.transaction_time) AS last_play
             FROM game_play_transactions t
             LEFT JOIN game_state_cache c ON c.game_id = t.game_id ';
@@ -496,6 +508,8 @@ function gamesTicketStats(): void {
                    SUM(CASE WHEN t.transaction_time >= :p1 THEN t.redemption_tickets ELSE 0 END) AS tickets_today,
                    SUM(CASE WHEN t.transaction_time >= :p2 THEN 1 ELSE 0 END) AS plays_week,
                    SUM(CASE WHEN t.transaction_time >= :p2 THEN t.redemption_tickets ELSE 0 END) AS tickets_week,
+                   SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays_today,
+                   SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays_today,
                    MAX(t.transaction_time) AS last_play
             FROM game_play_transactions t
             WHERE t.game_id != \'\'
@@ -509,6 +523,7 @@ function gamesTicketStats(): void {
         'tickets_today' => 0.0, 'plays_today' => 0,
         'tickets_week' => 0.0, 'plays_week' => 0,
         'tickets_all' => 0.0, 'plays_all' => 0,
+        'time_plays_today' => 0, 'privilege_plays_today' => 0,
     ];
     foreach ($rows as $r) {
         $gid = (string)$r['game_id'];
@@ -531,6 +546,8 @@ function gamesTicketStats(): void {
         $totals['plays_week']    += (int)$r['plays_week'];
         $totals['tickets_all']   += (float)$r['tickets_all'];
         $totals['plays_all']     += (int)$r['plays_all'];
+        $totals['time_plays_today']      += (int)$r['time_plays_today'];
+        $totals['privilege_plays_today'] += (int)$r['privilege_plays_today'];
     }
 
     $meta = DB::queryOne('SELECT MAX(fetched_at) AS last_poll, COUNT(*) AS total_cached FROM game_play_transactions');
@@ -549,6 +566,92 @@ function gamesTicketStats(): void {
 }
 
 /**
+ * Ticket payout ratio (tickets dispensed per point played, as a percent)
+ * across five windows: hour / today / week / month / all-time. Powers the
+ * dashboard payout gauge — operators watch that this stays at or below the
+ * configured target (default 33%).
+ *
+ * Hour/today/week come from the raw feed. Month (last 30 local days) and
+ * all-time stitch the permanent game_daily_stats rollup (dates BEFORE
+ * today) with today's raw sums — the nightly rollup may hold a partial
+ * row for the current date, so today always comes from the raw feed to
+ * avoid double-counting. Points = regular + bonus (both are paid play).
+ * No cash fields are involved, so this needs no view_revenue scrub; the
+ * route shares the /transactions analytics gate.
+ */
+function gamesPayoutStats(): void {
+    $tz = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try {
+        $tzObj = new DateTimeZone($tz);
+    } catch (Exception $e) {
+        $tzObj = new DateTimeZone('UTC');
+    }
+    $utc = new DateTimeZone('UTC');
+    $fmt = 'Y-m-d\TH:i:s\Z';
+
+    $todayStartLocal = new DateTime('today 00:00:00', $tzObj);
+    $hourCutoff  = (new DateTime('-1 hour', $utc))->format($fmt);
+    $todayCutoff = (clone $todayStartLocal)->setTimezone($utc)->format($fmt);
+    $weekCutoff  = (new DateTime('-7 days', $utc))->format($fmt);
+    $todayLocalDate = $todayStartLocal->format('Y-m-d');
+    $monthStartDate = (clone $todayStartLocal)->modify('-29 days')->format('Y-m-d');
+
+    $raw = DB::queryOne(
+        'SELECT
+            SUM(CASE WHEN transaction_time >= :p0 THEN redemption_tickets ELSE 0 END) AS t_hour,
+            SUM(CASE WHEN transaction_time >= :p0 THEN regular_points + bonus_points ELSE 0 END) AS p_hour,
+            SUM(CASE WHEN transaction_time >= :p1 THEN redemption_tickets ELSE 0 END) AS t_today,
+            SUM(CASE WHEN transaction_time >= :p1 THEN regular_points + bonus_points ELSE 0 END) AS p_today,
+            SUM(CASE WHEN transaction_time >= :p2 THEN redemption_tickets ELSE 0 END) AS t_week,
+            SUM(CASE WHEN transaction_time >= :p2 THEN regular_points + bonus_points ELSE 0 END) AS p_week
+         FROM game_play_transactions',
+        [$hourCutoff, $todayCutoff, $weekCutoff]
+    );
+
+    $rollMonth = DB::queryOne(
+        'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
+         FROM game_daily_stats
+         WHERE stat_date >= :p0 AND stat_date < :p1',
+        [$monthStartDate, $todayLocalDate]
+    );
+    $rollAll = DB::queryOne(
+        'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
+         FROM game_daily_stats
+         WHERE stat_date < :p0',
+        [$todayLocalDate]
+    );
+
+    $mk = function ($tickets, $points) {
+        $tickets = (float)($tickets ?? 0);
+        $points  = (float)($points ?? 0);
+        return [
+            'tickets'   => round($tickets, 2),
+            'points'    => round($points, 2),
+            'ratio_pct' => $points > 0 ? round(($tickets / $points) * 100, 1) : null,
+        ];
+    };
+
+    $target = (float)(DB::getConfig('payout_target_pct') ?: 33);
+
+    echo json_encode([
+        'windows' => [
+            'hour'  => $mk($raw['t_hour'] ?? 0, $raw['p_hour'] ?? 0),
+            'today' => $mk($raw['t_today'] ?? 0, $raw['p_today'] ?? 0),
+            'week'  => $mk($raw['t_week'] ?? 0, $raw['p_week'] ?? 0),
+            'month' => $mk(
+                (float)($rollMonth['t'] ?? 0) + (float)($raw['t_today'] ?? 0),
+                (float)($rollMonth['p'] ?? 0) + (float)($raw['p_today'] ?? 0)
+            ),
+            'all'   => $mk(
+                (float)($rollAll['t'] ?? 0) + (float)($raw['t_today'] ?? 0),
+                (float)($rollAll['p'] ?? 0) + (float)($raw['p_today'] ?? 0)
+            ),
+        ],
+        'target_pct' => $target,
+    ]);
+}
+
+/**
  * Force-poll the upstream play feed (manual catch-up button).
  * Normally the watchdog cron handles this every minute.
  */
@@ -561,11 +664,13 @@ function gamesPollTransactions(): void {
     }
 
     try {
-        $summary = $client->pollGameTransactions('default');
+        // Poll every feed the card system advertises, same as the watchdog.
+        $summary = $client->pollAllGameTransactionFeeds();
         echo json_encode([
-            'success' => true,
+            'success' => empty($summary['errors']),
             'fetched' => $summary['fetched'],
-            'last_id' => $summary['last_id'],
+            'feeds'   => array_keys($summary['feeds']),
+            'errors'  => (object)$summary['errors'],
             'polled_at' => gmdate('Y-m-d H:i:s'),
         ]);
     } catch (RuntimeException $e) {

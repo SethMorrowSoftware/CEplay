@@ -256,6 +256,49 @@ class CenterEdgeClient {
     }
 
     /**
+     * Fetch ALL privilege groups (e.g. ride passes, cage sessions) from
+     * CenterEdge. Only valid when capabilities report privileges.isSupported.
+     */
+    public function getPrivilegeGroups(): array {
+        return $this->fetchAllPaginated('/privilegeGroups', 'privilegeGroups');
+    }
+
+    /**
+     * Fetch ALL time play groups (wristband/free-play groupings) from
+     * CenterEdge. Only valid when capabilities include a timePlay section.
+     */
+    public function getTimePlayGroups(): array {
+        return $this->fetchAllPaginated('/timePlayGroups', 'timePlayGroups');
+    }
+
+    /**
+     * Cached wrapper for getPrivilegeGroups(). Same TTL semantics as
+     * getCategoriesCached(). Group names are display-only, so stale is fine.
+     */
+    public function getPrivilegeGroupsCached(int $maxAgeSeconds = self::STATIC_CACHE_TTL): array {
+        $cached = self::readJsonCache('cache_privilege_groups', $maxAgeSeconds);
+        if ($cached !== null) {
+            return $cached;
+        }
+        $fresh = $this->getPrivilegeGroups();
+        self::writeJsonCache('cache_privilege_groups', $fresh);
+        return $fresh;
+    }
+
+    /**
+     * Cached wrapper for getTimePlayGroups().
+     */
+    public function getTimePlayGroupsCached(int $maxAgeSeconds = self::STATIC_CACHE_TTL): array {
+        $cached = self::readJsonCache('cache_timeplay_groups', $maxAgeSeconds);
+        if ($cached !== null) {
+            return $cached;
+        }
+        $fresh = $this->getTimePlayGroups();
+        self::writeJsonCache('cache_timeplay_groups', $fresh);
+        return $fresh;
+    }
+
+    /**
      * Drop the cached categories payload. Called from POST /api/games/sync
      * so an operator who just clicked "Sync" sees the latest data.
      */
@@ -415,6 +458,54 @@ class CenterEdgeClient {
     }
 
     /**
+     * Game transaction feed names advertised by the card system's
+     * capabilities (games.transactionFeedNames). Per spec, a missing
+     * property means a single feed named "default". Falls back to
+     * ['default'] on any capabilities failure so polling never stops.
+     */
+    public function getTransactionFeedNames(): array {
+        try {
+            $caps = $this->getCapabilitiesCached();
+        } catch (Exception $e) {
+            return ['default'];
+        }
+        $feeds = $caps['games']['transactionFeedNames'] ?? null;
+        if (!is_array($feeds)) {
+            return ['default'];
+        }
+        $clean = [];
+        foreach ($feeds as $f) {
+            if (is_string($f) && $f !== '' && !in_array($f, $clean, true)) {
+                $clean[] = $f;
+            }
+        }
+        return $clean ?: ['default'];
+    }
+
+    /**
+     * Poll EVERY advertised transaction feed. Each feed keeps its own
+     * sinceId checkpoint and backlog flag inside pollGameTransactions, so
+     * feeds are independent: one failing feed is logged and skipped without
+     * blocking the rest.
+     *
+     * Returns ['fetched' => <total>, 'feeds' => [name => summary], 'errors' => [name => msg]].
+     */
+    public function pollAllGameTransactionFeeds(int $maxPages = 20, int $pageSize = 200): array {
+        $summary = ['fetched' => 0, 'feeds' => [], 'errors' => []];
+        foreach ($this->getTransactionFeedNames() as $feed) {
+            try {
+                $r = $this->pollGameTransactions($feed, $maxPages, $pageSize);
+                $summary['fetched'] += (int)($r['fetched'] ?? 0);
+                $summary['feeds'][$feed] = $r;
+            } catch (Exception $e) {
+                $summary['errors'][$feed] = $e->getMessage();
+                error_log("pollAllGameTransactionFeeds($feed): " . $e->getMessage());
+            }
+        }
+        return $summary;
+    }
+
+    /**
      * Normalize a CenterEdge transaction time to canonical UTC
      * "YYYY-MM-DDTHH:MM:SSZ". The API sends ISO 8601 with the venue's local
      * offset (e.g. "2020-05-01T15:00:00.000-04:00"); every window query in
@@ -480,15 +571,26 @@ class CenterEdgeClient {
                 $tickets = isset($amount['redemptionTickets']) ? (float)$amount['redemptionTickets'] : 0;
                 $cash = isset($amount['cash']) ? (float)$amount['cash'] : 0;
 
+                // Direct credit-card payment at the reader (PointsWithCash /
+                // CreditCardDetails per spec). Only brand + last-4 get their
+                // own queryable columns; cardholder name and approval code
+                // stay inside raw_payload, which no API endpoint returns.
+                $ccAmount = isset($amount['creditCard']) ? (float)$amount['creditCard'] : 0;
+                $ccDetails = is_array($tx['creditCardDetails'] ?? null) ? $tx['creditCardDetails'] : [];
+                $ccType = isset($ccDetails['cardType']) ? (string)$ccDetails['cardType'] : '';
+                $ccLast4 = isset($ccDetails['shortAccountNumber']) ? (string)$ccDetails['shortAccountNumber'] : '';
+
                 DB::execute(
                     'INSERT OR IGNORE INTO game_play_transactions
                         (transaction_id, feed_name, card_number, type, game_id, game_description,
                          transaction_time, regular_points, bonus_points, redemption_tickets, cash_amount,
+                         credit_card_amount, cc_card_type, cc_last4,
                          used_time_play, used_play_privilege, raw_payload, fetched_at)
-                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, :p10, :p11, :p12, :p13, datetime(\'now\'))',
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, :p10, :p11, :p12, :p13, :p14, :p15, :p16, datetime(\'now\'))',
                     [
                         $txId, $feedName, $cardNumber, $type, $gameId, $gameDescription,
                         $transactionTime, $regular, $bonus, $tickets, $cash,
+                        $ccAmount, $ccType, $ccLast4,
                         $usedTimePlay, $usedPlayPrivilege, json_encode($tx)
                     ]
                 );

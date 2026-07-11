@@ -90,16 +90,22 @@ try {
     Scheduler::releaseLock();
     $lockHeld = false;
 
-    // Poll the upstream game-play transaction feed. Best-effort: if the API is
+    // Poll the upstream game-play transaction feeds — every feed the card
+    // system advertises via capabilities (games.transactionFeedNames), not
+    // just "default", so plays reported on secondary feeds (e.g. a separate
+    // credit-card feed) are never missed. Best-effort: if the API is
     // unreachable or the card system doesn't expose the feed yet, swallow the
     // error so the rest of the watchdog cycle still runs. Capped at 20 pages
-    // per cycle (4000 plays) to keep watchdog runtime bounded.
+    // per feed per cycle (4000 plays) to keep watchdog runtime bounded.
     try {
         $client = new CenterEdgeClient();
         if ($client->isConfigured()) {
-            $txSummary = $client->pollGameTransactions('default');
+            $txSummary = $client->pollAllGameTransactionFeeds();
             if (!empty($txSummary['fetched'])) {
                 echo "[" . date('c') . "] watchdog game-tx poll: " . json_encode($txSummary) . "\n";
+            }
+            foreach ($txSummary['errors'] as $feed => $msg) {
+                $errors[] = "pollGameTransactions($feed): $msg";
             }
         }
     } catch (Exception $e) {
