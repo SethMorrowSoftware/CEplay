@@ -304,7 +304,8 @@
                 App.el('div', { className: 'card-header flex-between' }, [
                     App.el('div', {}, [
                         App.el('div', { className: 'card-title', textContent: 'Ticket payout %' }),
-                        App.el('div', { className: 'text-sm text-secondary', textContent: 'Tickets dispensed per 100 points played' })
+                        App.el('div', { className: 'text-sm text-secondary', id: 'payout-subtitle',
+                            textContent: 'Tickets dispensed per 100 points played on redemption games' })
                     ]),
                     App.el('span', { id: 'payout-caption', className: 'text-sm text-secondary' })
                 ]),
@@ -1319,9 +1320,14 @@
         if (caption) {
             var todayWin = (payoutData.windows || {}).today || {};
             var todayTxt = todayWin.ratio_pct === null || todayWin.ratio_pct === undefined
-                ? 'no point plays yet today'
+                ? 'no redemption point-plays yet today'
                 : 'today ' + todayWin.ratio_pct + '%';
             caption.textContent = todayTxt + ' · target ≤ ' + target + '%';
+        }
+        var subtitle = document.getElementById('payout-subtitle');
+        if (subtitle && typeof payoutData.redemption_games === 'number') {
+            subtitle.textContent = 'Tickets dispensed per 100 points played on redemption games ('
+                + payoutData.redemption_games + ' identified)';
         }
         paintPayoutBars(canvas, payoutData);
     }

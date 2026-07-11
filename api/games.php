@@ -571,6 +571,13 @@ function gamesTicketStats(): void {
  * dashboard payout gauge — operators watch that this stays at or below the
  * configured target (default 33%).
  *
+ * Only REDEMPTION games count: rides, batting cages, and other
+ * non-redemption games burn points but can never dispense tickets, so
+ * including their points would deflate the ratio and mask a hot payout.
+ * A game is classified as redemption when it has EVER dispensed tickets
+ * (raw feed or rollup history) — data-driven, no configuration, and it
+ * still counts a redemption game's points on a day it pays nothing out.
+ *
  * Hour/today/week come from the raw feed. Month (last 30 local days) and
  * all-time stitch the permanent game_daily_stats rollup (dates BEFORE
  * today) with today's raw sums — the nightly rollup may hold a partial
@@ -596,6 +603,17 @@ function gamesPayoutStats(): void {
     $todayLocalDate = $todayStartLocal->format('Y-m-d');
     $monthStartDate = (clone $todayStartLocal)->modify('-29 days')->format('Y-m-d');
 
+    // Redemption games = any game that has ever dispensed a ticket, across
+    // the raw feed and the permanent rollup. UNION dedups the two sources.
+    $redemptionSubquery =
+        '(SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
+          UNION
+          SELECT game_id FROM game_daily_stats WHERE tickets > 0)';
+
+    $redemptionGames = (int)(DB::queryOne(
+        'SELECT COUNT(*) AS c FROM ' . $redemptionSubquery
+    )['c'] ?? 0);
+
     $raw = DB::queryOne(
         'SELECT
             SUM(CASE WHEN transaction_time >= :p0 THEN redemption_tickets ELSE 0 END) AS t_hour,
@@ -604,20 +622,23 @@ function gamesPayoutStats(): void {
             SUM(CASE WHEN transaction_time >= :p1 THEN regular_points + bonus_points ELSE 0 END) AS p_today,
             SUM(CASE WHEN transaction_time >= :p2 THEN redemption_tickets ELSE 0 END) AS t_week,
             SUM(CASE WHEN transaction_time >= :p2 THEN regular_points + bonus_points ELSE 0 END) AS p_week
-         FROM game_play_transactions',
+         FROM game_play_transactions
+         WHERE game_id IN ' . $redemptionSubquery,
         [$hourCutoff, $todayCutoff, $weekCutoff]
     );
 
     $rollMonth = DB::queryOne(
         'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
          FROM game_daily_stats
-         WHERE stat_date >= :p0 AND stat_date < :p1',
+         WHERE stat_date >= :p0 AND stat_date < :p1
+           AND game_id IN ' . $redemptionSubquery,
         [$monthStartDate, $todayLocalDate]
     );
     $rollAll = DB::queryOne(
         'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
          FROM game_daily_stats
-         WHERE stat_date < :p0',
+         WHERE stat_date < :p0
+           AND game_id IN ' . $redemptionSubquery,
         [$todayLocalDate]
     );
 
@@ -648,6 +669,7 @@ function gamesPayoutStats(): void {
             ),
         ],
         'target_pct' => $target,
+        'redemption_games' => $redemptionGames,
     ]);
 }
 
