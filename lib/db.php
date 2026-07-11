@@ -354,6 +354,33 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
 
+        // One-time migration: rewrite transaction_time to canonical UTC
+        // "YYYY-MM-DDTHH:MM:SSZ". CenterEdge delivers these with a local
+        // offset (e.g. "...T15:00:00.000-04:00") and older builds stored that
+        // verbatim, but every hour/today/week window compares the column
+        // lexically against a cutoff string — mixed formats made the
+        // dashboard's last-hour stats come back empty. New rows are
+        // normalized at ingest (CenterEdgeClient::normalizeTransactionTime);
+        // this pass fixes rows cached before the upgrade. SQLite's datetime()
+        // understands both "Z" and "±HH:MM" suffixes, and re-normalizing an
+        // already-normalized row is a no-op, so this is idempotent. Flagged
+        // so it runs exactly once.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_gpt_time_utc_v1'");
+            if (!$flag) {
+                $db->exec("UPDATE game_play_transactions
+                           SET transaction_time = strftime('%Y-%m-%dT%H:%M:%SZ', transaction_time)
+                           WHERE transaction_time != ''
+                             AND datetime(transaction_time) IS NOT NULL");
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_gpt_time_utc_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('transaction_time UTC migration skipped: ' . $e->getMessage());
+        }
+
         // Permanent per-game, per-day rollup of the raw play feed. The raw
         // game_play_transactions table is a short rolling window (see the
         // purge in Scheduler::purgeOldData) so the live feed stays cheap, but

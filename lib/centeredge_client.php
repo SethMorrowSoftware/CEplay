@@ -415,6 +415,28 @@ class CenterEdgeClient {
     }
 
     /**
+     * Normalize a CenterEdge transaction time to canonical UTC
+     * "YYYY-MM-DDTHH:MM:SSZ". The API sends ISO 8601 with the venue's local
+     * offset (e.g. "2020-05-01T15:00:00.000-04:00"); every window query in
+     * this app compares transaction_time lexically as a string, which is only
+     * correct when all stored values (and all cutoffs) share one format. The
+     * original string survives in raw_payload. Unparseable input is returned
+     * verbatim rather than dropping the play.
+     */
+    public static function normalizeTransactionTime(string $raw): string {
+        if ($raw === '') {
+            return '';
+        }
+        try {
+            return (new DateTime($raw))
+                ->setTimezone(new DateTimeZone('UTC'))
+                ->format('Y-m-d\TH:i:s\Z');
+        } catch (Exception $e) {
+            return $raw;
+        }
+    }
+
+    /**
      * Poll game-play transactions and persist them into the local cache.
      * Walks the feed forward from the last processed ID until either the API
      * returns an empty page or the safety cap is hit (avoids unbounded loops
@@ -446,7 +468,9 @@ class CenterEdgeClient {
                 $type = isset($tx['type']) ? (string)$tx['type'] : '';
                 $gameId = isset($tx['gameId']) ? (string)$tx['gameId'] : '';
                 $gameDescription = isset($tx['gameDescription']) ? (string)$tx['gameDescription'] : '';
-                $transactionTime = isset($tx['transactionTime']) ? (string)$tx['transactionTime'] : '';
+                $transactionTime = self::normalizeTransactionTime(
+                    isset($tx['transactionTime']) ? (string)$tx['transactionTime'] : ''
+                );
                 $usedTimePlay = !empty($tx['usedTimePlay']) ? 1 : 0;
                 $usedPlayPrivilege = !empty($tx['usedPlayPrivilege']) ? 1 : 0;
 
