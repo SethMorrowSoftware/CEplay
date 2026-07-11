@@ -76,6 +76,7 @@
             permissionCatalog = (users && users.permission_catalog) || {};
 
             content.appendChild(buildApiConfigSection(settings));
+            content.appendChild(buildCardSystemSection());
             content.appendChild(buildTimezoneSection(settings));
             content.appendChild(buildUsersSection(users.users || [], users));
             if (rolesData && rolesData.roles) {
@@ -210,6 +211,110 @@
             password: passwordInput.value,
             api_key: apiKeyInput.value.trim()
         });
+    }
+
+    /**
+     * Read-only "Card system" panel — renders the cached /capabilities
+     * payload (system name, interface version, feeds, feature support,
+     * point-type limits). Loads asynchronously after the page paints and
+     * degrades to a one-line message when the API isn't configured yet.
+     * Handy on support calls: everything CenterEdge says it can do, in one
+     * place, without touching the card system itself.
+     */
+    function buildCardSystemSection() {
+        const section = App.el('div', { className: 'card', style: { marginBottom: '1.5rem' } });
+        section.appendChild(App.el('div', { className: 'card-header' }, [
+            App.el('h3', { className: 'card-title', textContent: 'Card System' }),
+            App.el('p', { className: 'text-sm text-secondary', style: { margin: '0.25rem 0 0' },
+                textContent: 'What the connected card system reports it supports (cached, refreshes every 6h or on sync).' })
+        ]));
+        const body = App.el('div', { className: 'card-body', id: 'card-system-body' });
+        body.appendChild(App.loading());
+        section.appendChild(body);
+
+        API.get('capabilities').then(function(caps) {
+            const el = document.getElementById('card-system-body');
+            if (!el) return;
+            el.innerHTML = '';
+            el.appendChild(renderCapabilities(caps || {}));
+        }).catch(function(err) {
+            const el = document.getElementById('card-system-body');
+            if (!el) return;
+            el.innerHTML = '';
+            el.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                textContent: 'Capabilities unavailable: ' + (err && err.message ? err.message : 'API not configured yet.') }));
+        });
+
+        return section;
+    }
+
+    function renderCapabilities(caps) {
+        const wrap = App.el('div', {});
+
+        // Identity line
+        wrap.appendChild(App.el('p', { style: { margin: '0 0 0.75rem' } }, [
+            App.el('strong', { textContent: caps.systemName || 'Unknown system' }),
+            App.el('span', { className: 'text-secondary',
+                textContent: '  ·  interface v' + (caps.interfaceVersion || '?') })
+        ]));
+
+        // Feature chips — supported features get the success badge.
+        const games = caps.games || {};
+        const sysTx = caps.systemTransactionReporting || {};
+        const features = [
+            ['Pause control (games)', !!games.operationStatus],
+            ['Game categories', !!games.categories],
+            ['Time plays', !!caps.timePlay],
+            ['Privileges', !!(caps.privileges && caps.privileges.isSupported)],
+            ['System transactions', !!sysTx.isSupported],
+            ['Virtual play', !!caps.virtualPlay],
+            ['Card wipe', !!caps.wipeCard],
+            ['Bulk issue', !!(caps.bulkIssue && (caps.bulkIssue.range || caps.bulkIssue.list))],
+            ['Card combine', caps.cardCombineToExistingCard !== undefined ? !!caps.cardCombineToExistingCard : false]
+        ];
+        const chipRow = App.el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' } });
+        features.forEach(function(f) {
+            chipRow.appendChild(App.el('span', {
+                className: 'badge ' + (f[1] ? 'badge-enabled' : 'badge-inactive'),
+                textContent: (f[1] ? '✓ ' : '✕ ') + f[0]
+            }));
+        });
+        wrap.appendChild(chipRow);
+
+        // Detail lines
+        const details = [];
+        const feeds = games.transactionFeedNames;
+        details.push(['Play feeds', Array.isArray(feeds) && feeds.length ? feeds.join(', ') : 'default']);
+        if (sysTx.isSupported && Array.isArray(sysTx.transactionTypes)) {
+            details.push(['System transaction types', sysTx.transactionTypes.join(', ')]);
+        }
+        const pts = caps.pointTypes || {};
+        ['regularPoints', 'bonusPoints', 'redemptionTickets'].forEach(function(key) {
+            const p = pts[key];
+            if (!p || !p.isSupported) return;
+            const label = key === 'regularPoints' ? 'Regular points'
+                : key === 'bonusPoints' ? 'Bonus points' : 'Redemption tickets';
+            let txt = 'max balance ' + Number(p.maximumBalance || 0).toLocaleString();
+            txt += ' · ' + (p.maxDecimalPlaces || 0) + ' decimals';
+            details.push([label, txt]);
+        });
+        if (caps.timePlay && caps.timePlay.maximumTimePlaysPerCard) {
+            details.push(['Time plays per card', 'up to ' + caps.timePlay.maximumTimePlaysPerCard]);
+        }
+        if (caps.adjustments && caps.adjustments.maximumAdjustmentsPerTransaction) {
+            details.push(['Adjustments per transaction', 'up to ' + caps.adjustments.maximumAdjustmentsPerTransaction]);
+        }
+
+        const list = App.el('div', { className: 'text-sm' });
+        details.forEach(function(d) {
+            list.appendChild(App.el('div', { style: { display: 'flex', gap: '0.5rem', padding: '0.15rem 0' } }, [
+                App.el('span', { className: 'text-secondary', style: { minWidth: '190px' }, textContent: d[0] }),
+                App.el('span', { textContent: d[1] })
+            ]));
+        });
+        wrap.appendChild(list);
+
+        return wrap;
     }
 
     function buildTimezoneSection(data) {

@@ -74,6 +74,9 @@ function analyticsScrubMoney(array &$payload): void {
     if (isset($payload['charts']) && is_array($payload['charts'])) {
         // The cash leaderboard is monetary end-to-end — drop it entirely.
         $payload['charts']['top_games_cash'] = [];
+        // Brand mix carries card brands + credit-card dollar amounts — same
+        // policy as the live feed blanking brand/last-4: drop it entirely.
+        $payload['charts']['cc_brand_mix'] = [];
         // Per-row cash also rides along in the daily series, the plays /
         // tickets leaderboards, and the category breakdown; zero it there so
         // no dollar figure slips out through a side channel (the previous
@@ -135,6 +138,11 @@ function analyticsOverview(bool $hideMoney = false): void {
     $kpis = analyticsKpis($startIsoUtc, $endIsoUtc);
     $previousKpis = analyticsKpis($prevStartIso, $prevEndIso);
 
+    // ---- Breakage: value expired off cards + card merges (system feed) ----
+    // Points/tickets, not dollars — no view_revenue scrub needed.
+    $kpis = array_merge($kpis, analyticsSystemTx($startIsoUtc, $endIsoUtc));
+    $previousKpis = array_merge($previousKpis, analyticsSystemTx($prevStartIso, $prevEndIso));
+
     // ---- Fleet posture (current state, not range-scoped) ----
     $fleet = analyticsFleet();
 
@@ -145,6 +153,47 @@ function analyticsOverview(bool $hideMoney = false): void {
 
     // ---- Category breakdown (arcade vs rides vs batting cages, etc.) ----
     $byCategory = analyticsByCategory($startIsoUtc, $endIsoUtc);
+
+    // ---- Payment mix (plays by method) + credit-card brand mix ----
+    // Method COUNTS are visible to all analytics roles (kpis already expose
+    // time/privilege/credit-card play counts); the BRAND mix carries card
+    // brands and dollar amounts, so analyticsScrubMoney drops it entirely
+    // for roles without view_revenue — same policy as the live feed's
+    // brand/last-4 blanking.
+    $paymentMix = DB::queryOne(
+        'SELECT
+             SUM(CASE WHEN regular_points + bonus_points > 0 THEN 1 ELSE 0 END) AS points_plays,
+             SUM(CASE WHEN cash_amount > 0 THEN 1 ELSE 0 END) AS cash_plays,
+             SUM(CASE WHEN credit_card_amount > 0 THEN 1 ELSE 0 END) AS credit_card_plays,
+             SUM(CASE WHEN used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays,
+             SUM(CASE WHEN used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0 AND transaction_time < :p1',
+        [$startIsoUtc, $endIsoUtc]
+    ) ?: [];
+    $paymentMix = [
+        'points_plays'      => (int)($paymentMix['points_plays'] ?? 0),
+        'cash_plays'        => (int)($paymentMix['cash_plays'] ?? 0),
+        'credit_card_plays' => (int)($paymentMix['credit_card_plays'] ?? 0),
+        'time_plays'        => (int)($paymentMix['time_plays'] ?? 0),
+        'privilege_plays'   => (int)($paymentMix['privilege_plays'] ?? 0),
+    ];
+
+    $brandMix = array_map(function ($r) {
+        return [
+            'brand'  => (string)$r['brand'],
+            'plays'  => (int)$r['plays'],
+            'amount' => round((float)$r['amount'], 2),
+        ];
+    }, DB::query(
+        'SELECT cc_card_type AS brand, COUNT(*) AS plays, COALESCE(SUM(credit_card_amount), 0) AS amount
+         FROM game_play_transactions
+         WHERE cc_card_type != \'\'
+           AND transaction_time >= :p0 AND transaction_time < :p1
+         GROUP BY cc_card_type
+         ORDER BY plays DESC',
+        [$startIsoUtc, $endIsoUtc]
+    ));
 
     // ---- Time-bucketed series (hour-of-day, day-of-week, daily) ----
     // We pull just the columns we need for binning so memory stays sane.
@@ -216,6 +265,37 @@ function analyticsOverview(bool $hideMoney = false): void {
     }
     unset($g);
 
+    // ---- Recent card-system events (merges/expirations, last 10) ----
+    $systemEvents = array_map(function ($r) {
+        return [
+            'type'             => (string)$r['type'],
+            'transaction_time' => (string)$r['transaction_time'],
+            'card_number'      => (string)$r['card_number'],
+            'source_card'      => (string)$r['source_card_number'],
+            'destination_card' => (string)$r['destination_card_number'],
+            'expired_points'   => round((float)$r['expired_regular'] + (float)$r['expired_bonus'], 2),
+            'expired_tickets'  => round((float)$r['expired_tickets'], 2),
+            'is_wiped'         => (bool)$r['is_wiped'],
+        ];
+    }, DB::query(
+        'SELECT type, transaction_time, card_number, source_card_number,
+                destination_card_number, expired_regular, expired_bonus,
+                expired_tickets, is_wiped
+         FROM system_transactions
+         ORDER BY transaction_id DESC
+         LIMIT 10'
+    ));
+
+    // Whether the card system reports system transactions at all — read from
+    // the cached capabilities payload directly (no live call; stale is fine
+    // for a boolean that changes only on CenterEdge upgrades).
+    $sysTxSupported = false;
+    $rawCaps = DB::getConfig('cache_capabilities');
+    if ($rawCaps) {
+        $decodedCaps = json_decode($rawCaps, true);
+        $sysTxSupported = !empty($decodedCaps['systemTransactionReporting']['isSupported']);
+    }
+
     // ---- Recent failures (always last 10, regardless of window) ----
     $recentFailures = DB::query(
         'SELECT l.timestamp, l.source, l.action, l.error_message,
@@ -258,6 +338,9 @@ function analyticsOverview(bool $hideMoney = false): void {
             'top_games_tickets'=> $topGamesTickets,
             'top_games_cash'   => $topGamesCash,
             'by_category'      => $byCategory,
+            'payment_mix'      => $paymentMix,
+            'cc_brand_mix'     => $brandMix,
+            'system_events'    => $systemEvents,
             'actions_by_source'  => $actionsBreakdown['by_source'],
             'actions_by_action'  => $actionsBreakdown['by_action'],
             'actions_success_fail' => $actionsBreakdown['success_fail'],
@@ -270,6 +353,7 @@ function analyticsOverview(bool $hideMoney = false): void {
             'latest_transaction_at'     => $feed['latest'] ?? null,
             'last_poll_at'              => $feed['last_poll'] ?? null,
         ],
+        'system_tx_supported' => $sysTxSupported,
         'hide_money' => $hideMoney,
         'generated_at' => (new DateTime('now', $utc))->format('Y-m-d\TH:i:s\Z'),
     ];
@@ -381,6 +465,30 @@ function analyticsKpis(string $startIso, string $endIso): array {
         'privilege_plays'      => (int)($row['privilege_plays'] ?? 0),
         'avg_tickets_per_play' => $plays > 0 ? round($tickets / $plays, 2) : 0,
         'avg_cash_per_play'    => $plays > 0 ? round($cash / $plays, 2) : 0,
+    ];
+}
+
+/**
+ * Breakage KPIs from the system-transaction feed for [startIso, endIso):
+ * value expired off cards (points + tickets) and merge/expiration counts.
+ * Zeroes when the card system doesn't report system transactions.
+ */
+function analyticsSystemTx(string $startIso, string $endIso): array {
+    $row = DB::queryOne(
+        'SELECT
+             COALESCE(SUM(expired_regular + expired_bonus), 0) AS expired_points,
+             COALESCE(SUM(expired_tickets), 0) AS expired_tickets,
+             SUM(CASE WHEN type = \'expiration\' THEN 1 ELSE 0 END) AS expirations,
+             SUM(CASE WHEN type = \'merge\' THEN 1 ELSE 0 END) AS merges
+         FROM system_transactions
+         WHERE transaction_time >= :p0 AND transaction_time < :p1',
+        [$startIso, $endIso]
+    );
+    return [
+        'expired_points'  => (float)($row['expired_points'] ?? 0),
+        'expired_tickets' => (float)($row['expired_tickets'] ?? 0),
+        'expirations'     => (int)($row['expirations'] ?? 0),
+        'merges'          => (int)($row['merges'] ?? 0),
     ];
 }
 

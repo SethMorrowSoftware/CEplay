@@ -202,6 +202,9 @@
         if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg cash / play'));
         cards.push(kpiCardSkeleton('unique_cards', 'Unique cards'));
         cards.push(kpiCardSkeleton('credit_card_share', 'Credit-card plays'));
+        // Breakage — value expired off cards by the card system itself.
+        // Points/tickets, not dollars, so visible to every analytics role.
+        cards.push(kpiCardSkeleton('expired', 'Expired value'));
         return App.el('div', { className: 'stats-grid', id: 'analytics-kpis' }, cards);
     }
 
@@ -248,6 +251,12 @@
         grid.appendChild(chartCard('Category share — plays', 'analytics-chart-cat-share', '', 240,
             'Games in multiple categories count in each'));
         grid.appendChild(chartCard('Tickets by category', 'analytics-chart-cat-tickets', '', 240));
+        grid.appendChild(chartCard('Payment mix — plays', 'analytics-chart-payment-mix', '', 240,
+            'Mixed-payment plays count in each method'));
+        // Brand data is payment info — server sends it only with view_revenue.
+        if (canSeeMoney) {
+            grid.appendChild(chartCard('Credit-card brands', 'analytics-chart-cc-brands', '', 240));
+        }
         // Revenue mix surfaces cash totals — hidden from the tech role.
         if (canSeeMoney) {
             grid.appendChild(chartCard('Revenue mix', 'analytics-chart-revenue', '', 240));
@@ -274,6 +283,8 @@
     }
 
     function buildBottomSection() {
+        var wrap = App.el('div', {});
+
         var box = App.el('div', { className: 'card analytics-card', style: { marginTop: '1rem' } });
         box.appendChild(App.el('div', { className: 'analytics-card-header' }, [
             App.el('div', { className: 'card-title', textContent: 'Recent automation failures' }),
@@ -282,7 +293,75 @@
         var tableWrap = App.el('div', { id: 'analytics-failures', className: 'analytics-failures' });
         tableWrap.appendChild(App.loading());
         box.appendChild(tableWrap);
-        return box;
+        wrap.appendChild(box);
+
+        // Card-system events: merges + value expirations from the
+        // /system/transactions feed (breakage detail behind the KPI).
+        var sysBox = App.el('div', { className: 'card analytics-card', style: { marginTop: '1rem' } });
+        sysBox.appendChild(App.el('div', { className: 'analytics-card-header' }, [
+            App.el('div', { className: 'card-title', textContent: 'Card system events' }),
+            App.el('div', { className: 'text-muted text-sm', textContent: 'Last 10 merges & expirations' })
+        ]));
+        var sysWrap = App.el('div', { id: 'analytics-system-events' });
+        sysWrap.appendChild(App.loading());
+        sysBox.appendChild(sysWrap);
+        wrap.appendChild(sysBox);
+
+        return wrap;
+    }
+
+    function renderSystemEvents(data) {
+        var box = document.getElementById('analytics-system-events');
+        if (!box) return;
+        box.innerHTML = '';
+
+        if (data.system_tx_supported === false) {
+            box.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                textContent: 'This card system does not report system transactions.' }));
+            return;
+        }
+        var rows = (data.charts && data.charts.system_events) || [];
+        if (rows.length === 0) {
+            box.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                textContent: 'No merges or expirations recorded yet.' }));
+            return;
+        }
+
+        var table = App.el('table', { className: 'data-table' }, [
+            App.el('thead', {}, [
+                App.el('tr', {}, [
+                    App.el('th', { textContent: 'Time' }),
+                    App.el('th', { textContent: 'Event' }),
+                    App.el('th', { textContent: 'Detail' })
+                ])
+            ])
+        ]);
+        var tbody = App.el('tbody', {});
+        rows.forEach(function(r) {
+            var detail;
+            if (r.type === 'merge') {
+                detail = 'Card ' + (r.source_card || '?') + ' → ' + (r.destination_card || '?');
+            } else {
+                var parts = [];
+                if (r.expired_points) parts.push(formatInt(Math.round(r.expired_points)) + ' pts');
+                if (r.expired_tickets) parts.push(formatInt(Math.round(r.expired_tickets)) + ' tix');
+                detail = 'Card ' + (r.card_number || '?')
+                    + (parts.length ? ' — ' + parts.join(', ') + ' expired' : '')
+                    + (r.is_wiped ? ' · wiped' : '');
+            }
+            tbody.appendChild(App.el('tr', {}, [
+                App.el('td', { textContent: App.formatDatetime(r.transaction_time) }),
+                App.el('td', {}, [
+                    App.el('span', {
+                        className: r.type === 'merge' ? 'badge badge-info' : 'badge badge-paused',
+                        textContent: r.type === 'merge' ? 'Merge' : 'Expiration'
+                    })
+                ]),
+                App.el('td', { textContent: detail })
+            ]));
+        });
+        table.appendChild(tbody);
+        box.appendChild(table);
     }
 
     // ------------------------------------------------------------------
@@ -308,6 +387,7 @@
             renderFleet(data);
             renderCharts(data);
             renderFailures(data);
+            renderSystemEvents(data);
             if (lastUpdatedEl) {
                 var d = new Date();
                 lastUpdatedEl.textContent = 'Updated ' + d.toLocaleTimeString();
@@ -345,6 +425,18 @@
         var ccShare = totalPlays > 0 ? Math.round((cc / totalPlays) * 100) : 0;
         kpiUpdate('credit_card_share', formatInt(cc),
             ccShare + '% of plays · ' + (k.card_plays || 0).toLocaleString() + ' on cards');
+
+        // Breakage KPI from the system-transaction feed.
+        if (data.system_tx_supported === false) {
+            kpiUpdate('expired', '—', 'Not reported by this card system');
+        } else {
+            var expDetail = deltaText(k.expired_points || 0, p.expired_points || 0);
+            if ((k.expired_tickets || 0) > 0 || (k.merges || 0) > 0) {
+                expDetail = formatInt(Math.round(k.expired_tickets || 0)) + ' tix expired · '
+                    + formatInt(k.merges || 0) + ' merges';
+            }
+            kpiUpdate('expired', formatInt(Math.round(k.expired_points || 0)) + ' pts', expDetail);
+        }
     }
 
     function kpiUpdate(key, value, trend) {
@@ -530,6 +622,31 @@
             theme.tickets,
             theme
         ));
+
+        // Payment mix — how plays were paid (counts; overlaps possible on
+        // mixed-payment plays, noted in the card subtitle).
+        var pm = charts.payment_mix || {};
+        registerChart('analytics-chart-payment-mix', donutConfig(
+            ['Points', 'Cash', 'Credit card', 'Time play', 'Privilege'],
+            [pm.points_plays || 0, pm.cash_plays || 0, pm.credit_card_plays || 0,
+             pm.time_plays || 0, pm.privilege_plays || 0],
+            palette(5, theme),
+            theme,
+            'plays'
+        ));
+
+        // Credit-card brand mix — server scrubs this to [] without
+        // view_revenue, and the canvas only exists for money-roles anyway.
+        if (App.canSeeMoney()) {
+            var bm = charts.cc_brand_mix || [];
+            registerChart('analytics-chart-cc-brands', donutConfig(
+                bm.map(function(b) { return b.brand; }),
+                bm.map(function(b) { return b.plays; }),
+                palette(Math.max(1, bm.length), theme),
+                theme,
+                'plays'
+            ));
+        }
 
         // Revenue mix donut (cash / points / bonus). Tech doesn't get the
         // canvas so the registerChart call no-ops on a missing node, but

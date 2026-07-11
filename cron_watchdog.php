@@ -107,6 +107,19 @@ try {
             foreach ($txSummary['errors'] as $feed => $msg) {
                 $errors[] = "pollGameTransactions($feed): $msg";
             }
+
+            // System transactions (merges + value expirations) — low volume,
+            // capability-gated (a fast no-op when unsupported). Best-effort
+            // like the play poll.
+            try {
+                $sysSummary = $client->pollSystemTransactions();
+                if (!empty($sysSummary['fetched'])) {
+                    echo "[" . date('c') . "] watchdog system-tx poll: " . json_encode($sysSummary) . "\n";
+                }
+            } catch (Exception $e) {
+                $errors[] = "pollSystemTransactions: " . $e->getMessage();
+                error_log("[" . date('c') . "] watchdog pollSystemTransactions error: " . $e->getMessage());
+            }
         }
     } catch (Exception $e) {
         $errors[] = "pollGameTransactions: " . $e->getMessage();

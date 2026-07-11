@@ -1732,6 +1732,16 @@ class Scheduler {
         );
         $summary['game_plays_purged'] = $deleted;
 
+        // Purge very old system transactions (merges/expirations). Low
+        // volume, but breakage reporting wants deep history, so keep 400
+        // days — enough for full year-over-year comparisons.
+        $cutoff = gmdate('Y-m-d\TH:i:s\Z', strtotime('-400 days'));
+        $deleted = DB::execute(
+            'DELETE FROM system_transactions WHERE transaction_time < :p0',
+            [$cutoff]
+        );
+        $summary['system_tx_purged'] = $deleted;
+
         return $summary;
     }
 

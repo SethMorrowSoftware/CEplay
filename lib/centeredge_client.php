@@ -505,6 +505,126 @@ class CenterEdgeClient {
         return $summary;
     }
 
+    // -----------------------------------------------
+    // System Transactions (merges + expirations)
+    // -----------------------------------------------
+
+    /**
+     * Fetch a page of system transactions since (exclusive) the given ID.
+     * $types is required by the spec so old clients never receive types
+     * they can't deserialize — pass only types this app understands.
+     */
+    public function getSystemTransactions(int $sinceId, array $types, int $take = 200): array {
+        return $this->request('GET', '/system/transactions', null, [
+            'sinceId' => $sinceId,
+            'type'    => array_values($types),
+            'take'    => $take,
+        ]);
+    }
+
+    /**
+     * System transaction types this app understands, intersected with what
+     * the card system advertises. Empty array = reporting unsupported (or
+     * capabilities unavailable) — callers skip polling entirely.
+     */
+    public function supportedSystemTransactionTypes(): array {
+        try {
+            $caps = $this->getCapabilitiesCached();
+        } catch (Exception $e) {
+            return [];
+        }
+        $rep = $caps['systemTransactionReporting'] ?? null;
+        if (!is_array($rep) || empty($rep['isSupported'])) {
+            return [];
+        }
+        $known = ['merge', 'expiration'];
+        $advertised = $rep['transactionTypes'] ?? null;
+        if (!is_array($advertised)) {
+            return $known;
+        }
+        return array_values(array_intersect($known, array_map('strval', $advertised)));
+    }
+
+    /**
+     * Poll the system-transaction feed (card merges, value expirations) into
+     * the local system_transactions table. Same sinceId-checkpoint pattern
+     * as the play poller ('system_tx_last_id' in api_config). Expired value
+     * is flattened from removeValue adjustments into queryable columns;
+     * the full payload is retained in raw_payload. No-op when the card
+     * system doesn't support system transaction reporting.
+     *
+     * Returns ['supported' => bool, 'fetched' => int, 'last_id' => int].
+     */
+    public function pollSystemTransactions(int $maxPages = 10, int $pageSize = 200): array {
+        $types = $this->supportedSystemTransactionTypes();
+        if (empty($types)) {
+            return ['supported' => false, 'fetched' => 0, 'last_id' => 0];
+        }
+
+        $stateKey = 'system_tx_last_id';
+        $sinceId = (int)(DB::getConfig($stateKey) ?? '0');
+        $totalFetched = 0;
+        $lastId = $sinceId;
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $result = $this->getSystemTransactions($sinceId, $types, $pageSize);
+            $txs = $result['transactions'] ?? [];
+            if (empty($txs)) {
+                break;
+            }
+
+            foreach ($txs as $tx) {
+                $txId = isset($tx['id']) ? (int)$tx['id'] : 0;
+                if ($txId <= 0) continue;
+
+                $type = isset($tx['type']) ? (string)$tx['type'] : '';
+                $time = self::normalizeTransactionTime(
+                    isset($tx['transactionTime']) ? (string)$tx['transactionTime'] : ''
+                );
+
+                $expReg = 0.0; $expBonus = 0.0; $expTickets = 0.0;
+                foreach ((array)($tx['adjustments'] ?? []) as $adj) {
+                    if (!is_array($adj) || ($adj['type'] ?? '') !== 'removeValue') continue;
+                    $amt = is_array($adj['amount'] ?? null) ? $adj['amount'] : [];
+                    $expReg     += (float)($amt['regularPoints'] ?? 0);
+                    $expBonus   += (float)($amt['bonusPoints'] ?? 0);
+                    $expTickets += (float)($amt['redemptionTickets'] ?? 0);
+                }
+
+                DB::execute(
+                    'INSERT OR IGNORE INTO system_transactions
+                        (transaction_id, type, transaction_time, card_number,
+                         source_card_number, destination_card_number,
+                         expired_regular, expired_bonus, expired_tickets, is_wiped,
+                         raw_payload, fetched_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, :p10, datetime(\'now\'))',
+                    [
+                        $txId, $type, $time,
+                        isset($tx['cardNumber']) ? (string)$tx['cardNumber'] : '',
+                        isset($tx['sourceCardNumber']) ? (string)$tx['sourceCardNumber'] : '',
+                        isset($tx['destinationCardNumber']) ? (string)$tx['destinationCardNumber'] : '',
+                        $expReg, $expBonus, $expTickets,
+                        !empty($tx['isWiped']) ? 1 : 0,
+                        json_encode($tx),
+                    ]
+                );
+
+                if ($txId > $lastId) $lastId = $txId;
+                $totalFetched++;
+            }
+
+            if ($lastId > $sinceId) {
+                DB::setConfig($stateKey, (string)$lastId, false);
+                $sinceId = $lastId;
+            }
+            if (count($txs) < $pageSize) {
+                break;
+            }
+        }
+
+        return ['supported' => true, 'fetched' => $totalFetched, 'last_id' => $lastId];
+    }
+
     /**
      * Normalize a CenterEdge transaction time to canonical UTC
      * "YYYY-MM-DDTHH:MM:SSZ". The API sends ISO 8601 with the venue's local
@@ -920,7 +1040,10 @@ class CenterEdgeClient {
     private function httpRequest(string $method, string $path, ?array $body = null, bool $auth = true, array $query = []): array {
         $url = rtrim($this->baseUrl, '/') . $path;
         if (!empty($query)) {
-            $url .= '?' . http_build_query($query);
+            // Array params must repeat the bare key (?type=a&type=b) per the
+            // OpenAPI form/explode style — PHP's default type[0]=a encoding
+            // is rejected upstream, so strip the bracket indexes.
+            $url .= '?' . preg_replace('/%5B\d+%5D/', '', http_build_query($query));
         }
 
         $headers = [
