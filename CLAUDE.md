@@ -11,7 +11,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Key Files
 - `index.php` — Main router: SPA shell, API dispatch, safety nets (Tier 1/2 enforcement)
 - `config.php` — Constants: encryption key, DB path, session lifetime, API timeouts
-- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, purge old data
+- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data
 - `cron_watchdog.php` — Per-minute watchdog: missed actions, state enforcement, re-queue
 - `run_action.php` — Single-action executor invoked by `at` jobs
 - `lib/scheduler.php` — Core scheduling engine (plan, execute, enforce, resolve conflicts)

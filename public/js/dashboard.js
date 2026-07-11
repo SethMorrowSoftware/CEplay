@@ -29,6 +29,7 @@
     var ticketStats = {};   // Map of game_id -> { tickets_today, plays_today, ... }
     var ticketTotals = null; // Aggregate totals across the venue
     var payoutData = null;   // Ticket payout % per window + target, from /transactions/payout
+    var payoutTargetPct = 33; // House payout target — refreshed from ticket-stats on every poll
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -625,6 +626,9 @@
             var statsData = canSeeSales ? (results[4] || {}) : {};
             ticketStats = statsData.stats || {};
             ticketTotals = statsData.totals || null;
+            if (typeof statsData.payout_target_pct === 'number') {
+                payoutTargetPct = statsData.payout_target_pct;
+            }
 
             // Render security warnings if present
             var warningsEl = document.getElementById('security-warnings');
@@ -1955,6 +1959,18 @@
         });
     }
 
+    /**
+     * Today's payout % for one game, or null when it doesn't apply: the
+     * game isn't a redemption game (never dispensed a ticket) or has no
+     * point-plays yet today. Same definition as the venue payout gauge.
+     */
+    function gamePayoutToday(stats) {
+        if (!stats || !stats.is_redemption) return null;
+        var pts = stats.points_today || 0;
+        if (pts <= 0) return null;
+        return ((stats.tickets_today || 0) / pts) * 100;
+    }
+
     function getFilteredSortedGames(games) {
         // Filter by search
         var filtered = games;
@@ -1985,6 +2001,13 @@
             } else if (gameSortCol === 'plays_today' || gameSortCol === 'tickets_today') {
                 aVal = (ticketStats[a.game_id] && ticketStats[a.game_id][gameSortCol]) || 0;
                 bVal = (ticketStats[b.game_id] && ticketStats[b.game_id][gameSortCol]) || 0;
+            } else if (gameSortCol === 'payout_today') {
+                // Not-applicable games sink to the bottom in desc order so
+                // the hottest payouts surface first.
+                var ap = gamePayoutToday(ticketStats[a.game_id]);
+                var bp = gamePayoutToday(ticketStats[b.game_id]);
+                aVal = ap === null ? -1 : ap;
+                bVal = bp === null ? -1 : bp;
             } else if (gameSortCol === 'last_play') {
                 // Sort by recency: never-played goes last in asc, first in desc
                 aVal = (ticketStats[a.game_id] && ticketStats[a.game_id].last_play) || '';
@@ -2055,13 +2078,15 @@
         if (includeSales) {
             columns.push({ key: 'plays_today', label: 'Plays Today', sortable: true, className: 'text-right' });
             columns.push({ key: 'tickets_today', label: 'Tickets Today', sortable: true, className: 'text-right' });
+            columns.push({ key: 'payout_today', label: 'Payout %', sortable: true, className: 'text-right' });
             columns.push({ key: 'last_play', label: 'Last Play', sortable: true });
         }
         columns.push({ key: 'categories', label: 'Categories', sortable: false });
 
         // If a previously-selected sort column is now hidden (e.g. an admin
         // demoted to tech mid-session), fall back to game_name.
-        if (!includeSales && (gameSortCol === 'plays_today' || gameSortCol === 'tickets_today' || gameSortCol === 'last_play')) {
+        if (!includeSales && (gameSortCol === 'plays_today' || gameSortCol === 'tickets_today'
+                || gameSortCol === 'payout_today' || gameSortCol === 'last_play')) {
             gameSortCol = 'game_name';
             gameSortDir = 'asc';
         }
@@ -2085,7 +2110,8 @@
                         gameSortCol = col.key;
                         // Numeric / time columns default to descending so the
                         // operator immediately sees the busiest games first.
-                        gameSortDir = (col.key === 'plays_today' || col.key === 'tickets_today' || col.key === 'last_play')
+                        gameSortDir = (col.key === 'plays_today' || col.key === 'tickets_today'
+                                || col.key === 'payout_today' || col.key === 'last_play')
                             ? 'desc' : 'asc';
                     }
                     renderGameView(allGames);
@@ -2133,6 +2159,31 @@
                     textContent: tickets.toLocaleString()
                 }));
                 row.appendChild(App.el('td', { className: 'text-right num-cell' }, ticketCellChildren));
+
+                // Payout % today — red above the house target, otherwise
+                // green. '—' for non-redemption games (rides, cages) and
+                // redemption games with no point-plays yet today.
+                var payout = gamePayoutToday(stats);
+                if (payout === null) {
+                    row.appendChild(App.el('td', {
+                        className: 'text-right num-cell text-muted', textContent: '—',
+                        title: stats && !stats.is_redemption
+                            ? 'Not a redemption game (never dispensed tickets)'
+                            : 'No point-plays yet today'
+                    }));
+                } else {
+                    var over = payout > payoutTargetPct;
+                    row.appendChild(App.el('td', { className: 'text-right num-cell' }, [
+                        App.el('span', {
+                            className: over ? 'text-danger' : 'text-success',
+                            style: over ? { fontWeight: '600' } : {},
+                            textContent: payout.toFixed(1) + '%',
+                            title: Math.round(stats.tickets_today || 0).toLocaleString() + ' tickets / '
+                                + Math.round(stats.points_today || 0).toLocaleString() + ' points today · target ≤ '
+                                + payoutTargetPct + '%'
+                        })
+                    ]));
+                }
 
                 // Last play
                 row.appendChild(App.el('td', {

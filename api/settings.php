@@ -31,6 +31,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             'password'          => $password ? '********' : '',
             'api_key'           => $apiKey ? '********' : '',
             'timezone'          => $timezone,
+            'payout_target_pct' => (float)(DB::getConfig('payout_target_pct') ?: 33),
             'token_fetched_at'  => $tokenFetchedAt,
         ]);
         return;
@@ -80,9 +81,20 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             DB::setConfig('timezone', $timezone, false);
         }
 
+        // Update payout target if provided — drives the dashboard payout
+        // gauge and the per-game payout column's red/green threshold.
+        if (isset($input['payout_target_pct'])) {
+            $target = $input['payout_target_pct'];
+            if (!is_numeric($target) || (float)$target < 1 || (float)$target > 100) {
+                throw new RuntimeException('Payout target must be a number between 1 and 100.');
+            }
+            DB::setConfig('payout_target_pct', (string)round((float)$target, 1), false);
+        }
+
         DB::auditLog('admin', 'settings_updated', null, [
             'api_config_changed' => $hasApiFields,
             'timezone_changed' => isset($input['timezone']),
+            'payout_target_changed' => isset($input['payout_target_pct']),
         ]);
 
         echo json_encode(['success' => true]);

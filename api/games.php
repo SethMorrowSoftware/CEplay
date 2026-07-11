@@ -510,12 +510,25 @@ function gamesTicketStats(): void {
                    SUM(CASE WHEN t.transaction_time >= :p2 THEN t.redemption_tickets ELSE 0 END) AS tickets_week,
                    SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays_today,
                    SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays_today,
+                   SUM(CASE WHEN t.transaction_time >= :p1 THEN t.regular_points + t.bonus_points ELSE 0 END) AS points_today,
                    MAX(t.transaction_time) AS last_play
             FROM game_play_transactions t
             WHERE t.game_id != \'\'
             GROUP BY t.game_id';
 
     $rows = DB::query($sql, [$hourCutoff, $todayCutoff, $weekCutoff]);
+
+    // Redemption classification for the per-game payout column — same
+    // data-driven rule as the payout gauge: a game is redemption if it has
+    // EVER dispensed tickets (raw feed or rollup history).
+    $redemptionIds = [];
+    foreach (DB::query(
+        'SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
+         UNION
+         SELECT game_id FROM game_daily_stats WHERE tickets > 0'
+    ) as $rr) {
+        $redemptionIds[(string)$rr['game_id']] = true;
+    }
 
     $stats = [];
     $totals = [
@@ -536,6 +549,8 @@ function gamesTicketStats(): void {
             'tickets_week'  => (float)$r['tickets_week'],
             'plays_all'     => (int)$r['plays_all'],
             'tickets_all'   => (float)$r['tickets_all'],
+            'points_today'  => (float)$r['points_today'],
+            'is_redemption' => isset($redemptionIds[$gid]),
             'last_play'     => $r['last_play'] ?: null,
         ];
         $totals['tickets_hour']  += (float)$r['tickets_hour'];
@@ -562,6 +577,8 @@ function gamesTicketStats(): void {
         ],
         'last_poll_at' => $meta['last_poll'] ?? null,
         'total_cached' => (int)($meta['total_cached'] ?? 0),
+        // For the per-game payout column — same threshold the gauge uses.
+        'payout_target_pct' => (float)(DB::getConfig('payout_target_pct') ?: 33),
     ]);
 }
 

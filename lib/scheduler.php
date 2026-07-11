@@ -1746,6 +1746,55 @@ class Scheduler {
     }
 
     /**
+     * Nightly on-disk database backup. game_daily_stats is irreplaceable
+     * history (CenterEdge has no reporting API), and until now the only
+     * snapshot happened when the operator ran update.sh. VACUUM INTO reads
+     * a consistent view of the live WAL database — unlike a file copy, it
+     * cannot miss the last commit — and writes a compact single-file copy
+     * into data/backups/ (inside DATA_DIR so it's mounted, writable by the
+     * app user, and gitignored). Keeps the newest $keep snapshots; the
+     * timestamped names sort chronologically, so pruning is a name sort.
+     *
+     * Restore = stop services, copy the snapshot over data/pause_groups.db
+     * (removing any -wal/-shm files), restart.
+     *
+     * @return array{path:string, bytes:int, kept:int, pruned:int}
+     */
+    public static function backupDatabase(int $keep = 14): array {
+        $dir = dirname(DB_PATH) . '/backups';
+        if (!is_dir($dir) && !mkdir($dir, 0770, true) && !is_dir($dir)) {
+            throw new RuntimeException("Cannot create backup directory: $dir");
+        }
+
+        // VACUUM INTO refuses to overwrite an existing file, and two runs in
+        // the same second (cron + a manual run) would collide on the
+        // timestamp — suffix until the name is free.
+        $base = $dir . '/nightly-' . gmdate('Ymd-His');
+        $dest = $base . '.db';
+        for ($n = 2; file_exists($dest); $n++) {
+            $dest = $base . '-' . $n . '.db';
+        }
+        DB::getInstance()->exec("VACUUM INTO '" . SQLite3::escapeString($dest) . "'");
+        if (!is_file($dest) || (int)filesize($dest) === 0) {
+            throw new RuntimeException("Backup produced no file at $dest");
+        }
+
+        $files = glob($dir . '/nightly-*.db') ?: [];
+        rsort($files);
+        $pruned = 0;
+        foreach (array_slice($files, max(1, $keep)) as $old) {
+            if (@unlink($old)) $pruned++;
+        }
+
+        return [
+            'path'   => $dest,
+            'bytes'  => (int)filesize($dest),
+            'kept'   => min(count($files), max(1, $keep)),
+            'pruned' => $pruned,
+        ];
+    }
+
+    /**
      * Write a heartbeat file so external monitoring can detect if cron is alive.
      * The file contains the last successful run timestamp in ISO 8601.
      */
