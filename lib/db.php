@@ -399,6 +399,30 @@ class DB {
             error_log('transaction_time UTC migration skipped: ' . $e->getMessage());
         }
 
+        // Local cache of the CenterEdge system-transaction feed: card merges
+        // and value expirations initiated inside the card system itself.
+        // Polled by the watchdog when capabilities report
+        // systemTransactionReporting.isSupported, with the checkpoint stored
+        // in api_config under "system_tx_last_id". Expired value from
+        // removeValue adjustments is flattened into columns so breakage
+        // reporting is a plain SUM; the full payload stays in raw_payload.
+        $db->exec('CREATE TABLE IF NOT EXISTS system_transactions (
+            transaction_id INTEGER PRIMARY KEY,
+            type TEXT NOT NULL DEFAULT \'\',
+            transaction_time TEXT NOT NULL DEFAULT \'\',
+            card_number TEXT NOT NULL DEFAULT \'\',
+            source_card_number TEXT NOT NULL DEFAULT \'\',
+            destination_card_number TEXT NOT NULL DEFAULT \'\',
+            expired_regular REAL NOT NULL DEFAULT 0,
+            expired_bonus REAL NOT NULL DEFAULT 0,
+            expired_tickets REAL NOT NULL DEFAULT 0,
+            is_wiped INTEGER NOT NULL DEFAULT 0,
+            raw_payload TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_systx_time ON system_transactions(transaction_time DESC)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_systx_type ON system_transactions(type)');
+
         // Permanent per-game, per-day rollup of the raw play feed. The raw
         // game_play_transactions table is a short rolling window (see the
         // purge in Scheduler::purgeOldData) so the live feed stays cheap, but

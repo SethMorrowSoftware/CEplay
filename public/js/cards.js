@@ -325,6 +325,14 @@
             if ((tx.amountPaid || 0) > 0) {
                 detailLines.push('Paid: ' + tx.amountPaid);
             }
+            // Who performed it — CenterEdge includes the operator on
+            // adjustments when the card system persisted it. Answers
+            // "who added this value" without leaving the page.
+            if (tx.operator && (tx.operator.employeeName || tx.operator.stationName)) {
+                var op = 'by ' + (tx.operator.employeeName || 'staff');
+                if (tx.operator.stationName) op += ' @ ' + tx.operator.stationName;
+                detailLines.push(op);
+            }
         }
 
         var amount = tx.amount || {};
