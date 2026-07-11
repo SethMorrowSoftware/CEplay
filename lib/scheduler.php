@@ -1589,7 +1589,8 @@ class Scheduler {
 
         $rows = DB::query(
             'SELECT transaction_time, game_id, game_description, card_number,
-                    redemption_tickets, cash_amount, regular_points, bonus_points
+                    redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
+                    regular_points, bonus_points
              FROM game_play_transactions
              WHERE transaction_time >= :p0 AND transaction_time < :p1',
             [$startIso, $endIso]

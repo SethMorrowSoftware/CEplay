@@ -1036,6 +1036,13 @@
         var amt = (parseFloat(t.regular_points) || 0) + (parseFloat(t.bonus_points) || 0);
         var tickets = parseFloat(t.redemption_tickets) || 0;
         if (amt) meta.push(formatPoints(amt) + ' pts');
+        // Direct credit-card payment at the reader. The server blanks these
+        // fields for roles without view_revenue, so rendering is enough.
+        if (t.cc_card_type || t.cc_last4) {
+            meta.push((t.cc_card_type || 'card') + (t.cc_last4 ? ' •' + t.cc_last4 : ''));
+        } else if ((parseFloat(t.credit_card_amount) || 0) > 0) {
+            meta.push('credit card');
+        }
 
         // Tiered ticket-amount class for visual emphasis on big drops.
         // 100+ tix = jackpot tier (gold + glow); 25+ = high; <25 = base.
@@ -1570,6 +1577,22 @@
                 label: 'Plays this week',
                 value: formatBigNumber(t.plays_week || 0),
                 hint: formatBigNumber(Math.round(t.tickets_week || 0)) + ' tickets across the week',
+                cls: ''
+            },
+            {
+                label: 'Time-play plays today',
+                value: formatBigNumber(t.time_plays_today || 0),
+                hint: (t.plays_today || 0) > 0
+                    ? Math.round(((t.time_plays_today || 0) / t.plays_today) * 100) + '% of today · wristbands & timed sessions'
+                    : 'wristbands & timed sessions',
+                cls: ''
+            },
+            {
+                label: 'Privilege plays today',
+                value: formatBigNumber(t.privilege_plays_today || 0),
+                hint: (t.plays_today || 0) > 0
+                    ? Math.round(((t.privilege_plays_today || 0) / t.plays_today) * 100) + '% of today · ride & session passes'
+                    : 'ride & session passes',
                 cls: ''
             }
         ];

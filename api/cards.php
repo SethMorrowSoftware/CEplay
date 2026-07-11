@@ -15,6 +15,53 @@
 require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
+/**
+ * Attach human-readable groupName to each time play / privilege on a card
+ * payload, resolved from the cached /timePlayGroups and /privilegeGroups
+ * lists (e.g. "Go-Kart Ride" instead of "group 7"). Strictly best-effort
+ * and capability-gated: names are cosmetic, so any upstream failure leaves
+ * the payload exactly as CenterEdge returned it.
+ */
+function cardsResolveGroupNames(CenterEdgeClient $client, array &$card): void {
+    try {
+        $caps = $client->getCapabilitiesCached();
+
+        if (!empty($card['timePlays']) && is_array($card['timePlays']) && isset($caps['timePlay'])) {
+            $names = [];
+            foreach ($client->getTimePlayGroupsCached() as $g) {
+                if (is_array($g) && isset($g['id'])) {
+                    $names[(string)$g['id']] = trim((string)($g['name'] ?? ''));
+                }
+            }
+            foreach ($card['timePlays'] as &$tp) {
+                $gid = isset($tp['groupId']) ? (string)$tp['groupId'] : '';
+                if ($gid !== '' && ($names[$gid] ?? '') !== '') {
+                    $tp['groupName'] = $names[$gid];
+                }
+            }
+            unset($tp);
+        }
+
+        if (!empty($card['privileges']) && is_array($card['privileges']) && !empty($caps['privileges']['isSupported'])) {
+            $names = [];
+            foreach ($client->getPrivilegeGroupsCached() as $g) {
+                if (is_array($g) && isset($g['id'])) {
+                    $names[(string)$g['id']] = trim((string)($g['name'] ?? ''));
+                }
+            }
+            foreach ($card['privileges'] as &$pv) {
+                $gid = isset($pv['groupId']) ? (string)$pv['groupId'] : '';
+                if ($gid !== '' && ($names[$gid] ?? '') !== '') {
+                    $pv['groupName'] = $names[$gid];
+                }
+            }
+            unset($pv);
+        }
+    } catch (Exception $e) {
+        // Group names are decoration — never fail the lookup over them.
+    }
+}
+
 function handleCards(string $method, array $parts, ?array $input): void {
     // Card lookup exposes balances, transactions, and PIN data — sales-side
     // information the 'tech' role is not permitted to see.
@@ -54,6 +101,7 @@ function handleCards(string $method, array $parts, ?array $input): void {
     try {
         if ($sub === null) {
             $card = $client->getCard($cardNumber);
+            cardsResolveGroupNames($client, $card);
             echo json_encode($card);
             return;
         }

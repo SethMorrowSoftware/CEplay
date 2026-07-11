@@ -208,6 +208,9 @@
         } else {
             label = JSON.stringify(tp);
         }
+        // groupName is resolved server-side from /timePlayGroups when the
+        // card system supports it (e.g. "All Games — 45 minutes remaining").
+        if (tp.groupName) label = tp.groupName + ' — ' + label;
         var meta = [];
         if (tp.groupId !== undefined) meta.push('Group ' + tp.groupId);
         if (tp.expirationDateTime) meta.push('Expires ' + App.formatDatetime(tp.expirationDateTime));
@@ -220,8 +223,12 @@
     }
 
     function buildPrivilegeItem(p) {
-        var label = (p.count || 0) + 'x privilege (group ' + (p.groupId !== undefined ? p.groupId : '?') + ')';
+        // Prefer the resolved group name ("3x Go-Kart Ride") over the raw ID.
+        var label = p.groupName
+            ? (p.count || 0) + 'x ' + p.groupName
+            : (p.count || 0) + 'x privilege (group ' + (p.groupId !== undefined ? p.groupId : '?') + ')';
         var meta = [];
+        if (p.groupName && p.groupId !== undefined) meta.push('Group ' + p.groupId);
         if (p.expirationDateTime) meta.push('Expires ' + App.formatDatetime(p.expirationDateTime));
         return App.el('li', { className: 'plain-list-item' }, [
             App.el('div', { className: 'plain-list-title', textContent: label }),

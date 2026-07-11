@@ -317,7 +317,8 @@ function gamesRecentTransactions(bool $hideMoney = false): void {
     $sql = 'SELECT t.transaction_id, t.feed_name, t.card_number, t.type, t.game_id,
                    COALESCE(NULLIF(t.game_description, \'\'), c.game_name) AS game_name,
                    t.transaction_time, t.regular_points, t.bonus_points, t.redemption_tickets,
-                   t.cash_amount, t.used_time_play, t.used_play_privilege, t.fetched_at
+                   t.cash_amount, t.credit_card_amount, t.cc_card_type, t.cc_last4,
+                   t.used_time_play, t.used_play_privilege, t.fetched_at
             FROM game_play_transactions t
             LEFT JOIN game_state_cache c ON c.game_id = t.game_id ';
 
@@ -340,7 +341,13 @@ function gamesRecentTransactions(bool $hideMoney = false): void {
         $r['used_time_play'] = (bool)$r['used_time_play'];
         $r['used_play_privilege'] = (bool)$r['used_play_privilege'];
         if ($hideMoney) {
+            // Payment data is view_revenue-gated: zero the amounts AND blank
+            // the credit-card brand/last-4 so nothing about how a play was
+            // paid reaches roles without that permission.
             $r['cash_amount'] = 0.0;
+            $r['credit_card_amount'] = 0.0;
+            $r['cc_card_type'] = '';
+            $r['cc_last4'] = '';
         }
         return $r;
     }, $rows);
@@ -407,7 +414,7 @@ function gamesTopTransactions(bool $hideMoney = false): void {
                    SUM(t.regular_points) AS sum_regular,
                    SUM(t.bonus_points) AS sum_bonus,
                    SUM(t.redemption_tickets) AS sum_tickets,
-                   SUM(t.cash_amount) AS sum_cash,
+                   SUM(t.cash_amount + t.credit_card_amount) AS sum_cash,
                    MAX(t.transaction_time) AS last_play
             FROM game_play_transactions t
             LEFT JOIN game_state_cache c ON c.game_id = t.game_id ';
@@ -496,6 +503,8 @@ function gamesTicketStats(): void {
                    SUM(CASE WHEN t.transaction_time >= :p1 THEN t.redemption_tickets ELSE 0 END) AS tickets_today,
                    SUM(CASE WHEN t.transaction_time >= :p2 THEN 1 ELSE 0 END) AS plays_week,
                    SUM(CASE WHEN t.transaction_time >= :p2 THEN t.redemption_tickets ELSE 0 END) AS tickets_week,
+                   SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays_today,
+                   SUM(CASE WHEN t.transaction_time >= :p1 AND t.used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays_today,
                    MAX(t.transaction_time) AS last_play
             FROM game_play_transactions t
             WHERE t.game_id != \'\'
@@ -509,6 +518,7 @@ function gamesTicketStats(): void {
         'tickets_today' => 0.0, 'plays_today' => 0,
         'tickets_week' => 0.0, 'plays_week' => 0,
         'tickets_all' => 0.0, 'plays_all' => 0,
+        'time_plays_today' => 0, 'privilege_plays_today' => 0,
     ];
     foreach ($rows as $r) {
         $gid = (string)$r['game_id'];
@@ -531,6 +541,8 @@ function gamesTicketStats(): void {
         $totals['plays_week']    += (int)$r['plays_week'];
         $totals['tickets_all']   += (float)$r['tickets_all'];
         $totals['plays_all']     += (int)$r['plays_all'];
+        $totals['time_plays_today']      += (int)$r['time_plays_today'];
+        $totals['privilege_plays_today'] += (int)$r['privilege_plays_today'];
     }
 
     $meta = DB::queryOne('SELECT MAX(fetched_at) AS last_poll, COUNT(*) AS total_cached FROM game_play_transactions');
@@ -561,11 +573,13 @@ function gamesPollTransactions(): void {
     }
 
     try {
-        $summary = $client->pollGameTransactions('default');
+        // Poll every feed the card system advertises, same as the watchdog.
+        $summary = $client->pollAllGameTransactionFeeds();
         echo json_encode([
-            'success' => true,
+            'success' => empty($summary['errors']),
             'fetched' => $summary['fetched'],
-            'last_id' => $summary['last_id'],
+            'feeds'   => array_keys($summary['feeds']),
+            'errors'  => (object)$summary['errors'],
             'polled_at' => gmdate('Y-m-d H:i:s'),
         ]);
     } catch (RuntimeException $e) {

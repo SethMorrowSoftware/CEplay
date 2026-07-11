@@ -306,12 +306,18 @@ function handleHealthCheck(): void {
     // page cap is hit with pages still full (feed producing faster than we
     // drain — e.g. catching up after an outage). Cleared automatically.
     try {
-        $backlogSince = DB::getConfig('game_tx_backlog_default');
-        if ($backlogSince) {
+        // One backlog flag per polled feed (game_tx_backlog_<feedName>) —
+        // scan by prefix so secondary feeds surface here without this check
+        // needing to know the capabilities feed list.
+        $backlogRows = DB::query(
+            "SELECT key, value FROM api_config WHERE key LIKE 'game_tx_backlog_%' AND value IS NOT NULL"
+        );
+        foreach ($backlogRows as $blr) {
+            $feed = substr((string)$blr['key'], strlen('game_tx_backlog_'));
             // Advisory only (no status downgrade): the app functions normally
             // during a catch-up; only recent-plays reporting lags.
-            $warnings[] = 'Game-play transaction feed is backlogged (since ' . $backlogSince
-                . ' UTC). Recent-plays data may lag until the poll catches up.';
+            $warnings[] = 'Game-play transaction feed "' . $feed . '" is backlogged (since '
+                . $blr['value'] . ' UTC). Recent-plays data may lag until the poll catches up.';
         }
     } catch (Exception $e) {
         // Health check must never fail on a config read

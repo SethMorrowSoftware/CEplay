@@ -74,10 +74,11 @@ function analyticsScrubMoney(array &$payload): void {
     if (isset($payload['charts']) && is_array($payload['charts'])) {
         // The cash leaderboard is monetary end-to-end — drop it entirely.
         $payload['charts']['top_games_cash'] = [];
-        // Per-row cash also rides along in the daily series and the plays /
-        // tickets leaderboards; zero it there so no dollar figure slips out
-        // through a side channel (the previous scrub missed these).
-        foreach (['daily', 'top_games_plays', 'top_games_tickets'] as $seriesKey) {
+        // Per-row cash also rides along in the daily series, the plays /
+        // tickets leaderboards, and the category breakdown; zero it there so
+        // no dollar figure slips out through a side channel (the previous
+        // scrub missed these).
+        foreach (['daily', 'top_games_plays', 'top_games_tickets', 'by_category'] as $seriesKey) {
             if (isset($payload['charts'][$seriesKey]) && is_array($payload['charts'][$seriesKey])) {
                 foreach ($payload['charts'][$seriesKey] as &$row) {
                     if (is_array($row) && array_key_exists('cash', $row)) {
@@ -142,11 +143,15 @@ function analyticsOverview(bool $hideMoney = false): void {
     $topGamesTickets = analyticsTopGames($startIsoUtc, $endIsoUtc, 'tickets', 10);
     $topGamesCash    = analyticsTopGames($startIsoUtc, $endIsoUtc, 'cash', 10);
 
+    // ---- Category breakdown (arcade vs rides vs batting cages, etc.) ----
+    $byCategory = analyticsByCategory($startIsoUtc, $endIsoUtc);
+
     // ---- Time-bucketed series (hour-of-day, day-of-week, daily) ----
     // We pull just the columns we need for binning so memory stays sane.
     // The optimizer uses idx_gpt_time on transaction_time DESC.
     $bucketRows = DB::query(
-        'SELECT transaction_time, redemption_tickets, cash_amount
+        'SELECT transaction_time, redemption_tickets,
+                (cash_amount + credit_card_amount) AS cash_amount
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1',
         [$startIsoUtc, $endIsoUtc]
@@ -252,6 +257,7 @@ function analyticsOverview(bool $hideMoney = false): void {
             'top_games_plays'  => $topGamesPlays,
             'top_games_tickets'=> $topGamesTickets,
             'top_games_cash'   => $topGamesCash,
+            'by_category'      => $byCategory,
             'actions_by_source'  => $actionsBreakdown['by_source'],
             'actions_by_action'  => $actionsBreakdown['by_action'],
             'actions_success_fail' => $actionsBreakdown['success_fail'],
@@ -346,7 +352,7 @@ function analyticsKpis(string $startIso, string $endIso): array {
              COUNT(*) AS plays,
              COUNT(DISTINCT CASE WHEN card_number != \'\' AND card_number != \'000000\' THEN card_number END) AS unique_cards,
              COALESCE(SUM(redemption_tickets), 0) AS tickets,
-             COALESCE(SUM(cash_amount), 0) AS cash,
+             COALESCE(SUM(cash_amount + credit_card_amount), 0) AS cash,
              COALESCE(SUM(regular_points), 0) AS points,
              COALESCE(SUM(bonus_points), 0) AS bonus_points,
              SUM(CASE WHEN card_number = \'000000\' THEN 1 ELSE 0 END) AS credit_card_plays,
@@ -376,6 +382,100 @@ function analyticsKpis(string $startIso, string $endIso): array {
         'avg_tickets_per_play' => $plays > 0 ? round($tickets / $plays, 2) : 0,
         'avg_cash_per_play'    => $plays > 0 ? round($cash / $plays, 2) : 0,
     ];
+}
+
+/**
+ * Plays / tickets / cash bucketed by game category for the range.
+ *
+ * Purely local: per-game aggregates from the raw feed joined against the
+ * category memberships cached in game_state_cache, with names resolved from
+ * the cache_categories payload in api_config (read directly, ignoring the
+ * TTL — stale names beat "Category 7", and the daily sync refreshes them).
+ * A game in multiple categories counts toward each (documented in the UI),
+ * and games with no category land in an "Uncategorized" bucket, so nothing
+ * silently disappears. Cash here is money and is zeroed for non-view_revenue
+ * roles by analyticsScrubMoney.
+ */
+function analyticsByCategory(string $startIso, string $endIso): array {
+    $perGame = DB::query(
+        'SELECT game_id,
+                COUNT(*) AS plays,
+                COALESCE(SUM(redemption_tickets), 0) AS tickets,
+                COALESCE(SUM(cash_amount + credit_card_amount), 0) AS cash
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0 AND transaction_time < :p1
+           AND game_id != \'\'
+         GROUP BY game_id',
+        [$startIso, $endIso]
+    );
+    if (empty($perGame)) {
+        return [];
+    }
+
+    // game_id -> [category ids]
+    $memberships = [];
+    foreach (DB::query('SELECT game_id, categories FROM game_state_cache') as $r) {
+        $cats = json_decode((string)($r['categories'] ?? '[]'), true);
+        $memberships[(string)$r['game_id']] = is_array($cats) ? $cats : [];
+    }
+
+    // category id -> name (best-effort from the cached /games/categories payload)
+    $names = [];
+    $rawCats = DB::getConfig('cache_categories');
+    if ($rawCats) {
+        $decoded = json_decode($rawCats, true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $c) {
+                if (is_array($c) && isset($c['id'])) {
+                    $names[(string)$c['id']] = trim((string)($c['name'] ?? ''));
+                }
+            }
+        }
+    }
+
+    $buckets = [];
+    foreach ($perGame as $g) {
+        $gid = (string)$g['game_id'];
+        $cats = $memberships[$gid] ?? [];
+        $keys = [];
+        foreach ($cats as $cid) {
+            if (is_int($cid) || is_string($cid) || is_float($cid)) {
+                $keys[] = (string)$cid;
+            }
+        }
+        if (empty($keys)) {
+            $keys = ['__none__'];
+        }
+        foreach ($keys as $key) {
+            if (!isset($buckets[$key])) {
+                $buckets[$key] = [
+                    'category_id' => $key === '__none__' ? null : $key,
+                    'name'        => $key === '__none__'
+                        ? 'Uncategorized'
+                        : (($names[$key] ?? '') !== '' ? $names[$key] : 'Category ' . $key),
+                    'plays'   => 0,
+                    'tickets' => 0.0,
+                    'cash'    => 0.0,
+                    'games'   => 0,
+                ];
+            }
+            $buckets[$key]['plays']   += (int)$g['plays'];
+            $buckets[$key]['tickets'] += (float)$g['tickets'];
+            $buckets[$key]['cash']    += (float)$g['cash'];
+            $buckets[$key]['games']   += 1;
+        }
+    }
+
+    $out = array_values($buckets);
+    usort($out, function ($a, $b) {
+        return $b['plays'] <=> $a['plays'];
+    });
+    foreach ($out as &$row) {
+        $row['tickets'] = round($row['tickets'], 2);
+        $row['cash']    = round($row['cash'], 2);
+    }
+    unset($row);
+    return $out;
 }
 
 /**
@@ -448,7 +548,7 @@ function analyticsTopGames(string $startIso, string $endIso, string $metric, int
                 COALESCE(NULLIF(MAX(t.game_description), \'\'), MAX(c.game_name), t.game_id) AS game_name,
                 COUNT(*) AS plays,
                 COALESCE(SUM(t.redemption_tickets), 0) AS tickets,
-                COALESCE(SUM(t.cash_amount), 0) AS cash
+                COALESCE(SUM(t.cash_amount + t.credit_card_amount), 0) AS cash
          FROM game_play_transactions t
          LEFT JOIN game_state_cache c ON c.game_id = t.game_id
          WHERE t.transaction_time >= :p0 AND t.transaction_time < :p1
@@ -725,7 +825,8 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
 
     $rows = DB::query(
         'SELECT transaction_time, game_id, game_description, card_number,
-                redemption_tickets, cash_amount, regular_points, bonus_points
+                redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
+                regular_points, bonus_points
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1',
         [$lo, $hi]
@@ -901,7 +1002,8 @@ function perfHourlySeries(?string $gid, string $date, DateTimeZone $tz): array {
     $hi = (clone $endExcl)->setTimezone($utc)->modify('+1 day')->format('Y-m-d\TH:i:s\Z');
 
     $params = [$lo, $hi];
-    $sql = 'SELECT transaction_time, redemption_tickets, cash_amount
+    $sql = 'SELECT transaction_time, redemption_tickets,
+                   (cash_amount + credit_card_amount) AS cash_amount
             FROM game_play_transactions
             WHERE transaction_time >= :p0 AND transaction_time < :p1';
     if ($gid !== null && $gid !== '') {
