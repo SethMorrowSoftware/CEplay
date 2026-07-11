@@ -1722,8 +1722,9 @@ class Scheduler {
 
         // Purge old game-play transactions. We only need a recent rolling
         // window for the live feed and top-games widget; longer-term reporting
-        // is owned by CenterEdge itself.
-        $cutoff = date('c', strtotime("-$playFeedRetentionDays days"));
+        // is owned by CenterEdge itself. Cutoff must match the canonical UTC
+        // "Z" format transaction_time is stored in — the comparison is lexical.
+        $cutoff = gmdate('Y-m-d\TH:i:s\Z', strtotime("-$playFeedRetentionDays days"));
         $deleted = DB::execute(
             'DELETE FROM game_play_transactions WHERE transaction_time < :p0',
             [$cutoff]

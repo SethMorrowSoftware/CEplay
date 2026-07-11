@@ -382,16 +382,19 @@ function gamesTopTransactions(bool $hideMoney = false): void {
         $tzObj = new DateTimeZone('UTC');
     }
 
+    // Same canonical UTC "Z" format transaction_time is stored in — the
+    // WHERE below compares strings lexically (see gamesTicketStats).
+    $utc = new DateTimeZone('UTC');
     $cutoff = null;
     switch ($window) {
         case 'hour':
-            $cutoff = (new DateTime('-1 hour', new DateTimeZone('UTC')))->format('c');
+            $cutoff = (new DateTime('-1 hour', $utc))->format('Y-m-d\TH:i:s\Z');
             break;
         case 'today':
-            $cutoff = (new DateTime('today 00:00:00', $tzObj))->format('c');
+            $cutoff = (new DateTime('today 00:00:00', $tzObj))->setTimezone($utc)->format('Y-m-d\TH:i:s\Z');
             break;
         case 'week':
-            $cutoff = (new DateTime('-7 days', new DateTimeZone('UTC')))->format('c');
+            $cutoff = (new DateTime('-7 days', $utc))->format('Y-m-d\TH:i:s\Z');
             break;
         case 'all':
         default:
@@ -472,9 +475,15 @@ function gamesTicketStats(): void {
         $tzObj = new DateTimeZone('UTC');
     }
 
-    $hourCutoff  = (new DateTime('-1 hour', new DateTimeZone('UTC')))->format('c');
-    $todayCutoff = (new DateTime('today 00:00:00', $tzObj))->format('c');
-    $weekCutoff  = (new DateTime('-7 days', new DateTimeZone('UTC')))->format('c');
+    // Cutoffs are compared lexically against transaction_time, which is
+    // stored in canonical UTC "YYYY-MM-DDTHH:MM:SSZ" — so they must be
+    // emitted in that exact format. format('c') here used to produce
+    // "+00:00" / venue-offset strings that compared wrong against the
+    // stored values, which zeroed out the dashboard's last-hour stats.
+    $utc = new DateTimeZone('UTC');
+    $hourCutoff  = (new DateTime('-1 hour', $utc))->format('Y-m-d\TH:i:s\Z');
+    $todayCutoff = (new DateTime('today 00:00:00', $tzObj))->setTimezone($utc)->format('Y-m-d\TH:i:s\Z');
+    $weekCutoff  = (new DateTime('-7 days', $utc))->format('Y-m-d\TH:i:s\Z');
 
     // One pass over the cache: bucket each transaction into hour/today/week/all
     // using SQL CASE expressions so we get all windows in a single query.
