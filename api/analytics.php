@@ -1248,7 +1248,7 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
 
     $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
     $sort = isset($_GET['sort']) ? (string)$_GET['sort'] : 'tickets';
-    if (!in_array($sort, ['tickets', 'plays', 'cash', 'name'], true)) $sort = 'tickets';
+    if (!in_array($sort, ['tickets', 'plays', 'cash', 'name', 'payout', 'points_share', 'active_days'], true)) $sort = 'tickets';
     if ($hideMoney && $sort === 'cash') $sort = 'tickets';
     $page = max(1, (int)($_GET['page'] ?? 1));
     $pageSize = max(1, min(200, (int)($_GET['page_size'] ?? 25)));
@@ -1257,6 +1257,51 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
     $dailyPrev = perfDailyPerGame($win['prev_from'], $win['prev_to'], $tz);
     $curTot  = perfSumPerGame($dailyCur);
     $prevTot = perfSumPerGame($dailyPrev);
+
+    // Redemption classification (same rule as the payout gauge: a game that
+    // has EVER dispensed a ticket). Powers the per-game payout %, the share
+    // of the venue's redemption-point denominator (which surfaces the games
+    // dragging the venue payout down), and keeps rides/cages out of the ratio.
+    $redemption = [];
+    foreach (DB::query(
+        'SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
+         UNION
+         SELECT game_id FROM game_daily_stats WHERE tickets > 0'
+    ) as $rr) {
+        $redemption[(string)$rr['game_id']] = true;
+    }
+
+    // Utilization: active days (days with >=1 play in the window) + last active
+    // date, straight from the stitched daily buckets.
+    $activeDays = [];
+    $lastActive = [];
+    foreach ($dailyCur['byDate'] as $date => $games) {
+        foreach ($games as $gid => $b) {
+            if ((int)$b['plays'] > 0) {
+                $activeDays[$gid] = ($activeDays[$gid] ?? 0) + 1;
+                if (!isset($lastActive[$gid]) || $date > $lastActive[$gid]) $lastActive[$gid] = (string)$date;
+            }
+        }
+    }
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+    $rangeTo = ($win['to'] < $today) ? $win['to'] : $today;
+    try {
+        $ds = DateTime::createFromFormat('!Y-m-d', $win['from'], $tz);
+        $de = DateTime::createFromFormat('!Y-m-d', $rangeTo, $tz);
+        $daysInRange = ($ds && $de && $de >= $ds) ? ((int)$ds->diff($de)->days + 1) : 1;
+    } catch (Exception $e) {
+        $daysInRange = 1;
+    }
+
+    // Venue redemption denominator (points) + numerator (tickets) for the
+    // per-game points-share and the summary payout figure.
+    $redPointsTotal = 0.0;
+    $redTicketsTotal = 0.0;
+    foreach ($curTot as $gid => $c) {
+        if (!isset($redemption[$gid])) continue;
+        $redPointsTotal  += (float)$c['regular_points'] + (float)$c['bonus_points'];
+        $redTicketsTotal += (float)$c['tickets'];
+    }
 
     // Authoritative current names + status come from the game cache; include
     // every known game so search can find zero-play games too.
@@ -1277,6 +1322,8 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
         $p = $prevTot[$gid] ?? $zero;
         $name = $cache[$gid]['name'] ?? ($dailyCur['names'][$gid] ?? ($dailyPrev['names'][$gid] ?? $gid));
         if ($name === '') $name = $gid;
+        $pts = (float)$c['regular_points'] + (float)$c['bonus_points'];
+        $isRed = isset($redemption[$gid]);
         $rows[] = [
             'game_id'              => $gid,
             'game_name'            => $name,
@@ -1284,8 +1331,16 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
             'plays'                => (int)$c['plays'],
             'tickets'              => round((float)$c['tickets'], 2),
             'cash'                 => round((float)$c['cash'], 2),
-            'points'               => round((float)$c['regular_points'] + (float)$c['bonus_points'], 2),
+            'points'               => round($pts, 2),
             'avg_tickets_per_play' => $c['plays'] > 0 ? round((float)$c['tickets'] / $c['plays'], 2) : 0,
+            // Drill-down: per-game payout % and its share of the venue's
+            // redemption-point denominator (null for non-redemption games —
+            // rides/cages aren't in the ratio). Utilization: active days.
+            'is_redemption'        => $isRed,
+            'payout_pct'           => ($isRed && $pts > 0) ? round((float)$c['tickets'] / $pts * 100, 1) : null,
+            'points_share'         => ($isRed && $redPointsTotal > 0) ? round($pts / $redPointsTotal * 100, 1) : null,
+            'active_days'          => $activeDays[$gid] ?? 0,
+            'last_active_date'     => $lastActive[$gid] ?? null,
             'prev_plays'           => (int)$p['plays'],
             'prev_tickets'         => round((float)$p['tickets'], 2),
             'prev_cash'            => round((float)$p['cash'], 2),
@@ -1302,7 +1357,20 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
 
     usort($rows, function ($a, $b) use ($sort) {
         if ($sort === 'name') return strcasecmp((string)$a['game_name'], (string)$b['game_name']);
-        $key = $sort === 'plays' ? 'plays' : ($sort === 'cash' ? 'cash' : 'tickets');
+        // Nullable metric columns (payout %, points share): games the metric
+        // doesn't apply to sink below those that have a value, then by plays.
+        if ($sort === 'payout' || $sort === 'points_share') {
+            $key = $sort === 'payout' ? 'payout_pct' : 'points_share';
+            $av = $a[$key]; $bv = $b[$key];
+            if ($av === null && $bv === null) return $b['plays'] <=> $a['plays'];
+            if ($av === null) return 1;
+            if ($bv === null) return -1;
+            if ($av == $bv) return $b['plays'] <=> $a['plays'];
+            return $bv <=> $av;
+        }
+        $key = $sort === 'plays' ? 'plays'
+             : ($sort === 'cash' ? 'cash'
+             : ($sort === 'active_days' ? 'active_days' : 'tickets'));
         if ($a[$key] == $b[$key]) return $b['plays'] <=> $a['plays'];
         return ($b[$key] <=> $a[$key]);
     });
@@ -1328,6 +1396,11 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
             'total'       => $total,
             'total_pages' => (int)ceil(max(1, $total) / $pageSize),
         ],
+        // Payout drill-down context.
+        'payout_target_pct' => (float)(DB::getConfig('payout_target_pct') ?: 33),
+        'days_in_range'   => $daysInRange,
+        'venue_payout_pct'=> $redPointsTotal > 0 ? round($redTicketsTotal / $redPointsTotal * 100, 1) : null,
+        'redemption_games'=> count($redemption),
         'hide_money'      => $hideMoney,
         'generated_at'    => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
     ];

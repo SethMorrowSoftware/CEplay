@@ -83,9 +83,12 @@
 
         container.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header flex-between' }, [
-                App.el('div', { className: 'flex-center gap-sm' }, [
-                    App.el('div', { className: 'card-title', textContent: 'Game leaderboard' }),
-                    App.el('span', { id: 'perf-table-meta', className: 'text-sm text-secondary' })
+                App.el('div', {}, [
+                    App.el('div', { className: 'flex-center gap-sm' }, [
+                        App.el('div', { className: 'card-title', textContent: 'Game leaderboard' }),
+                        App.el('span', { id: 'perf-table-meta', className: 'text-sm text-secondary' })
+                    ]),
+                    App.el('div', { id: 'perf-payout-summary', className: 'text-sm text-secondary', style: { marginTop: '0.15rem' } })
                 ]),
                 App.el('span', { className: 'text-xs text-muted', textContent: 'Click any game for its trend' })
             ]),
@@ -406,6 +409,27 @@
         var meta = document.getElementById('perf-table-meta');
         if (meta) meta.textContent = formatInt(pg.total) + ' game' + (pg.total === 1 ? '' : 's') + (state.search ? ' matching "' + state.search + '"' : '');
 
+        // Venue payout context for the drill-down: the aggregate the per-game
+        // Payout % / % of pts columns break down.
+        var target = state.data.payout_target_pct || 33;
+        var summary = document.getElementById('perf-payout-summary');
+        if (summary) {
+            if (state.data.venue_payout_pct === null || state.data.venue_payout_pct === undefined) {
+                summary.textContent = 'No redemption plays in this period.';
+            } else {
+                var vp = state.data.venue_payout_pct;
+                summary.innerHTML = '';
+                summary.appendChild(App.el('span', { textContent: 'Venue payout ' }));
+                summary.appendChild(App.el('span', {
+                    className: vp > target ? 'text-danger' : 'text-success',
+                    style: { fontWeight: '600' },
+                    textContent: vp + '%'
+                }));
+                summary.appendChild(App.el('span', { textContent: ' · target ≤ ' + target + '% · '
+                    + formatInt(state.data.redemption_games || 0) + ' redemption games · sort by % of pts to find what dilutes it' }));
+            }
+        }
+
         el.innerHTML = '';
         if (games.length === 0) {
             el.appendChild(App.emptyState('📊', state.search
@@ -415,12 +439,16 @@
             return;
         }
 
+        var target = state.data.payout_target_pct || 33;
         var columns = [
             { key: '_rank', label: '#', sortable: false },
             { key: 'name', label: 'Game', sortable: true },
             { key: 'status', label: 'Status', sortable: false },
             { key: 'plays', label: 'Plays', sortable: true, right: true },
-            { key: 'tickets', label: 'Tickets', sortable: true, right: true }
+            { key: 'tickets', label: 'Tickets', sortable: true, right: true },
+            { key: 'payout', label: 'Payout %', sortable: true, right: true },
+            { key: 'points_share', label: '% of pts', sortable: true, right: true },
+            { key: 'active_days', label: 'Active', sortable: true, right: true }
         ];
         if (money) columns.push({ key: 'cash', label: 'Revenue', sortable: true, right: true });
         columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, right: true });
@@ -460,6 +488,43 @@
                         textContent: g.tickets > 0 ? formatInt(Math.round(g.tickets)) : '—' })
                 ])
             ];
+            // Payout % — red above target, green at/below, em-dash for
+            // non-redemption games and redemption games with no points yet.
+            if (g.payout_pct === null || g.payout_pct === undefined) {
+                cells.push(App.el('td', { className: 'text-right num-cell text-muted', textContent: '—',
+                    title: g.is_redemption ? 'No points played in this period' : 'Not a redemption game' }));
+            } else {
+                var over = g.payout_pct > target;
+                cells.push(App.el('td', { className: 'text-right num-cell' }, [
+                    App.el('span', {
+                        className: over ? 'text-danger' : 'text-success',
+                        style: over ? { fontWeight: '600' } : {},
+                        textContent: g.payout_pct + '%',
+                        title: formatInt(Math.round(g.tickets)) + ' tickets / ' + formatInt(Math.round(g.points)) + ' points'
+                    })
+                ]));
+            }
+            // Share of the venue's redemption-point denominator — a small bar
+            // makes the dominant point-burners obvious at a glance.
+            if (g.points_share === null || g.points_share === undefined) {
+                cells.push(App.el('td', { className: 'text-right num-cell text-muted', textContent: '—' }));
+            } else {
+                cells.push(App.el('td', { className: 'text-right num-cell' }, [
+                    App.el('div', { className: 'perf-share' }, [
+                        App.el('span', { className: 'perf-share-val', textContent: g.points_share + '%' }),
+                        App.el('span', { className: 'perf-share-bar' }, [
+                            App.el('span', { className: 'perf-share-bar-fill',
+                                style: { width: Math.min(100, g.points_share) + '%' } })
+                        ])
+                    ])
+                ]));
+            }
+            // Utilization: active days out of days in the range + last-active.
+            var daysIn = state.data.days_in_range || 1;
+            cells.push(App.el('td', { className: 'text-right num-cell text-secondary',
+                textContent: (g.active_days || 0) + (daysIn > 1 ? '/' + daysIn : ''),
+                title: g.last_active_date ? 'Last active ' + g.last_active_date : 'No plays in this period' }));
+
             if (money) cells.push(App.el('td', { className: 'text-right num-cell', textContent: g.cash > 0 ? formatCurrency(g.cash) : '—' }));
             cells.push(App.el('td', { className: 'text-right num-cell text-secondary',
                 textContent: g.avg_tickets_per_play > 0 ? Number(g.avg_tickets_per_play).toFixed(1) : '—' }));
