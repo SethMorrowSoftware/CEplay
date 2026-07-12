@@ -231,12 +231,17 @@
     letter-spacing: 0.08em;
     color: var(--text-secondary);
 }
+/* Time axis row under the sparkline — endpoints pushed to opposite ends so
+   "12h ago" sits under the left of the curve and "now" under the right. */
 .hero-pulse-spark-axis {
+    display: flex;
+    justify-content: space-between;
     color: var(--text-muted);
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: none;
     font-size: 0.66rem;
+    margin-top: 0.15rem;
 }
 .hero-pulse-spark-canvas {
     display: block;
