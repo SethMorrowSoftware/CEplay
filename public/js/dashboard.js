@@ -30,6 +30,8 @@
     var ticketTotals = null; // Aggregate totals across the venue
     var payoutData = null;   // Ticket payout % per window + target, from /transactions/payout
     var payoutTargetPct = 33; // House payout target — refreshed from ticket-stats on every poll
+    var hourlyToday = null;  // Server 24-bin hourly plays/tickets for today (accurate peak hour)
+    var hourlyRecent = null; // Server 12-bin last-12-clock-hours (accurate hero sparkline)
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -517,7 +519,7 @@
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(function() {
                 var canvas = document.getElementById('hero-spark');
-                if (canvas) paintHeroSparkline(canvas, buildHourlyBuckets(12));
+                if (canvas) paintHeroSparkline(canvas, sparklineBuckets());
             }, 120);
         };
         window.addEventListener('resize', onResize);
@@ -639,6 +641,11 @@
             var statsData = canSeeSales ? (results[4] || {}) : {};
             ticketStats = statsData.stats || {};
             ticketTotals = statsData.totals || null;
+            // Server-computed hour bins cover ALL of today's plays — the
+            // feed cache is capped at 500 rows, so anything derived from it
+            // (peak hour, sparkline, unique cards) goes wrong on busy days.
+            hourlyToday = Array.isArray(statsData.hourly_today) ? statsData.hourly_today : null;
+            hourlyRecent = Array.isArray(statsData.hourly_recent) ? statsData.hourly_recent : null;
             if (typeof statsData.payout_target_pct === 'number') {
                 payoutTargetPct = statsData.payout_target_pct;
             }
@@ -980,7 +987,7 @@
             // "awaiting first play" with a day of plays on the board.
             renderTicketSummary();
             var heroCanvas = document.getElementById('hero-spark');
-            if (heroCanvas) paintHeroSparkline(heroCanvas, buildHourlyBuckets(12));
+            if (heroCanvas) paintHeroSparkline(heroCanvas, sparklineBuckets());
         } catch (err) {
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Feed unavailable: ' + err.message }));
@@ -1267,6 +1274,19 @@
             return;
         }
         el.__animFrame = requestAnimationFrame(tick);
+    }
+
+    /**
+     * Buckets for the hero sparkline: prefer the server's 12-bin histogram
+     * (covers EVERY play in the last 12 clock hours), falling back to the
+     * legacy feed-cache derivation — which is capped at 500 rows and goes
+     * flat/misleading on busy days — only while talking to a stale backend.
+     */
+    function sparklineBuckets() {
+        if (hourlyRecent && hourlyRecent.length) {
+            return hourlyRecent.map(function(b) { return b.plays || 0; });
+        }
+        return buildHourlyBuckets(12);
     }
 
     /**
@@ -1665,18 +1685,22 @@
             }
         });
 
-        // The recent transactions feed gives us per-card visibility for today
-        // even though the totals endpoint already aggregates plays/tickets.
-        // We still derive unique-cards-today locally so the chip can show it
-        // without an extra round-trip.
-        if (allTransactions && allTransactions.length) {
-            allTransactions.forEach(function(tr) {
-                if (tr.no_card || !tr.card_number) return;
-                if (tr.card_number === '000000') return;
-                uniqueCardsToday[tr.card_number] = true;
-            });
+        // Prefer the server's count (covers every play today); the feed-cache
+        // derivation below undercounts on busy days because the cache holds
+        // only the newest 500 rows. Fallback for stale backends only.
+        var uniqueCount;
+        if (t && typeof t.unique_cards_today === 'number') {
+            uniqueCount = t.unique_cards_today;
+        } else {
+            if (allTransactions && allTransactions.length) {
+                allTransactions.forEach(function(tr) {
+                    if (tr.no_card || !tr.card_number) return;
+                    if (tr.card_number === '000000') return;
+                    uniqueCardsToday[tr.card_number] = true;
+                });
+            }
+            uniqueCount = Object.keys(uniqueCardsToday).length;
         }
-        var uniqueCount = Object.keys(uniqueCardsToday).length;
 
         // ---- Animate the giant ticket counter ----
         var ticketsValEl = document.getElementById('hero-tickets-value');
@@ -1776,7 +1800,7 @@
         // ---- Hourly sparkline (12-bin) ----
         var canvas = document.getElementById('hero-spark');
         if (canvas) {
-            paintHeroSparkline(canvas, buildHourlyBuckets(12));
+            paintHeroSparkline(canvas, sparklineBuckets());
         }
 
         // Save for next-cycle delta detection.
@@ -1922,33 +1946,46 @@
      * "label" is a localized "3 PM" / "3 AM" string for direct display.
      */
     function computePeakHourToday() {
-        if (!allTransactions || allTransactions.length === 0) return null;
-
-        // Compute the start-of-today in the app timezone, expressed as a
-        // browser-comparable UTC ms timestamp.
-        var now = new Date();
-        var fmt = new Intl.DateTimeFormat('en-CA', {
-            timeZone: App.appTimezone,
-            year: 'numeric', month: '2-digit', day: '2-digit'
-        });
-        var todayStr = fmt.format(now);  // YYYY-MM-DD in app TZ
-        var hourFmt = new Intl.DateTimeFormat('en-US', {
-            timeZone: App.appTimezone, hour12: false,
-            hour: '2-digit'
-        });
-        // Bin txn-time into hour-of-day (0-23) in app TZ; aggregate plays + tickets.
+        // Preferred source: the server's 24-bin histogram over ALL of
+        // today's plays. The legacy path below derives from the feed cache,
+        // which is capped at 500 rows — on a busy day it only sees the tail
+        // of the evening and reports the wrong peak. Kept as a fallback for
+        // a stale backend during a rolling deploy.
         var bins = {};
-        for (var i = 0; i < allTransactions.length; i++) {
-            var tr = allTransactions[i];
-            var d = App.toUtcDate(tr.transaction_time);
-            if (!d) continue;
-            // Skip rows that aren't from "today" in the venue timezone.
-            if (fmt.format(d) !== todayStr) continue;
-            var hourLocal = parseInt(hourFmt.format(d), 10);
-            if (isNaN(hourLocal)) continue;
-            if (!bins[hourLocal]) bins[hourLocal] = { plays: 0, tickets: 0 };
-            bins[hourLocal].plays += 1;
-            bins[hourLocal].tickets += parseFloat(tr.redemption_tickets) || 0;
+        if (hourlyToday && hourlyToday.length) {
+            hourlyToday.forEach(function(b) {
+                if ((b.plays || 0) > 0) {
+                    bins[b.hour] = { plays: b.plays || 0, tickets: b.tickets || 0 };
+                }
+            });
+        } else {
+            if (!allTransactions || allTransactions.length === 0) return null;
+
+            // Compute the start-of-today in the app timezone, expressed as a
+            // browser-comparable UTC ms timestamp.
+            var now = new Date();
+            var fmt = new Intl.DateTimeFormat('en-CA', {
+                timeZone: App.appTimezone,
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            });
+            var todayStr = fmt.format(now);  // YYYY-MM-DD in app TZ
+            var hourFmt = new Intl.DateTimeFormat('en-US', {
+                timeZone: App.appTimezone, hour12: false,
+                hour: '2-digit'
+            });
+            // Bin txn-time into hour-of-day (0-23) in app TZ.
+            for (var i = 0; i < allTransactions.length; i++) {
+                var tr = allTransactions[i];
+                var d = App.toUtcDate(tr.transaction_time);
+                if (!d) continue;
+                // Skip rows that aren't from "today" in the venue timezone.
+                if (fmt.format(d) !== todayStr) continue;
+                var hourLocal = parseInt(hourFmt.format(d), 10);
+                if (isNaN(hourLocal)) continue;
+                if (!bins[hourLocal]) bins[hourLocal] = { plays: 0, tickets: 0 };
+                bins[hourLocal].plays += 1;
+                bins[hourLocal].tickets += parseFloat(tr.redemption_tickets) || 0;
+            }
         }
         // Find the bin with the most tickets (fall back to plays).
         var bestHour = -1;
