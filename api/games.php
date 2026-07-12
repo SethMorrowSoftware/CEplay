@@ -19,6 +19,19 @@
 require_once __DIR__ . '/../lib/centeredge_client.php';
 require_once __DIR__ . '/../lib/scheduler.php';
 require_once __DIR__ . '/../lib/validator.php';
+require_once __DIR__ . '/../lib/reporting.php';
+
+/**
+ * Build a bound IN-clause placeholder list "(:pN,:pN+1,…)" for the redemption
+ * game IDs, starting at positional index $startIdx (after the query's other
+ * binds). Returns [placeholders, values] to merge into the params array.
+ */
+function payoutInClause(array $ids, int $startIdx): array {
+    $ph = [];
+    $i = $startIdx;
+    foreach ($ids as $id) { $ph[] = ':p' . $i; $i++; }
+    return ['(' . implode(',', $ph) . ')', array_values($ids)];
+}
 
 function handleGames(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
@@ -567,17 +580,9 @@ function gamesTicketStats(): void {
 
     $rows = DB::query($sql, [$hourCutoff, $todayCutoff, $weekCutoff]);
 
-    // Redemption classification for the per-game payout column — same
-    // data-driven rule as the payout gauge: a game is redemption if it has
-    // EVER dispensed tickets (raw feed or rollup history).
-    $redemptionIds = [];
-    foreach (DB::query(
-        'SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
-         UNION
-         SELECT game_id FROM game_daily_stats WHERE tickets > 0'
-    ) as $rr) {
-        $redemptionIds[(string)$rr['game_id']] = true;
-    }
+    // Redemption classification for the per-game payout column — the venue's
+    // "Redemption" grouping (category/pause group), shared with the gauge.
+    $redemptionIds = Reporting::redemptionGameIds();
 
     $stats = [];
     $totals = [
@@ -934,44 +939,50 @@ function gamesPayoutStats(): void {
     $todayLocalDate = $todayStartLocal->format('Y-m-d');
     $monthStartDate = (clone $todayStartLocal)->modify('-29 days')->format('Y-m-d');
 
-    // Redemption games = any game that has ever dispensed a ticket, across
-    // the raw feed and the permanent rollup. UNION dedups the two sources.
-    $redemptionSubquery =
-        '(SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
-          UNION
-          SELECT game_id FROM game_daily_stats WHERE tickets > 0)';
+    // Redemption games come from the venue's "Redemption" grouping (see
+    // Reporting::redemptionGameIds) — a game category or pause group — not a
+    // "dispensed a ticket once" heuristic, so point-heavy non-redemption
+    // games can't dilute the denominator.
+    $redemptionIds = array_keys(Reporting::redemptionGameIds());
+    $redemptionGames = count($redemptionIds);
 
-    $redemptionGames = (int)(DB::queryOne(
-        'SELECT COUNT(*) AS c FROM ' . $redemptionSubquery
-    )['c'] ?? 0);
+    if ($redemptionGames === 0) {
+        // No redemption games classified — every ratio is undefined.
+        $raw = []; $rollMonth = []; $rollAll = [];
+    } else {
+        // Bind the redemption IDs as :p3.. after the three date cutoffs.
+        list($inClause, $idParams) = payoutInClause($redemptionIds, 3);
+        $raw = DB::queryOne(
+            'SELECT
+                SUM(CASE WHEN transaction_time >= :p0 THEN redemption_tickets ELSE 0 END) AS t_hour,
+                SUM(CASE WHEN transaction_time >= :p0 THEN regular_points + bonus_points ELSE 0 END) AS p_hour,
+                SUM(CASE WHEN transaction_time >= :p1 THEN redemption_tickets ELSE 0 END) AS t_today,
+                SUM(CASE WHEN transaction_time >= :p1 THEN regular_points + bonus_points ELSE 0 END) AS p_today,
+                SUM(CASE WHEN transaction_time >= :p2 THEN redemption_tickets ELSE 0 END) AS t_week,
+                SUM(CASE WHEN transaction_time >= :p2 THEN regular_points + bonus_points ELSE 0 END) AS p_week
+             FROM game_play_transactions
+             WHERE game_id IN ' . $inClause,
+            array_merge([$hourCutoff, $todayCutoff, $weekCutoff], $idParams)
+        );
 
-    $raw = DB::queryOne(
-        'SELECT
-            SUM(CASE WHEN transaction_time >= :p0 THEN redemption_tickets ELSE 0 END) AS t_hour,
-            SUM(CASE WHEN transaction_time >= :p0 THEN regular_points + bonus_points ELSE 0 END) AS p_hour,
-            SUM(CASE WHEN transaction_time >= :p1 THEN redemption_tickets ELSE 0 END) AS t_today,
-            SUM(CASE WHEN transaction_time >= :p1 THEN regular_points + bonus_points ELSE 0 END) AS p_today,
-            SUM(CASE WHEN transaction_time >= :p2 THEN redemption_tickets ELSE 0 END) AS t_week,
-            SUM(CASE WHEN transaction_time >= :p2 THEN regular_points + bonus_points ELSE 0 END) AS p_week
-         FROM game_play_transactions
-         WHERE game_id IN ' . $redemptionSubquery,
-        [$hourCutoff, $todayCutoff, $weekCutoff]
-    );
+        list($inClauseM, $idParamsM) = payoutInClause($redemptionIds, 2);
+        $rollMonth = DB::queryOne(
+            'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
+             FROM game_daily_stats
+             WHERE stat_date >= :p0 AND stat_date < :p1
+               AND game_id IN ' . $inClauseM,
+            array_merge([$monthStartDate, $todayLocalDate], $idParamsM)
+        );
 
-    $rollMonth = DB::queryOne(
-        'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
-         FROM game_daily_stats
-         WHERE stat_date >= :p0 AND stat_date < :p1
-           AND game_id IN ' . $redemptionSubquery,
-        [$monthStartDate, $todayLocalDate]
-    );
-    $rollAll = DB::queryOne(
-        'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
-         FROM game_daily_stats
-         WHERE stat_date < :p0
-           AND game_id IN ' . $redemptionSubquery,
-        [$todayLocalDate]
-    );
+        list($inClauseA, $idParamsA) = payoutInClause($redemptionIds, 1);
+        $rollAll = DB::queryOne(
+            'SELECT SUM(tickets) AS t, SUM(regular_points + bonus_points) AS p
+             FROM game_daily_stats
+             WHERE stat_date < :p0
+               AND game_id IN ' . $inClauseA,
+            array_merge([$todayLocalDate], $idParamsA)
+        );
+    }
 
     $mk = function ($tickets, $points) {
         $tickets = (float)($tickets ?? 0);

@@ -23,6 +23,7 @@
  */
 
 require_once __DIR__ . '/../lib/validator.php';
+require_once __DIR__ . '/../lib/reporting.php';
 
 function handleAnalytics(string $method, array $parts, ?array $input): void {
     // Analytics is now open to admin / manager / tech, but the response is
@@ -1258,18 +1259,11 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
     $curTot  = perfSumPerGame($dailyCur);
     $prevTot = perfSumPerGame($dailyPrev);
 
-    // Redemption classification (same rule as the payout gauge: a game that
-    // has EVER dispensed a ticket). Powers the per-game payout %, the share
-    // of the venue's redemption-point denominator (which surfaces the games
-    // dragging the venue payout down), and keeps rides/cages out of the ratio.
-    $redemption = [];
-    foreach (DB::query(
-        'SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
-         UNION
-         SELECT game_id FROM game_daily_stats WHERE tickets > 0'
-    ) as $rr) {
-        $redemption[(string)$rr['game_id']] = true;
-    }
+    // Redemption classification from the venue's "Redemption" grouping
+    // (category/pause group), shared with the payout gauge. Powers the
+    // per-game payout %, the share of the venue's redemption-point
+    // denominator, and keeps rides/cages out of the ratio.
+    $redemption = Reporting::redemptionGameIds();
 
     // Utilization: active days (days with >=1 play in the window) + last active
     // date, straight from the stitched daily buckets.

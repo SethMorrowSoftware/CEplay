@@ -400,6 +400,12 @@
             style: { maxWidth: '140px' },
             'aria-label': 'Ticket watch volume threshold'
         });
+        const redemptionInput = App.el('input', {
+            className: 'form-input', type: 'text', maxLength: '80',
+            value: String(data.redemption_group_name !== undefined ? data.redemption_group_name : 'Redemption'),
+            style: { maxWidth: '260px' },
+            'aria-label': 'Redemption group name'
+        });
 
         // Hints render as blocks under the (narrow) number inputs — inline
         // spans would sit awkwardly beside them.
@@ -414,6 +420,12 @@
             watchInput,
             App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
                 textContent: 'Cards earning at least this many tickets today trip the "high volume" signal on the Ticket Watch card.' })
+        ]));
+        body.appendChild(App.el('div', { className: 'form-group' }, [
+            App.el('label', { className: 'form-label', textContent: 'Redemption grouping' }),
+            redemptionInput,
+            App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
+                textContent: 'The game category or pause group whose games count as redemption games in the payout math. Only these games’ points go into the payout denominator — rides, cages, and attractions are excluded. Defaults to "Redemption".' })
         ]));
 
         body.appendChild(App.el('button', {
@@ -430,7 +442,11 @@
                     return;
                 }
                 try {
-                    await API.put('settings', { payout_target_pct: payout, ticket_watch_min_tickets: watchMin });
+                    await API.put('settings', {
+                        payout_target_pct: payout,
+                        ticket_watch_min_tickets: watchMin,
+                        redemption_group_name: redemptionInput.value.trim()
+                    });
                     App.toast('Targets saved.', 'success');
                 } catch (err) { App.toast(err.message, 'error'); }
             }

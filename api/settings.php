@@ -33,6 +33,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             'timezone'          => $timezone,
             'payout_target_pct' => (float)(DB::getConfig('payout_target_pct') ?: 33),
             'ticket_watch_min_tickets' => (float)(DB::getConfig('ticket_watch_min_tickets') ?: 2500),
+            'redemption_group_name' => (string)(DB::getConfig('redemption_group_name') ?: 'Redemption'),
             'token_fetched_at'  => $tokenFetchedAt,
         ]);
         return;
@@ -102,11 +103,23 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             DB::setConfig('ticket_watch_min_tickets', (string)round((float)$watchMin), false);
         }
 
+        // Update the redemption grouping name — which category/pause group
+        // defines the venue's redemption games for the payout math. Empty
+        // resets to the "Redemption" default (via the getter fallback).
+        if (isset($input['redemption_group_name'])) {
+            $groupName = trim((string)$input['redemption_group_name']);
+            if (mb_strlen($groupName) > 80) {
+                throw new RuntimeException('Redemption group name must be 80 characters or fewer.');
+            }
+            DB::setConfig('redemption_group_name', $groupName !== '' ? $groupName : null, false);
+        }
+
         DB::auditLog('admin', 'settings_updated', null, [
             'api_config_changed' => $hasApiFields,
             'timezone_changed' => isset($input['timezone']),
             'payout_target_changed' => isset($input['payout_target_pct']),
             'ticket_watch_changed' => isset($input['ticket_watch_min_tickets']),
+            'redemption_group_changed' => isset($input['redemption_group_name']),
         ]);
 
         echo json_encode(['success' => true]);
