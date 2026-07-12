@@ -19,14 +19,6 @@ class Reporting {
      * they occasionally dispense a courtesy ticket — which is exactly what was
      * dragging the venue payout % artificially low under the old heuristic.
      *
-     * The grouping is then narrowed to games with an actual ticket history: a
-     * game can sit in the Redemption grouping yet never dispense tickets (a
-     * non-ticket game grouped only for pausing, or a misconfiguration). Its
-     * points would otherwise pad the payout denominator with no matching
-     * tickets in the numerator, dragging the % down. If narrowing would empty
-     * the set (no grouped game has ticket history at all), the full grouping is
-     * kept rather than reporting zero redemption games.
-     *
      * Fallback: if no such category/group exists (or it contains no games),
      * fall back to the data-driven rule — a game that has EVER dispensed a
      * ticket — so the metric still works on venues without the grouping.
@@ -86,37 +78,14 @@ class Reporting {
         }
 
         if (!empty($set)) {
-            // Narrow the grouping to games that have actually dispensed a
-            // ticket, so point-only games in the category don't dilute the %.
-            $withTickets = self::ticketHistoryGameIds();
-            $filtered = [];
-            foreach ($set as $gid => $_) {
-                if (isset($withTickets[$gid])) {
-                    $filtered[$gid] = true;
-                }
-            }
-            // Keep the narrowed set when it has members; otherwise fall back to
-            // the full grouping rather than reporting zero redemption games.
-            return !empty($filtered) ? $filtered : $set;
+            return $set;
         }
 
-        // Fallback: no grouping configured — any game that ever dispensed a ticket.
-        return self::ticketHistoryGameIds();
-    }
-
-    /**
-     * Game IDs that have ever dispensed a redemption ticket — from the raw feed
-     * (recent) unioned with the permanent daily rollup (full history, so a
-     * game that dispensed tickets before the 30-day raw window still counts).
-     *
-     * @return array<string,bool>
-     */
-    public static function ticketHistoryGameIds(): array {
-        $set = [];
+        // Fallback: any game that has ever dispensed a ticket.
         foreach (DB::query(
             'SELECT game_id FROM game_play_transactions WHERE redemption_tickets > 0 AND game_id != \'\'
              UNION
-             SELECT game_id FROM game_daily_stats WHERE tickets > 0 AND game_id != \'\''
+             SELECT game_id FROM game_daily_stats WHERE tickets > 0'
         ) as $r) {
             $set[(string)$r['game_id']] = true;
         }
