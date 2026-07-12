@@ -572,6 +572,71 @@ function gamesTicketStats(): void {
 
     $meta = DB::queryOne('SELECT MAX(fetched_at) AS last_poll, COUNT(*) AS total_cached FROM game_play_transactions');
 
+    // Authoritative hourly bins for the dashboard. The peak-hour tile, hero
+    // sparkline, and unique-cards chip used to derive these from the
+    // recent-feed cache in the browser, which is capped at 500 rows — on a
+    // busy day that window only covers the tail of the evening, so "peak
+    // hour" silently meant "peak hour among the newest 500 plays". Binning
+    // is done in PHP in the venue timezone (same approach as analytics) so
+    // hour boundaries match the wall clock.
+    $nowLocal = new DateTime('now', $tzObj);
+    $curHourStartLocal = (clone $nowLocal)->setTime((int)$nowLocal->format('G'), 0, 0);
+    $recentWindowStart = (clone $curHourStartLocal)->modify('-11 hours');
+    $recentStartTs = $recentWindowStart->getTimestamp();
+
+    $binCutoffUtc = gmdate(
+        'Y-m-d\TH:i:s\Z',
+        min($recentStartTs, (new DateTime($todayCutoff))->getTimestamp())
+    );
+    $hourlyToday = [];
+    for ($h = 0; $h < 24; $h++) {
+        $hourlyToday[$h] = ['hour' => $h, 'plays' => 0, 'tickets' => 0.0];
+    }
+    $hourlyRecent = [];
+    for ($i = 0; $i < 12; $i++) {
+        $hourlyRecent[$i] = ['plays' => 0, 'tickets' => 0.0];
+    }
+    $uniqueToday = [];
+    $todayLocalDate = (new DateTime('now', $tzObj))->format('Y-m-d');
+    foreach (DB::query(
+        'SELECT transaction_time, redemption_tickets, card_number
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0',
+        [$binCutoffUtc]
+    ) as $r) {
+        $tt = (string)($r['transaction_time'] ?? '');
+        if ($tt === '') continue;
+        try {
+            $d = new DateTime($tt);
+        } catch (Exception $e) {
+            continue;
+        }
+        $ts = $d->getTimestamp();
+        $tickets = (float)($r['redemption_tickets'] ?? 0);
+
+        $d->setTimezone($tzObj);
+        if ($d->format('Y-m-d') === $todayLocalDate) {
+            $h = (int)$d->format('G');
+            $hourlyToday[$h]['plays']   += 1;
+            $hourlyToday[$h]['tickets'] += $tickets;
+            $card = (string)($r['card_number'] ?? '');
+            if ($card !== '' && $card !== '000000') {
+                $uniqueToday[$card] = true;
+            }
+        }
+
+        $idx = (int)floor(($ts - $recentStartTs) / 3600);
+        if ($idx >= 0 && $idx < 12) {
+            $hourlyRecent[$idx]['plays']   += 1;
+            $hourlyRecent[$idx]['tickets'] += $tickets;
+        }
+    }
+    foreach ($hourlyToday as &$hb) { $hb['tickets'] = round($hb['tickets'], 2); }
+    unset($hb);
+    foreach ($hourlyRecent as &$rb) { $rb['tickets'] = round($rb['tickets'], 2); }
+    unset($rb);
+    $totals['unique_cards_today'] = count($uniqueToday);
+
     echo json_encode([
         'stats'        => $stats,
         'totals'       => $totals,
@@ -580,6 +645,10 @@ function gamesTicketStats(): void {
             'today' => $todayCutoff,
             'week'  => $weekCutoff,
         ],
+        // 24 venue-local hour bins for today (peak-hour tile) and the last
+        // 12 clock hours oldest-first (hero sparkline).
+        'hourly_today'  => array_values($hourlyToday),
+        'hourly_recent' => array_values($hourlyRecent),
         'last_poll_at' => $meta['last_poll'] ?? null,
         'total_cached' => (int)($meta['total_cached'] ?? 0),
         // For the per-game payout column — same threshold the gauge uses.
