@@ -9,6 +9,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# PHP
-vendor/
+# PHP (Composer — the JS vendor dir at public/js/vendor/ IS tracked)
+/vendor/
 composer.lock

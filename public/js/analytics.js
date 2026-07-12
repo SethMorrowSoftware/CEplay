@@ -272,12 +272,16 @@
         var canvas = App.el('canvas', { id: canvasId });
         // Chart.js sizes from the parent's height; lock min-height for layout.
         var box = App.el('div', { className: 'analytics-chart-box', style: { height: (height || 220) + 'px' } }, [canvas]);
-        var header = [App.el('div', { className: 'card-title', textContent: title })];
+        // Title + optional subtitle stack in one column so a long title
+        // never wraps around a subtitle pushed to the far edge.
+        var titleBlock = [App.el('div', { className: 'card-title', textContent: title })];
         if (subtitle) {
-            header.push(App.el('div', { className: 'text-muted text-sm', textContent: subtitle }));
+            titleBlock.push(App.el('div', { className: 'text-muted text-sm', textContent: subtitle }));
         }
         return App.el('div', { className: 'card analytics-card ' + (extraClass || '') }, [
-            App.el('div', { className: 'analytics-card-header' }, header),
+            App.el('div', { className: 'analytics-card-header' }, [
+                App.el('div', {}, titleBlock)
+            ]),
             box
         ]);
     }
@@ -432,8 +436,9 @@
         } else {
             var expDetail = deltaText(k.expired_points || 0, p.expired_points || 0);
             if ((k.expired_tickets || 0) > 0 || (k.merges || 0) > 0) {
+                var mergeCount = k.merges || 0;
                 expDetail = formatInt(Math.round(k.expired_tickets || 0)) + ' tix expired · '
-                    + formatInt(k.merges || 0) + ' merges';
+                    + formatInt(mergeCount) + (mergeCount === 1 ? ' merge' : ' merges');
             }
             kpiUpdate('expired', formatInt(Math.round(k.expired_points || 0)) + ' pts', expDetail);
         }

@@ -308,7 +308,7 @@
                         App.el('div', { className: 'text-sm text-secondary', id: 'payout-subtitle',
                             textContent: 'Tickets dispensed per 100 points played on redemption games' })
                     ]),
-                    App.el('span', { id: 'payout-caption', className: 'text-sm text-secondary' })
+                    App.el('span', { id: 'payout-caption', className: 'text-sm text-secondary', textContent: 'Loading…' })
                 ]),
                 App.el('div', { className: 'card-body' }, [
                     App.el('div', { style: { height: '150px' } }, [
@@ -757,9 +757,15 @@
                 + '&sort=' + metric + '&limit=' + TOP_LIMIT);
             body.innerHTML = '';
             var rows = data.top || [];
+            // A leaderboard row with zero of its own metric is noise — e.g.
+            // rides showing "— TICKETS" in Top by tickets. Keep only games
+            // that actually scored on the sorted metric.
+            rows = rows.filter(function(r) {
+                return metric === 'tickets' ? (parseFloat(r.sum_tickets) || 0) > 0 : (r.plays || 0) > 0;
+            });
             if (rows.length === 0) {
                 body.appendChild(App.el('p', { className: 'text-sm text-secondary',
-                    textContent: 'No plays in this window.' }));
+                    textContent: metric === 'tickets' ? 'No tickets dispensed in this window.' : 'No plays in this window.' }));
                 return;
             }
             var valOf = function(r) { return metric === 'plays' ? (r.plays || 0) : (r.sum_tickets || 0); };
@@ -968,6 +974,13 @@
                 total_cached: typeof data.total_cached === 'number' ? data.total_cached : null
             };
             renderFeed();
+            // Peak-hour tile and the hero sparkline both derive from the
+            // feed cache, which lands after the first render of the KPI
+            // strip — repaint them now so a fresh page load doesn't show
+            // "awaiting first play" with a day of plays on the board.
+            renderTicketSummary();
+            var heroCanvas = document.getElementById('hero-spark');
+            if (heroCanvas) paintHeroSparkline(heroCanvas, buildHourlyBuckets(12));
         } catch (err) {
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Feed unavailable: ' + err.message }));
@@ -1316,7 +1329,10 @@
             payoutData = data;
             renderPayout();
         } catch (err) {
-            // Non-fatal: the rest of the dashboard works without the gauge.
+            // Non-fatal: the rest of the dashboard works without the gauge —
+            // but say so rather than leaving a silent empty card.
+            var cap = document.getElementById('payout-caption');
+            if (cap && !payoutData) cap.textContent = 'Payout data unavailable';
         }
     }
 
@@ -1331,7 +1347,15 @@
         try {
             data = await API.get('games/transactions/ticket-watch');
         } catch (err) {
-            return; // leave previous render in place
+            // Keep a previous render if we have one; otherwise replace the
+            // initial spinner with an honest message instead of spinning
+            // forever.
+            if (!body.querySelector('table')) {
+                body.innerHTML = '';
+                body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                    textContent: 'Ticket watch unavailable.' }));
+            }
+            return;
         }
         body = document.getElementById('ticket-watch-body');
         if (!body) return; // navigated away mid-fetch
@@ -1474,7 +1498,7 @@
         ratios.forEach(function(r) { if (r !== null && r > maxRatio) maxRatio = r; });
         var scaleMax = maxRatio * 1.25;
 
-        var padTop = 18;    // room for % labels above bars
+        var padTop = 24;    // room for % labels above bars
         var padBottom = 18; // room for window labels
         var plotH = H - padTop - padBottom;
         var n = PAYOUT_WINDOWS.length;
@@ -1524,7 +1548,8 @@
             ctx.fill();
 
             ctx.fillStyle = color;
-            ctx.fillText(r + '%', cx, y - 5);
+            // Clamp so a full-height bar's label never clips the card edge.
+            ctx.fillText(r + '%', cx, Math.max(11, y - 5));
         });
 
         // Dashed target line, labeled at the right edge.

@@ -195,7 +195,9 @@
 /* Games page — venue summary banner. */
 .ticket-summary {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    /* 158px min lets all six KPI tiles share one row on common laptop
+       widths instead of orphaning the sixth onto its own line. */
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
     gap: 0.75rem;
     margin-bottom: 1rem;
 }
