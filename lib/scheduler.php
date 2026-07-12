@@ -1682,6 +1682,91 @@ class Scheduler {
     }
 
     /**
+     * Refresh the durable per-card activity ledger (card_activity) from the
+     * raw play feed. Powers the Guest Insights "new vs returning" split, which
+     * the 30-day raw feed alone cannot answer (a card seen today might be a
+     * guest whose first visit was months ago, long since purged).
+     *
+     * Runs nightly alongside rollupDailyStats(), BEFORE purgeOldData(). Both
+     * ledger columns are monotonic — first_seen_date only ever moves earlier
+     * (MIN), last_seen_date only later (MAX) — so re-scanning the raw window
+     * every night is idempotent and self-correcting: a card whose first visit
+     * has already scrolled out of the raw window keeps the earlier
+     * first_seen_date recorded on an earlier run. Because daily cron always
+     * folds a card's first day while it is still inside the raw window, the
+     * first-seen date is captured correctly without any cursor state.
+     *
+     * Credit-card / cardless plays (card_number "000000") and blank card
+     * numbers are excluded — they are not guests.
+     */
+    public static function rollupCardActivity(): array {
+        $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try {
+            $tz = new DateTimeZone($tzName);
+        } catch (Exception $e) {
+            $tz = new DateTimeZone('UTC');
+        }
+
+        // Per-card min/max local calendar date across the whole raw feed
+        // (already bounded to ~30 days by the purge). Bucketed in PHP so the
+        // date math uses the venue timezone, matching the rest of reporting.
+        $seen = [];
+        foreach (DB::query(
+            'SELECT card_number, transaction_time
+             FROM game_play_transactions
+             WHERE card_number != \'\' AND card_number != \'000000\''
+        ) as $r) {
+            $tt = (string)($r['transaction_time'] ?? '');
+            if ($tt === '') continue;
+            try {
+                $d = new DateTime($tt);
+            } catch (Exception $e) {
+                continue;
+            }
+            $d->setTimezone($tz);
+            $date = $d->format('Y-m-d');
+            $card = (string)$r['card_number'];
+            if (!isset($seen[$card])) {
+                $seen[$card] = ['first' => $date, 'last' => $date];
+            } else {
+                if ($date < $seen[$card]['first']) $seen[$card]['first'] = $date;
+                if ($date > $seen[$card]['last'])  $seen[$card]['last']  = $date;
+            }
+        }
+
+        if (empty($seen)) {
+            return ['cards_seen' => 0, 'rows_written' => 0];
+        }
+
+        $db = DB::getInstance();
+        $db->exec('BEGIN');
+        try {
+            $written = 0;
+            foreach ($seen as $card => $range) {
+                // Monotonic upsert: never widen inward. min()/max() are SQLite
+                // scalar functions; on the date strings (YYYY-MM-DD) string
+                // order is chronological order.
+                DB::execute(
+                    'INSERT INTO card_activity (card_number, first_seen_date, last_seen_date, updated_at)
+                     VALUES (:p0, :p1, :p2, datetime(\'now\'))
+                     ON CONFLICT(card_number) DO UPDATE SET
+                        first_seen_date = min(first_seen_date, excluded.first_seen_date),
+                        last_seen_date  = max(last_seen_date, excluded.last_seen_date),
+                        updated_at = datetime(\'now\')',
+                    [(string)$card, $range['first'], $range['last']]
+                );
+                $written++;
+            }
+            $db->exec('COMMIT');
+        } catch (Exception $e) {
+            $db->exec('ROLLBACK');
+            throw $e;
+        }
+
+        return ['cards_seen' => count($seen), 'rows_written' => $written];
+    }
+
+    /**
      * Purge old data to prevent unbounded database growth.
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides

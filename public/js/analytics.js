@@ -53,6 +53,7 @@
 
         container.appendChild(buildHeader());
         container.appendChild(buildKpiSection());
+        container.appendChild(buildGuestSection());
         container.appendChild(buildFleetSection());
         container.appendChild(buildChartsSection());
         container.appendChild(buildBottomSection());
@@ -214,6 +215,118 @@
             App.el('div', { className: 'stat-value', 'data-role': 'value', textContent: '—' }),
             App.el('div', { className: 'stat-trend', 'data-role': 'trend' })
         ]);
+    }
+
+    // ------------------------------------------------------------------
+    // Guest Insights — new vs returning, visit frequency, spend per visit
+    // ------------------------------------------------------------------
+    function buildGuestSection() {
+        return App.el('div', { className: 'card guest-insights', style: { marginBottom: '1.5rem' } }, [
+            App.el('div', { className: 'card-header' }, [
+                App.el('div', {}, [
+                    App.el('div', { className: 'card-title', textContent: 'Guest insights' }),
+                    App.el('div', { className: 'text-muted text-sm',
+                        textContent: 'New vs returning guests, visit frequency and spend — carded plays only (a “visit” is one day a card was active).' })
+                ])
+            ]),
+            App.el('div', { className: 'card-body', id: 'analytics-guests-body' }, [
+                App.el('div', { className: 'text-muted text-sm', textContent: 'Loading…' })
+            ])
+        ]);
+    }
+
+    function renderGuests(data) {
+        var body = document.getElementById('analytics-guests-body');
+        if (!body) return;
+        var g = data.guests || {};
+        var canSeeMoney = App.canSeeMoney();
+        body.textContent = '';
+
+        var total = g.total_guests || 0;
+        if (total === 0) {
+            body.appendChild(App.el('div', { className: 'text-muted text-sm',
+                textContent: 'No carded guest activity in this range. (Credit-card and cardless plays aren’t counted as guests.)' }));
+            return;
+        }
+
+        // New-vs-returning proportion bar with legend.
+        var newCount = g.new_guests || 0;
+        var retCount = g.returning_guests || 0;
+        var newPct = g.new_pct != null ? g.new_pct : 0;
+        var retPct = g.returning_pct != null ? g.returning_pct : 0;
+
+        var bar = App.el('div', { className: 'guest-split-bar', 'aria-hidden': 'true' }, [
+            App.el('div', { className: 'guest-split-seg guest-split-new',
+                style: { width: Math.max(0, newPct) + '%' } }),
+            App.el('div', { className: 'guest-split-seg guest-split-ret',
+                style: { width: Math.max(0, retPct) + '%' } })
+        ]);
+        var legend = App.el('div', { className: 'guest-split-legend' }, [
+            App.el('span', { className: 'guest-legend-item' }, [
+                App.el('span', { className: 'guest-dot guest-dot-new' }),
+                App.el('strong', { textContent: formatInt(newCount) }),
+                App.el('span', { className: 'text-muted', textContent: ' new (' + newPct + '%)' })
+            ]),
+            App.el('span', { className: 'guest-legend-item' }, [
+                App.el('span', { className: 'guest-dot guest-dot-ret' }),
+                App.el('strong', { textContent: formatInt(retCount) }),
+                App.el('span', { className: 'text-muted', textContent: ' returning (' + retPct + '%)' })
+            ])
+        ]);
+        body.appendChild(App.el('div', { className: 'guest-split' }, [
+            App.el('div', { className: 'guest-split-head' }, [
+                App.el('span', { className: 'stat-label', textContent: formatInt(total) + ' unique guests' }),
+                legend
+            ]),
+            bar
+        ]));
+
+        // Headline tiles.
+        var tiles = [
+            guestTile('Repeat-visit rate', pct(g.repeat_rate), 'Guests who came back more than once'),
+            guestTile('Avg visits / guest', (g.avg_visits != null ? g.avg_visits.toFixed(2) : '—'), formatInt(g.total_visits || 0) + ' total visits'),
+            guestTile('Attach rate', pct(g.attach_rate), 'Guests who spent cash or credit')
+        ];
+        if (canSeeMoney) {
+            tiles.push(guestTile('Spend / visit', formatCurrency(g.spend_per_visit), 'Cash + credit on carded plays'));
+            tiles.push(guestTile('Spend / guest', formatCurrency(g.spend_per_guest), formatCurrency(g.total_spend) + ' total'));
+        }
+        body.appendChild(App.el('div', { className: 'guest-tile-grid' }, tiles));
+
+        // Visit-frequency distribution.
+        var f = g.frequency || {};
+        var freqDefs = [
+            { label: '1 visit', v: f.one || 0 },
+            { label: '2 visits', v: f.two || 0 },
+            { label: '3–4 visits', v: f.three_four || 0 },
+            { label: '5+ visits', v: f.five_plus || 0 }
+        ];
+        var maxFreq = freqDefs.reduce(function(m, d) { return Math.max(m, d.v); }, 0) || 1;
+        var freqRows = freqDefs.map(function(d) {
+            var share = total > 0 ? Math.round(d.v / total * 100) : 0;
+            return App.el('div', { className: 'guest-freq-row' }, [
+                App.el('span', { className: 'guest-freq-label', textContent: d.label }),
+                App.el('span', { className: 'guest-freq-track' }, [
+                    App.el('span', { className: 'guest-freq-fill', style: { width: (d.v / maxFreq * 100) + '%' } })
+                ]),
+                App.el('span', { className: 'guest-freq-val', textContent: formatInt(d.v) + ' · ' + share + '%' })
+            ]);
+        });
+        body.appendChild(App.el('div', { className: 'guest-freq' }, [
+            App.el('div', { className: 'stat-label', style: { marginBottom: '0.5rem' }, textContent: 'Visit frequency' })
+        ].concat(freqRows)));
+    }
+
+    function guestTile(label, value, hint) {
+        return App.el('div', { className: 'guest-tile' }, [
+            App.el('div', { className: 'stat-label', textContent: label }),
+            App.el('div', { className: 'guest-tile-value', textContent: value }),
+            App.el('div', { className: 'text-muted text-sm', textContent: hint })
+        ]);
+    }
+
+    function pct(v) {
+        return v != null ? v + '%' : '—';
     }
 
     function buildFleetSection() {
@@ -388,6 +501,7 @@
             if (App.navGeneration() !== gen) return; // user navigated away
             state.overview = data;
             renderKpis(data);
+            renderGuests(data);
             renderFleet(data);
             renderCharts(data);
             renderFailures(data);

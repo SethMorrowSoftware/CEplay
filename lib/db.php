@@ -464,6 +464,24 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_date ON game_daily_stats(stat_date)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_game ON game_daily_stats(game_id)');
 
+        // Durable per-card activity ledger for Guest Insights. The raw play
+        // feed (game_play_transactions) is only kept ~30 days, so it cannot
+        // tell whether a card seen today is genuinely new or a returning
+        // guest whose first visit was months ago. This table records each
+        // card\'s first- and last-seen local date permanently. Both columns
+        // are monotonic (first = MIN, last = MAX), so Scheduler::
+        // rollupCardActivity() can recompute from the raw window every night
+        // and only ever widen the range — the recompute is idempotent and
+        // self-correcting, needing no cursor bookkeeping. Card numbers
+        // "000000" (credit-card/cardless plays) and "" are never recorded.
+        $db->exec('CREATE TABLE IF NOT EXISTS card_activity (
+            card_number TEXT PRIMARY KEY,
+            first_seen_date TEXT NOT NULL,
+            last_seen_date TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_card_activity_first ON card_activity(first_seen_date)');
+
         // One-time cleanup of tables from removed feature modules.
         // The card/parties/maintenance/etc. modules were dropped to scope this
         // app to pause-groups + kiosks only. DROP IF EXISTS is safe to run on
