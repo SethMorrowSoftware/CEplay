@@ -373,43 +373,65 @@
     }
 
     /**
-     * Payout target — the tickets-per-points threshold (percent) that the
-     * dashboard payout gauge and per-game payout column compare against.
-     * Stored in api_config as payout_target_pct; the API validates 1–100.
+     * Venue targets & alert thresholds:
+     *   - payout_target_pct: tickets-per-points % the payout gauge and
+     *     per-game payout column compare against (API validates 1-100)
+     *   - ticket_watch_min_tickets: the "high volume" farming signal on
+     *     the dashboard Ticket Watch card (API validates 1-1,000,000)
      */
     function buildPayoutTargetSection(data) {
         const section = App.el('div', { className: 'card', style: { marginBottom: '1.5rem' } });
         section.appendChild(App.el('div', { className: 'card-header' }, [
-            App.el('h3', { className: 'card-title', textContent: 'Payout Target' })
+            App.el('h3', { className: 'card-title', textContent: 'Targets & Alerts' })
         ]));
 
         const body = App.el('div', { className: 'card-body' });
-        const input = App.el('input', {
+        const payoutInput = App.el('input', {
             className: 'form-input', type: 'number',
             min: '1', max: '100', step: '0.5',
             value: String(data.payout_target_pct !== undefined ? data.payout_target_pct : 33),
             style: { maxWidth: '140px' },
             'aria-label': 'Payout target percent'
         });
+        const watchInput = App.el('input', {
+            className: 'form-input', type: 'number',
+            min: '1', max: '1000000', step: '100',
+            value: String(data.ticket_watch_min_tickets !== undefined ? data.ticket_watch_min_tickets : 2500),
+            style: { maxWidth: '140px' },
+            'aria-label': 'Ticket watch volume threshold'
+        });
 
+        // Hints render as blocks under the (narrow) number inputs — inline
+        // spans would sit awkwardly beside them.
         body.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('label', { className: 'form-label', textContent: 'Target payout % (redemption games)' }),
-            input,
-            App.el('span', { className: 'text-muted text-sm',
+            payoutInput,
+            App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
                 textContent: 'Tickets dispensed per 100 points played. The dashboard payout gauge and the per-game Payout % column turn red above this.' })
+        ]));
+        body.appendChild(App.el('div', { className: 'form-group' }, [
+            App.el('label', { className: 'form-label', textContent: 'Ticket watch — high-volume threshold (tickets/day)' }),
+            watchInput,
+            App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
+                textContent: 'Cards earning at least this many tickets today trip the "high volume" signal on the Ticket Watch card.' })
         ]));
 
         body.appendChild(App.el('button', {
-            className: 'btn btn-primary', textContent: 'Save Payout Target',
+            className: 'btn btn-primary', textContent: 'Save Targets',
             onClick: async () => {
-                const val = parseFloat(input.value);
-                if (isNaN(val) || val < 1 || val > 100) {
+                const payout = parseFloat(payoutInput.value);
+                const watchMin = parseFloat(watchInput.value);
+                if (isNaN(payout) || payout < 1 || payout > 100) {
                     App.toast('Payout target must be between 1 and 100.', 'error');
                     return;
                 }
+                if (isNaN(watchMin) || watchMin < 1 || watchMin > 1000000) {
+                    App.toast('Ticket watch threshold must be between 1 and 1,000,000.', 'error');
+                    return;
+                }
                 try {
-                    await API.put('settings', { payout_target_pct: val });
-                    App.toast('Payout target set to ' + val + '%.', 'success');
+                    await API.put('settings', { payout_target_pct: payout, ticket_watch_min_tickets: watchMin });
+                    App.toast('Targets saved.', 'success');
                 } catch (err) { App.toast(err.message, 'error'); }
             }
         }));

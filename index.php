@@ -55,7 +55,7 @@ if ($isHttps) {
 header(
     "Content-Security-Policy: " .
     "default-src 'self'; " .
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " .
+    "script-src 'self' 'unsafe-inline'; " .
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " .
     "font-src 'self' https://fonts.gstatic.com; " .
     "img-src 'self' data:; " .
@@ -448,7 +448,9 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/overrides.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/logs.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/settings.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+    <!-- Chart.js is vendored locally so analytics charts work without
+         internet access and never depend on a third-party CDN. -->
+    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/vendor/chart.umd.min.js?v=4.4.7"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/analytics.js"></script>
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/performance.js"></script>
 </body>

@@ -707,7 +707,7 @@ function gamesPayoutStats(): void {
  *
  * Three transparent signals, each reported so the UI can explain itself:
  *   volume        — tickets_today >= threshold (config ticket_watch_min_tickets,
- *                   default 500)
+ *                   default 2500)
  *   concentration — >= 8 plays with >= 75% of them on one game
  *   hot_ratio     — >= 5 plays on the top game at >= 1.5x that game's
  *                   average tickets-per-play
@@ -727,7 +727,7 @@ function gamesTicketWatch(): void {
     $todayCutoff = (new DateTime('today 00:00:00', $tzObj))
         ->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z');
 
-    $minTickets = (float)(DB::getConfig('ticket_watch_min_tickets') ?: 500);
+    $minTickets = (float)(DB::getConfig('ticket_watch_min_tickets') ?: 2500);
 
     // Top earners today. 000000 = cardless/credit-card plays per spec — no
     // card to farm onto, exclude.

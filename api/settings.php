@@ -32,6 +32,7 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             'api_key'           => $apiKey ? '********' : '',
             'timezone'          => $timezone,
             'payout_target_pct' => (float)(DB::getConfig('payout_target_pct') ?: 33),
+            'ticket_watch_min_tickets' => (float)(DB::getConfig('ticket_watch_min_tickets') ?: 2500),
             'token_fetched_at'  => $tokenFetchedAt,
         ]);
         return;
@@ -91,10 +92,21 @@ function handleSettings(string $method, array $parts, ?array $input): void {
             DB::setConfig('payout_target_pct', (string)round((float)$target, 1), false);
         }
 
+        // Update ticket-watch volume threshold if provided — the "high
+        // volume" farming signal on the dashboard Ticket Watch card.
+        if (isset($input['ticket_watch_min_tickets'])) {
+            $watchMin = $input['ticket_watch_min_tickets'];
+            if (!is_numeric($watchMin) || (float)$watchMin < 1 || (float)$watchMin > 1000000) {
+                throw new RuntimeException('Ticket watch threshold must be a number between 1 and 1,000,000.');
+            }
+            DB::setConfig('ticket_watch_min_tickets', (string)round((float)$watchMin), false);
+        }
+
         DB::auditLog('admin', 'settings_updated', null, [
             'api_config_changed' => $hasApiFields,
             'timezone_changed' => isset($input['timezone']),
             'payout_target_changed' => isset($input['payout_target_pct']),
+            'ticket_watch_changed' => isset($input['ticket_watch_min_tickets']),
         ]);
 
         echo json_encode(['success' => true]);
