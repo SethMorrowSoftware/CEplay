@@ -105,6 +105,18 @@ try {
         echo "  WARNING: Daily rollup failed: " . $e->getMessage() . "\n";
     }
 
+    // Step 5b: Refresh the durable per-card activity ledger (first/last seen)
+    // that powers Guest Insights' new-vs-returning split. Also runs before the
+    // purge, but its monotonic upsert is independent of the game rollup, so a
+    // rollup failure doesn't block it.
+    echo "Refreshing card activity ledger...\n";
+    try {
+        $cardRollup = Scheduler::rollupCardActivity();
+        echo "  Recorded {$cardRollup['cards_seen']} cards.\n";
+    } catch (Exception $e) {
+        echo "  WARNING: Card activity ledger refresh failed: " . $e->getMessage() . "\n";
+    }
+
     // Step 6: Purge old data to prevent unbounded growth. Skip purging the raw
     // play feed if the rollup failed — purging would delete raw rows that never
     // made it into the permanent summary, silently losing reporting history.

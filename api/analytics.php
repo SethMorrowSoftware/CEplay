@@ -72,6 +72,14 @@ function analyticsScrubMoney(array &$payload): void {
             if (array_key_exists('avg_cash_per_play', $payload[$key])) $payload[$key]['avg_cash_per_play'] = 0.0;
         }
     }
+    // Guest Insights carries per-visit / per-guest dollar figures — zero the
+    // money, keep the counts and rates (new/returning, frequency, attach rate)
+    // which are non-monetary and visible to all analytics roles.
+    if (isset($payload['guests']) && is_array($payload['guests'])) {
+        foreach (['total_spend', 'spend_per_visit', 'spend_per_guest'] as $moneyKey) {
+            if (array_key_exists($moneyKey, $payload['guests'])) $payload['guests'][$moneyKey] = 0.0;
+        }
+    }
     if (isset($payload['charts']) && is_array($payload['charts'])) {
         // The cash leaderboard is monetary end-to-end — drop it entirely.
         $payload['charts']['top_games_cash'] = [];
@@ -143,6 +151,9 @@ function analyticsOverview(bool $hideMoney = false): void {
     // Points/tickets, not dollars — no view_revenue scrub needed.
     $kpis = array_merge($kpis, analyticsSystemTx($startIsoUtc, $endIsoUtc));
     $previousKpis = array_merge($previousKpis, analyticsSystemTx($prevStartIso, $prevEndIso));
+
+    // ---- Guest Insights (new vs returning, frequency, spend/visit) ----
+    $guests = analyticsGuests($startIsoUtc, $endIsoUtc, $tz, $startLocal);
 
     // ---- Fleet posture (current state, not range-scoped) ----
     $fleet = analyticsFleet();
@@ -328,6 +339,7 @@ function analyticsOverview(bool $hideMoney = false): void {
         ],
         'kpis' => $kpis,
         'previous_kpis' => $previousKpis,
+        'guests' => $guests,
         'fleet' => $fleet,
         'charts' => [
             'plays_by_hour'    => array_map(function ($b) { return $b['plays']; },   $hourBuckets),
@@ -490,6 +502,128 @@ function analyticsSystemTx(string $startIso, string $endIso): array {
         'expired_tickets' => (float)($row['expired_tickets'] ?? 0),
         'expirations'     => (int)($row['expirations'] ?? 0),
         'merges'          => (int)($row['merges'] ?? 0),
+    ];
+}
+
+/**
+ * Guest Insights for [startIso, endIso): who is actually walking in the door.
+ *
+ * A "guest" is a distinct card number (credit-card / cardless plays, card
+ * "000000", and blanks are excluded — they aren't guests). A "visit" is a
+ * distinct local calendar day a card was active, the standard FEC read of
+ * frequency (one guest playing 40 games across the afternoon = one visit).
+ *
+ *  - new vs returning: a guest is NEW when their first-ever visit falls
+ *    inside this window, RETURNING when it predates it. The durable
+ *    card_activity ledger (Scheduler::rollupCardActivity) supplies the
+ *    first-ever date; the 30-day raw feed alone can't reach back far enough.
+ *    A card active in the window but not yet in the ledger (e.g. brand new
+ *    today, before tonight's refresh) is classified from its earliest
+ *    appearance in the window — which makes it correctly NEW.
+ *  - frequency distribution: how many guests visited 1 / 2 / 3–4 / 5+ times.
+ *  - repeat-visit rate: share of guests who came more than once.
+ *  - spend per visit / per guest: cash + credit-card dollars on carded plays
+ *    over the window, divided by visits / guests. Money — zeroed for roles
+ *    without view_revenue by analyticsScrubMoney.
+ *  - attach rate: share of visits with any spend. A rate, not a dollar
+ *    figure (consistent with payment-mix counts being visible to all roles).
+ *
+ * @param DateTime $fromLocal window start in venue tz (for the new/returning cutoff date)
+ */
+function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, DateTime $fromLocal): array {
+    $fromDate = $fromLocal->format('Y-m-d');
+
+    // Per-card facts within the window: distinct active days (visits),
+    // earliest active day (new/returning fallback), and carded spend.
+    $rows = DB::query(
+        'SELECT card_number, transaction_time,
+                (cash_amount + credit_card_amount) AS spend
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0 AND transaction_time < :p1
+           AND card_number != \'\' AND card_number != \'000000\'',
+        [$startIso, $endIso]
+    );
+
+    $cards = [];        // card => ['days' => set, 'earliest' => date, 'spend' => float]
+    foreach ($rows as $r) {
+        $tt = (string)($r['transaction_time'] ?? '');
+        if ($tt === '') continue;
+        try {
+            $d = new DateTime($tt);
+        } catch (Exception $e) {
+            continue;
+        }
+        $d->setTimezone($tz);
+        $date = $d->format('Y-m-d');
+        $card = (string)$r['card_number'];
+        if (!isset($cards[$card])) {
+            $cards[$card] = ['days' => [], 'earliest' => $date, 'spend' => 0.0];
+        }
+        $cards[$card]['days'][$date] = true;
+        if ($date < $cards[$card]['earliest']) $cards[$card]['earliest'] = $date;
+        $cards[$card]['spend'] += (float)($r['spend'] ?? 0);
+    }
+
+    $totalGuests = count($cards);
+
+    // Returning-eligible set: every card whose first-ever visit predates the
+    // window. One indexed scan on the ledger; intersected with the window's
+    // cards in PHP. Bounded by the venue's lifetime card count (fine at FEC
+    // scale — one location, thousands of cards, not millions).
+    $priorCards = [];
+    foreach (DB::query(
+        'SELECT card_number FROM card_activity WHERE first_seen_date < :p0',
+        [$fromDate]
+    ) as $r) {
+        $priorCards[(string)$r['card_number']] = true;
+    }
+
+    $newGuests = 0;
+    $returningGuests = 0;
+    $totalVisits = 0;
+    $guestsWithSpend = 0;
+    $repeatGuests = 0;
+    $totalSpend = 0.0;
+    $freq = ['one' => 0, 'two' => 0, 'three_four' => 0, 'five_plus' => 0];
+
+    foreach ($cards as $card => $c) {
+        $visits = count($c['days']);
+        $totalVisits += $visits;
+        if ($visits >= 2) $repeatGuests++;
+        if ($visits == 1)        $freq['one']++;
+        elseif ($visits == 2)    $freq['two']++;
+        elseif ($visits <= 4)    $freq['three_four']++;
+        else                     $freq['five_plus']++;
+
+        // Returning when the ledger shows a first-ever visit before the
+        // window; new otherwise (including cards not yet in the ledger, whose
+        // first visit is by definition inside this window).
+        if (isset($priorCards[$card])) {
+            $returningGuests++;
+        } else {
+            $newGuests++;
+        }
+
+        if ($c['spend'] > 0) $guestsWithSpend++;
+        $totalSpend += (float)$c['spend'];
+    }
+
+    return [
+        'total_guests'      => $totalGuests,
+        'new_guests'        => $newGuests,
+        'returning_guests'  => $returningGuests,
+        'new_pct'           => $totalGuests > 0 ? round($newGuests / $totalGuests * 100, 1) : null,
+        'returning_pct'     => $totalGuests > 0 ? round($returningGuests / $totalGuests * 100, 1) : null,
+        'total_visits'      => $totalVisits,
+        'avg_visits'        => $totalGuests > 0 ? round($totalVisits / $totalGuests, 2) : null,
+        'repeat_rate'       => $totalGuests > 0 ? round($repeatGuests / $totalGuests * 100, 1) : null,
+        'frequency'         => $freq,
+        'guests_with_spend' => $guestsWithSpend,
+        'attach_rate'       => $totalGuests > 0 ? round($guestsWithSpend / $totalGuests * 100, 1) : null,
+        // Money — scrubbed for non-view_revenue roles.
+        'total_spend'       => round($totalSpend, 2),
+        'spend_per_visit'   => $totalVisits > 0 ? round($totalSpend / $totalVisits, 2) : 0.0,
+        'spend_per_guest'   => $totalGuests > 0 ? round($totalSpend / $totalGuests, 2) : 0.0,
     ];
 }
 
