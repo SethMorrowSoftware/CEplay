@@ -1213,14 +1213,21 @@
                 App.el('div', { className: 'hero-pulse-side' }, [
                     App.el('div', { className: 'hero-pulse-spark' }, [
                         App.el('div', { className: 'hero-pulse-spark-label' }, [
-                            App.el('span', { textContent: 'Hourly heat' }),
-                            App.el('span', { className: 'hero-pulse-spark-axis', textContent: '12h ago    now' })
+                            App.el('span', { textContent: 'Hourly heat' })
                         ]),
                         App.el('canvas', {
                             id: 'hero-spark',
                             className: 'hero-pulse-spark-canvas',
                             'aria-label': 'Plays per hour for the last 12 hours'
-                        })
+                        }),
+                        // Time axis under the sparkline: left end = 12h ago,
+                        // right end = the current hour. Two separate spans at
+                        // opposite ends so they can't collapse into one
+                        // confusing "12h ago now" run.
+                        App.el('div', { className: 'hero-pulse-spark-axis' }, [
+                            App.el('span', { textContent: '12h ago' }),
+                            App.el('span', { textContent: 'now' })
+                        ])
                     ]),
                     App.el('div', { className: 'hero-pulse-chips' }, [
                         statChip('plays', 'Plays today'),
