@@ -29,6 +29,47 @@ $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
 $scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
 $basePath = rtrim(dirname($scriptName), '/');
 
+/**
+ * Cache-busting URL for a local asset. This app has no build step and serves
+ * JS/CSS straight from disk, so without a version query a browser keeps
+ * running a stale cached bundle after a deploy — shipped features stay
+ * invisible until a manual hard refresh. Appending ?v=<mtime> makes the URL
+ * change exactly when the file changes, so the browser refetches on the next
+ * normal reload. $ver overrides the file's own mtime (used for style.css,
+ * whose @import partials wouldn't otherwise bust it — we key it to the newest
+ * file anywhere in the CSS tree instead).
+ */
+function assetUrl(string $basePath, string $rel, ?int $ver = null): string {
+    if ($ver === null) {
+        $ver = @filemtime(__DIR__ . $rel) ?: 0;
+    }
+    return htmlspecialchars($basePath . $rel . '?v=' . $ver);
+}
+
+/** Newest mtime anywhere under a directory (recursive) — for tree-wide busting. */
+function assetTreeVersion(string $dir): int {
+    $latest = 0;
+    if (!is_dir($dir)) {
+        return $latest;
+    }
+    try {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $f) {
+            if ($f->isFile()) {
+                $m = $f->getMTime();
+                if ($m > $latest) {
+                    $latest = $m;
+                }
+            }
+        }
+    } catch (Exception $e) {
+        // Fall back to 0 (no busting) rather than breaking page render.
+    }
+    return $latest;
+}
+
 // Remove basePath prefix and query string
 $path = $requestUri;
 if ($basePath && strpos($path, $basePath) === 0) {
@@ -410,7 +451,7 @@ $appTimezoneJson = json_encode($appTimezone);
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= htmlspecialchars($basePath) ?>/public/css/style.css">
+    <link rel="stylesheet" href="<?= assetUrl($basePath, '/public/css/style.css', assetTreeVersion(__DIR__ . '/public/css')) ?>">
 </head>
 <body>
     <div id="app">
@@ -436,22 +477,22 @@ $appTimezoneJson = json_encode($appTimezone);
             timezone: <?= $appTimezoneJson ?>
         };
     </script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/api.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/app.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/login.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/dashboard.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/games.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/cards.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/groups.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/kiosks.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/schedules.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/overrides.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/logs.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/settings.js"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/api.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/app.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/login.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/dashboard.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/games.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/cards.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/groups.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/kiosks.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/schedules.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/overrides.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/logs.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/settings.js') ?>"></script>
     <!-- Chart.js is vendored locally so analytics charts work without
          internet access and never depend on a third-party CDN. -->
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/vendor/chart.umd.min.js?v=4.4.7"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/analytics.js"></script>
-    <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/performance.js"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/analytics.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/performance.js') ?>"></script>
 </body>
 </html>
