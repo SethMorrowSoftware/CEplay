@@ -240,21 +240,60 @@ function handleGames(string $method, array $parts, ?array $input): void {
  */
 function gamesGetOne(string $gameId): void {
     $client = new CenterEdgeClient();
-    if (!$client->isConfigured()) {
-        http_response_code(400);
-        echo json_encode(['error' => 'CenterEdge API is not configured.']);
+
+    // The live GET /games/{id} endpoint is OPTIONAL per the CenterEdge spec
+    // (capabilities.games.getSingleGame, default false). Many card systems
+    // return HTTP 404 for it — which made the game detail modal show "Game
+    // not found" for EVERY game. So we only call it when capabilities
+    // actually advertise support, and otherwise (or on any failure) serve
+    // the game from the local cache, which holds everything the modal needs.
+    if ($client->isConfigured()) {
+        $supportsSingle = false;
+        try {
+            $caps = $client->getCapabilitiesCached();
+            $supportsSingle = !empty($caps['games']['getSingleGame']);
+        } catch (Exception $e) {
+            // Capabilities unavailable — fall back to cache below.
+        }
+
+        if ($supportsSingle) {
+            try {
+                echo json_encode($client->getGame($gameId));
+                return;
+            } catch (RuntimeException $e) {
+                // Best-effort: log non-404s, then fall back to cache so the
+                // modal still renders instead of dead-ending on a live error.
+                if (strpos($e->getMessage(), 'HTTP 404') === false) {
+                    error_log('gamesGetOne live fetch failed, using cache: ' . $e->getMessage());
+                }
+            }
+        }
+    }
+
+    // Cache fallback — shape the row exactly like a CenterEdge Game object.
+    $row = DB::queryOne(
+        'SELECT game_id, game_name, operation_status, categories,
+                supported_actions, virtual_play_enabled
+         FROM game_state_cache WHERE game_id = :p0',
+        [$gameId]
+    );
+    if (!$row) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Game not found', 'code' => 'gameNotFound']);
         return;
     }
 
-    try {
-        $game = $client->getGame($gameId);
-        echo json_encode($game);
-    } catch (RuntimeException $e) {
-        $msg = $e->getMessage();
-        $code = strpos($msg, 'HTTP 404') !== false ? 404 : 500;
-        http_response_code($code);
-        echo json_encode(['error' => sanitizeApiError($msg)]);
-    }
+    $cats = json_decode((string)($row['categories'] ?? '[]'), true);
+    $actions = json_decode((string)($row['supported_actions'] ?? '[]'), true);
+    echo json_encode([
+        'id'                 => (string)$row['game_id'],
+        'name'               => (string)$row['game_name'],
+        'operationStatus'    => (string)$row['operation_status'],
+        'categories'         => is_array($cats) ? $cats : [],
+        'supportedActions'   => is_array($actions) ? $actions : [],
+        'virtualPlayEnabled' => (bool)$row['virtual_play_enabled'],
+        'from_cache'         => true,
+    ]);
 }
 
 /**
