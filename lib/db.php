@@ -280,6 +280,22 @@ class DB {
             last_synced_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
         )');
 
+        // Migration: cache supportedActions + virtualPlayEnabled so the game
+        // detail modal can render from the cache. The live GET /games/{id}
+        // endpoint is OPTIONAL per spec (capabilities.games.getSingleGame)
+        // and many card systems 404 it — persisting these here means game
+        // detail works on every system, not just ones that support it.
+        foreach ([
+            'ALTER TABLE game_state_cache ADD COLUMN supported_actions TEXT DEFAULT \'[]\'',
+            'ALTER TABLE game_state_cache ADD COLUMN virtual_play_enabled INTEGER NOT NULL DEFAULT 0',
+        ] as $gscMigration) {
+            try {
+                $db->exec($gscMigration);
+            } catch (Exception $e) {
+                // Column already exists — ignore
+            }
+        }
+
         // Cache of kiosks pulled from the CenterEdge `/kiosks` endpoint.
         // operation_status mirrors the API's GameOperationStatus enum
         // (enabled | paused | outOfService) and may be empty when the

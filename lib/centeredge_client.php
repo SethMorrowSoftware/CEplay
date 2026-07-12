@@ -950,13 +950,22 @@ class CenterEdgeClient {
                 $gameName = $game['name'] ?? '';
                 $opStatus = $game['operationStatus'] ?? 'enabled';
                 $categories = json_encode($game['categories'] ?? []);
+                // Persist supportedActions + virtualPlayEnabled so the game
+                // detail modal renders from cache even when the card system
+                // doesn't support the optional live single-game endpoint.
+                $supportedActions = json_encode($game['supportedActions'] ?? []);
+                $virtualPlay = !empty($game['virtualPlayEnabled']) ? 1 : 0;
 
                 DB::execute(
-                    'INSERT INTO game_state_cache (game_id, game_name, operation_status, categories, last_synced_at)
-                     VALUES (:p0, :p1, :p2, :p3, datetime(\'now\'))
+                    'INSERT INTO game_state_cache
+                        (game_id, game_name, operation_status, categories,
+                         supported_actions, virtual_play_enabled, last_synced_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, datetime(\'now\'))
                      ON CONFLICT(game_id) DO UPDATE SET
-                         game_name = :p1, operation_status = :p2, categories = :p3, last_synced_at = datetime(\'now\')',
-                    [$gameId, $gameName, $opStatus, $categories]
+                         game_name = :p1, operation_status = :p2, categories = :p3,
+                         supported_actions = :p4, virtual_play_enabled = :p5,
+                         last_synced_at = datetime(\'now\')',
+                    [$gameId, $gameName, $opStatus, $categories, $supportedActions, $virtualPlay]
                 );
             }
 
