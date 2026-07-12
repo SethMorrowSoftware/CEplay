@@ -70,6 +70,7 @@
 
 /* --- Dashboard polish sub-modules --------------------------- */
 @import url("pages/dashboard/pulse.css");
+@import url("pages/dashboard/pace.css");
 @import url("pages/dashboard/stat-cards.css");
 @import url("pages/dashboard/top-games.css");
 @import url("pages/dashboard/live-feed.css");
