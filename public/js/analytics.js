@@ -249,37 +249,58 @@
             return;
         }
 
-        // New-vs-returning proportion bar with legend.
-        var newCount = g.new_guests || 0;
-        var retCount = g.returning_guests || 0;
-        var newPct = g.new_pct != null ? g.new_pct : 0;
-        var retPct = g.returning_pct != null ? g.returning_pct : 0;
+        // New-vs-returning proportion bar with legend — but only when we have
+        // visit history reaching back before the window starts. On a range
+        // longer than our tracked history, every guest looks "new" (their
+        // first visit predates our records), which made returning counts
+        // collapse and a 90-day window show fewer returning guests than a
+        // 7-day one. In that case we suppress the split and say why instead of
+        // showing a misleading number.
+        var head = App.el('div', { className: 'guest-split-head' }, [
+            App.el('span', { className: 'stat-label', textContent: formatInt(total) + ' unique guests' })
+        ]);
+        var splitChildren = [head];
 
-        var bar = App.el('div', { className: 'guest-split-bar', 'aria-hidden': 'true' }, [
-            App.el('div', { className: 'guest-split-seg guest-split-new',
-                style: { width: Math.max(0, newPct) + '%' } }),
-            App.el('div', { className: 'guest-split-seg guest-split-ret',
-                style: { width: Math.max(0, retPct) + '%' } })
-        ]);
-        var legend = App.el('div', { className: 'guest-split-legend' }, [
-            App.el('span', { className: 'guest-legend-item' }, [
-                App.el('span', { className: 'guest-dot guest-dot-new' }),
-                App.el('strong', { textContent: formatInt(newCount) }),
-                App.el('span', { className: 'text-muted', textContent: ' new (' + newPct + '%)' })
-            ]),
-            App.el('span', { className: 'guest-legend-item' }, [
-                App.el('span', { className: 'guest-dot guest-dot-ret' }),
-                App.el('strong', { textContent: formatInt(retCount) }),
-                App.el('span', { className: 'text-muted', textContent: ' returning (' + retPct + '%)' })
-            ])
-        ]);
-        body.appendChild(App.el('div', { className: 'guest-split' }, [
-            App.el('div', { className: 'guest-split-head' }, [
-                App.el('span', { className: 'stat-label', textContent: formatInt(total) + ' unique guests' }),
-                legend
-            ]),
-            bar
-        ]));
+        if (g.classification_covered) {
+            var newCount = g.new_guests || 0;
+            var retCount = g.returning_guests || 0;
+            var newPct = g.new_pct != null ? g.new_pct : 0;
+            var retPct = g.returning_pct != null ? g.returning_pct : 0;
+
+            head.appendChild(App.el('div', { className: 'guest-split-legend' }, [
+                App.el('span', { className: 'guest-legend-item' }, [
+                    App.el('span', { className: 'guest-dot guest-dot-new' }),
+                    App.el('strong', { textContent: formatInt(newCount) }),
+                    App.el('span', { className: 'text-muted', textContent: ' new (' + newPct + '%)' })
+                ]),
+                App.el('span', { className: 'guest-legend-item' }, [
+                    App.el('span', { className: 'guest-dot guest-dot-ret' }),
+                    App.el('strong', { textContent: formatInt(retCount) }),
+                    App.el('span', { className: 'text-muted', textContent: ' returning (' + retPct + '%)' })
+                ])
+            ]));
+            splitChildren.push(App.el('div', { className: 'guest-split-bar', 'aria-hidden': 'true' }, [
+                App.el('div', { className: 'guest-split-seg guest-split-new',
+                    style: { width: Math.max(0, newPct) + '%' } }),
+                App.el('div', { className: 'guest-split-seg guest-split-ret',
+                    style: { width: Math.max(0, retPct) + '%' } })
+            ]));
+        } else {
+            var since = g.history_since ? formatShortDate(g.history_since) : null;
+            var msg = since
+                ? 'New vs returning needs visit history from before this range — we’ve been tracking since ' + since + '. Pick a shorter range, or check back as history builds.'
+                : 'New vs returning appears once a full range of visit history has been tracked.';
+            splitChildren.push(App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
+                textContent: msg }));
+        }
+        body.appendChild(App.el('div', { className: 'guest-split' }, splitChildren));
+
+        // If the range reaches past the retained raw feed (~30 days), the
+        // per-guest metrics only cover what's retained — say so.
+        if (g.metrics_since && g.window_from && g.metrics_since > g.window_from) {
+            body.appendChild(App.el('div', { className: 'text-muted text-xs', style: { marginTop: '-0.5rem' },
+                textContent: 'Guest detail below reflects plays since ' + formatShortDate(g.metrics_since) + ' (about the last 30 days are kept in detail).' }));
+        }
 
         // Headline tiles.
         var tiles = [
