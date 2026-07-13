@@ -288,8 +288,8 @@
         } else {
             var since = g.history_since ? formatShortDate(g.history_since) : null;
             var msg = since
-                ? 'New vs returning needs visit history from before this range — we’ve been tracking since ' + since + '. Pick a shorter range, or check back as history builds.'
-                : 'New vs returning appears once a full range of visit history has been tracked.';
+                ? 'New vs returning needs about a full range of visit history before the range to be reliable, and we’ve only been tracking since ' + since + '. Try a shorter range, or check back as history builds.'
+                : 'New vs returning appears once enough visit history has been tracked.';
             splitChildren.push(App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.35rem' },
                 textContent: msg }));
         }

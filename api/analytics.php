@@ -578,16 +578,31 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
         $priorCards[(string)$r['card_number']] = true;
     }
 
-    // New-vs-returning is only trustworthy when we have visit history reaching
-    // back BEFORE the window starts — otherwise every guest looks "new" simply
-    // because their first visit predates our records, collapsing "returning"
-    // toward zero on long ranges (which made a 90-day window show FEWER
-    // returning guests than a 7-day one). The ledger's earliest first-seen date
-    // is our history floor; if the window starts at/before it, we can't tell
-    // new from returning and the split is suppressed by the UI.
+    // New-vs-returning is only trustworthy when we have SUBSTANTIAL visit
+    // history reaching back BEFORE the window starts. Otherwise returning guests
+    // are invisible — a guest who really visited before the window but whose
+    // earliest recorded visit falls inside it looks "new", collapsing the
+    // returning count. A window barely past the history floor is the worst case:
+    // e.g. a 30-day window with only 3 days of prior history counts almost
+    // nobody as returning, so it can show FEWER returning guests than a 7-day
+    // window (which had weeks of prior history). We therefore require the
+    // pre-window history (fromDate − historyFloor) to be at least as long as the
+    // window itself before trusting the split; shorter than that, the UI
+    // suppresses it. As the ledger ages, longer windows qualify on their own.
     $floorRow = DB::queryOne('SELECT MIN(first_seen_date) AS f FROM card_activity');
     $trackingFloor = ($floorRow && !empty($floorRow['f'])) ? (string)$floorRow['f'] : null;
-    $classificationCovered = ($trackingFloor !== null && $fromDate > $trackingFloor);
+
+    $todayStr   = (new DateTime('now', $tz))->format('Y-m-d');
+    $dFrom      = DateTime::createFromFormat('!Y-m-d', $fromDate, $tz);
+    $dToday     = DateTime::createFromFormat('!Y-m-d', $todayStr, $tz);
+    $windowDays = ($dFrom && $dToday) ? (int)$dFrom->diff($dToday)->days : 0;
+
+    $lookbackDays = -1;
+    if ($trackingFloor !== null && $trackingFloor < $fromDate) {
+        $dFloor = DateTime::createFromFormat('!Y-m-d', $trackingFloor, $tz);
+        if ($dFloor && $dFrom) $lookbackDays = (int)$dFloor->diff($dFrom)->days;
+    }
+    $classificationCovered = ($lookbackDays >= max(1, $windowDays));
 
     // The per-card metrics (guests, frequency, spend) come from the raw feed,
     // which only retains ~30 days — so on longer ranges they reflect just the
