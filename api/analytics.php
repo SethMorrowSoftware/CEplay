@@ -578,6 +578,36 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
         $priorCards[(string)$r['card_number']] = true;
     }
 
+    // New-vs-returning is only trustworthy when we have visit history reaching
+    // back BEFORE the window starts — otherwise every guest looks "new" simply
+    // because their first visit predates our records, collapsing "returning"
+    // toward zero on long ranges (which made a 90-day window show FEWER
+    // returning guests than a 7-day one). The ledger's earliest first-seen date
+    // is our history floor; if the window starts at/before it, we can't tell
+    // new from returning and the split is suppressed by the UI.
+    $floorRow = DB::queryOne('SELECT MIN(first_seen_date) AS f FROM card_activity');
+    $trackingFloor = ($floorRow && !empty($floorRow['f'])) ? (string)$floorRow['f'] : null;
+    $classificationCovered = ($trackingFloor !== null && $fromDate > $trackingFloor);
+
+    // The per-card metrics (guests, frequency, spend) come from the raw feed,
+    // which only retains ~30 days — so on longer ranges they reflect just the
+    // retained window, not the full range. Report the effective start so the UI
+    // can say so instead of implying full-range coverage.
+    $feedFloorRow = DB::queryOne(
+        'SELECT MIN(transaction_time) AS t FROM game_play_transactions WHERE transaction_time != \'\''
+    );
+    $metricsSince = $fromDate;
+    if ($feedFloorRow && !empty($feedFloorRow['t'])) {
+        try {
+            $fd = new DateTime((string)$feedFloorRow['t']);
+            $fd->setTimezone($tz);
+            $feedFloorDate = $fd->format('Y-m-d');
+            if ($feedFloorDate > $fromDate) $metricsSince = $feedFloorDate;
+        } catch (Exception $e) {
+            // leave metricsSince = fromDate
+        }
+    }
+
     $newGuests = 0;
     $returningGuests = 0;
     $totalVisits = 0;
@@ -614,6 +644,12 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
         'returning_guests'  => $returningGuests,
         'new_pct'           => $totalGuests > 0 ? round($newGuests / $totalGuests * 100, 1) : null,
         'returning_pct'     => $totalGuests > 0 ? round($returningGuests / $totalGuests * 100, 1) : null,
+        // Coverage: whether new/returning is reliable for this window, the
+        // history floor, and the effective start of the raw-feed metrics.
+        'classification_covered' => $classificationCovered,
+        'history_since'     => $trackingFloor,
+        'metrics_since'     => $metricsSince,
+        'window_from'       => $fromDate,
         'total_visits'      => $totalVisits,
         'avg_visits'        => $totalGuests > 0 ? round($totalVisits / $totalGuests, 2) : null,
         'repeat_rate'       => $totalGuests > 0 ? round($repeatGuests / $totalGuests * 100, 1) : null,
