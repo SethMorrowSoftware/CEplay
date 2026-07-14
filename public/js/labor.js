@@ -208,13 +208,6 @@
             if (!good.length) return;
         }
 
-        // Bar scale: the biggest money day (sales or wages, whichever is
-        // larger) spans the full track, so bar lengths compare in dollars
-        // across days.
-        var maxMoney = 0;
-        good.forEach(function(d) {
-            maxMoney = Math.max(maxMoney, d.sales || 0, d.labor || 0);
-        });
 
         var showRides = good.some(function(d) { return d.rides != null; });
         var headCells = [App.el('th', { textContent: 'Day' })];
@@ -230,14 +223,17 @@
         var table = App.el('table', { className: 'data-table' }, [
             App.el('thead', {}, [App.el('tr', {}, headCells)]),
             App.el('tbody', {}, good.map(function(d) {
-                // The day's money as a stacked bar: red = wages, green =
-                // what's left of sales after wages. A day where red beats
-                // green (or there's no green at all) is instantly visible.
+                // Every bar spans the full track (100% of the day's sales);
+                // the red share IS the labor rate, the green share is what
+                // was left. Wages beating sales — or wages with no sales at
+                // all — reads as a solid red bar.
                 var daySales = d.sales || 0, dayLabor = d.labor || 0;
                 var dayProfit = Math.max(0, daySales - dayLabor);
-                var laborW = maxMoney > 0 ? dayLabor / maxMoney * 100 : 0;
-                var profitW = maxMoney > 0 ? dayProfit / maxMoney * 100 : 0;
-                if (dayLabor > 0 && laborW < 1.5) laborW = 1.5; // keep small wages visible
+                var laborW = daySales > 0
+                    ? Math.min(100, dayLabor / daySales * 100)
+                    : (dayLabor > 0 ? 100 : 0);
+                var profitW = daySales > 0 ? Math.max(0, 100 - laborW) : 0;
+                if (dayLabor > 0 && laborW < 1.5) { laborW = 1.5; profitW = 98.5; } // keep tiny wage shares visible
                 var rateClass = d.rate == null ? '' : (d.rate <= 0.25 ? 'labor-rate-good' : (d.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
                 var cells = [
                     App.el('td', {}, [App.el('strong', { textContent: dayLabel(d.date) }),
@@ -313,7 +309,7 @@
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'In the bars, red is wages and green is what’s left of sales after wages — a longer bar is a bigger day. '
+                    'Each bar is the day’s sales: the red share went to wages, the green share is what was left. A solid red bar means wages ate the whole day (or there were no sales). '
                     + 'Labor rate = wages ÷ go-kart sales for the same day. '
                     + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
                         ? 'Sales are estimated as paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + ') plus the MSSQL query; time-pass swipes are not counted as money. '
