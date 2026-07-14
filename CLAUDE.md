@@ -63,8 +63,14 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   splits rely on `game_daily_stats.time_plays`, tracked since the
   `time_plays_daily_since` config stamp (older rollup rows can't be split).
 - Go-Kart Labor (`#/labor`, `/api/labor/*`, `lib/mssql_client.php`) compares
-  sales vs labor cost per selected day by querying the venue's CenterEdge
-  MSSQL database directly (Sales + TimeClock_Weekly). Connection settings
+  sales vs labor cost per selected day. Labor comes from the venue's
+  CenterEdge MSSQL database (TimeClock_Weekly, 'Go-Karts' job join); sales =
+  MSSQL walk-up cash (Sales, CatNo 108) + paid rides × a configurable
+  per-ride price, where paid rides = the configured go-kart READER GROUP's
+  plays minus time-pass plays from the app's own feed (the MSSQL Sales
+  lines post card-swiped rides at $0 and can't distinguish pass swipes).
+  Test connection prints a connection fingerprint (server, DB, freshness,
+  category names/breakdowns) for diagnosing data questions. Connection settings
   live encrypted in api_config; the two per-day queries are admin-editable
   SQL with a required `:date` placeholder, guarded to a single SELECT
   (comment-stripping keyword blacklist — see MssqlClient::assertReadOnly).

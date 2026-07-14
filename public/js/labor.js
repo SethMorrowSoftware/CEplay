@@ -198,29 +198,41 @@
         var maxRate = 0;
         good.forEach(function(d) { if (d.rate != null && d.rate > maxRate) maxRate = d.rate; });
 
+        var showRides = good.some(function(d) { return d.rides != null; });
+        var headCells = [App.el('th', { textContent: 'Day' })];
+        if (showRides) {
+            headCells.push(App.el('th', { textContent: 'Rides', title: 'Total kart swipes from the reader feed' }));
+            headCells.push(App.el('th', { textContent: 'Pass', title: 'Time-pass swipes — omitted from the sales value' }));
+        }
+        headCells.push(App.el('th', { textContent: 'Sales' }),
+                       App.el('th', { textContent: 'Labor' }),
+                       App.el('th', { textContent: 'Labor rate' }),
+                       App.el('th', { textContent: '' }));
+
         var table = App.el('table', { className: 'data-table' }, [
-            App.el('thead', {}, [App.el('tr', {}, [
-                App.el('th', { textContent: 'Day' }),
-                App.el('th', { textContent: 'Sales' }),
-                App.el('th', { textContent: 'Labor' }),
-                App.el('th', { textContent: 'Labor rate' }),
-                App.el('th', { textContent: '' })
-            ])]),
+            App.el('thead', {}, [App.el('tr', {}, headCells)]),
             App.el('tbody', {}, good.map(function(d) {
                 var pctW = (d.rate != null && maxRate > 0) ? Math.max(4, Math.round(d.rate / maxRate * 100)) : 0;
                 var rateClass = d.rate == null ? '' : (d.rate <= 0.25 ? 'labor-rate-good' : (d.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
-                return App.el('tr', {}, [
+                var cells = [
                     App.el('td', {}, [App.el('strong', { textContent: dayLabel(d.date) }),
-                                      App.el('span', { className: 'text-muted text-xs', textContent: ' ' + d.date })]),
-                    App.el('td', { textContent: fmtMoney(d.sales) }),
+                                      App.el('span', { className: 'text-muted text-xs', textContent: ' ' + d.date })])
+                ];
+                if (showRides) {
+                    cells.push(App.el('td', { textContent: d.rides != null ? String(d.rides) : '—' }));
+                    cells.push(App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: d.pass_rides != null ? String(d.pass_rides) : '—' })]));
+                }
+                cells.push(
+                    App.el('td', { title: d.cash != null ? ('includes ' + fmtMoney(d.cash) + ' walk-up cash') : '' , textContent: fmtMoney(d.sales) }),
                     App.el('td', { textContent: fmtMoney(d.labor) }),
                     App.el('td', {}, [App.el('span', { className: 'labor-rate ' + rateClass, textContent: fmtPct(d.rate) })]),
-                    App.el('td', { style: { width: '30%' } }, [
+                    App.el('td', { style: { width: '26%' } }, [
                         App.el('div', { className: 'labor-bar-track' }, [
                             App.el('div', { className: 'labor-bar', style: { width: pctW + '%' } })
                         ])
                     ])
-                ]);
+                );
+                return App.el('tr', {}, cells);
             }))
         ]);
 
@@ -237,7 +249,10 @@
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Labor rate = labor cost ÷ sales for the go-kart queries configured below. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
+                    (state.data && state.data.ride_valuation && state.data.ride_valuation.active
+                        ? 'Sales = walk-up cash + paid rides × ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '. Time-pass swipes are counted in Rides but omitted from the sales value. '
+                        : 'Sales come from the MSSQL query below (walk-up cash only until a reader group is selected for ride valuation). ')
+                    + 'Labor rate = labor cost ÷ sales. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
             ])
         ]));
     }
@@ -266,6 +281,18 @@
         var userIn = App.el('input', { className: 'form-input', value: s.username || '', placeholder: 'SQL login' });
         var passIn = App.el('input', { className: 'form-input', type: 'password',
             placeholder: s.has_password ? '•••••• (leave blank to keep current)' : 'Password' });
+        // Ride valuation: which reader-group area counts as "the karts",
+        // and what one paid (non-time-pass) swipe is worth.
+        var groupSel = App.el('select', { className: 'form-input' },
+            [App.el('option', { value: '', textContent: '— none (walk-up cash only) —' })].concat(
+                (s.reader_groups || []).map(function(g) {
+                    var o = App.el('option', { value: String(g.id), textContent: g.name });
+                    if (s.reader_group_id != null && String(s.reader_group_id) === String(g.id)) o.selected = true;
+                    return o;
+                })));
+        var priceIn = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
+            value: s.price_per_ride != null ? String(s.price_per_ride) : '11', style: { maxWidth: '8rem' } });
+
         var salesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 6 });
         salesTa.value = s.sales_sql || '';
         var laborTa = App.el('textarea', { className: 'form-input labor-sql', rows: 9 });
@@ -280,7 +307,9 @@
                     var payload = {
                         host: hostIn.value.trim(), port: parseInt(portIn.value, 10) || 1433,
                         database: dbIn.value.trim(), username: userIn.value.trim(),
-                        sales_sql: salesTa.value, labor_sql: laborTa.value
+                        sales_sql: salesTa.value, labor_sql: laborTa.value,
+                        reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
+                        price_per_ride: parseFloat(priceIn.value) || 0
                     };
                     if (passIn.value !== '') payload.password = passIn.value;
                     await API.put('labor/settings', payload);
@@ -348,7 +377,11 @@
                     field('Server', hostIn), field('Port', portIn), field('Database', dbIn),
                     field('Username', userIn), field('Password', passIn)
                 ]),
-                field('Sales for a day (:date) — add your go-kart filter', salesTa),
+                App.el('div', { className: 'labor-conn-grid', style: { gridTemplateColumns: '2fr 1fr' } }, [
+                    field('Value rides from this area (time-pass swipes omitted)', groupSel),
+                    field('Price per paid ride ($)', priceIn)
+                ]),
+                field('Walk-up cash for a day (:date)', salesTa),
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :date. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
