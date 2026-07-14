@@ -171,10 +171,13 @@ function laborTest(): void {
         }
 
         // --- Schema-aware name discovery: resolve category NUMBERS to their
-        // POS names, and show what items actually sell inside the candidate
-        // go-kart categories. Identifiers come from the venue's own
-        // INFORMATION_SCHEMA and are bracket-quoted; every statement is a
-        // single SELECT through the same read-only guard.
+        // POS names. The venue's Sales table carries no item names (only
+        // CatNo + SubCatNo), so names must come from a lookup table — whose
+        // name and shape vary by install. Each candidate is probed inside
+        // its own try/catch (a GUID-keyed near-miss like ClassCategories
+        // must not abort the search), and the number column must be an
+        // integer type before it's trusted. Identifiers are bracket-quoted;
+        // every statement is a single SELECT through the read-only guard.
         $ident = function (string $name): string {
             return '[' . preg_replace('/[^A-Za-z0-9_ #\-]/', '', $name) . ']';
         };
@@ -183,23 +186,28 @@ function laborTest(): void {
                 "SELECT COLUMN_NAME FROM [CenterEdge].INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'Sales'", 64));
             $diag['sales_columns'] = implode(', ', $cols);
 
-            // Category-name lookup: find a table that looks like the category
-            // list and carries both a number and a name column.
             $catTables = $client->rows(
-                "SELECT TABLE_NAME FROM [CenterEdge].INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND (TABLE_NAME LIKE '%Categor%' OR TABLE_NAME LIKE '%SalesCat%')", 8);
+                "SELECT TABLE_NAME FROM [CenterEdge].INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND (TABLE_NAME LIKE '%Cat%' OR TABLE_NAME LIKE '%Divis%') ORDER BY TABLE_NAME", 24);
             $catNames = null;
+            $tried = [];
             $wanted = array_values(array_unique(array_merge($topCatNos, [106, 108])));
+            $in = implode(',', array_map('intval', $wanted));
             foreach ($catTables as $t) {
                 $tbl = (string)$t['TABLE_NAME'];
-                $tcols = array_map(function ($r) { return (string)$r['COLUMN_NAME']; }, $client->rows(
-                    "SELECT COLUMN_NAME FROM [CenterEdge].INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" . str_replace("'", "''", $tbl) . "'", 64));
-                $noCol = null; $nameCol = null;
-                foreach ($tcols as $c) {
-                    if ($noCol === null && preg_match('/^(CatNo|CategoryNo|CatID|CategoryID|No|ID)$/i', $c)) $noCol = $c;
-                    if ($nameCol === null && preg_match('/(Desc|Name|Title)/i', $c)) $nameCol = $c;
-                }
-                if ($noCol && $nameCol && $wanted) {
-                    $in = implode(',', array_map('intval', $wanted));
+                $tried[] = $tbl;
+                try {
+                    // Columns WITH types: the join key must be an integer.
+                    $tcols = $client->rows(
+                        "SELECT COLUMN_NAME, DATA_TYPE FROM [CenterEdge].INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" . str_replace("'", "''", $tbl) . "'", 64);
+                    $noCol = null; $nameCol = null;
+                    foreach ($tcols as $c) {
+                        $cn = (string)$c['COLUMN_NAME'];
+                        $ct = strtolower((string)$c['DATA_TYPE']);
+                        $isInt = in_array($ct, ['int', 'smallint', 'tinyint', 'bigint', 'numeric', 'decimal'], true);
+                        if ($noCol === null && $isInt && preg_match('/^(CatNo|CategoryNo|CatID|CategoryID|DivNo|No|ID)$/i', $cn)) $noCol = $cn;
+                        if ($nameCol === null && in_array($ct, ['varchar', 'nvarchar', 'char', 'nchar'], true) && preg_match('/(Desc|Name|Title)/i', $cn)) $nameCol = $cn;
+                    }
+                    if (!$noCol || !$nameCol || !$wanted) continue;
                     $rows = $client->rows(
                         'SELECT ' . $ident($noCol) . ' AS no, ' . $ident($nameCol) . ' AS name FROM [CenterEdge].[dbo].' . $ident($tbl)
                         . ' WHERE ' . $ident($noCol) . ' IN (' . $in . ')', 16);
@@ -210,28 +218,27 @@ function laborTest(): void {
                         $catNames[] = '(from table ' . $tbl . ')';
                         break;
                     }
+                } catch (Exception $e) {
+                    // wrong shape — move on to the next candidate table
+                    continue;
                 }
             }
-            $diag['category_names'] = $catNames ?: 'no category lookup table found (tables checked: '
-                . implode(', ', array_map(function ($r) { return $r['TABLE_NAME']; }, $catTables)) . ')';
+            $diag['category_names'] = $catNames ?: 'no matching category lookup found (candidates tried: ' . implode(', ', $tried) . ')';
 
-            // Item-level view inside the two candidate categories, last 7 days.
-            $descCol = null;
-            foreach (['ItemDescription', 'Description', 'ItemName', 'ProductName', 'Item', 'Descr'] as $cand) {
-                foreach ($cols as $c) { if (strcasecmp($c, $cand) === 0) { $descCol = $c; break 2; } }
-            }
-            if ($descCol) {
-                foreach ([106, 108] as $cat) {
+            // No item names exist in Sales, so the finest split available is
+            // the SubCatNo breakdown inside each candidate category.
+            foreach ([106, 108] as $cat) {
+                try {
                     $rows = $client->rows(
-                        'SELECT TOP 5 ' . $ident($descCol) . " AS item, COUNT(*) AS lines, SUM(AmtSold) AS total FROM [CenterEdge].[dbo].[Sales] WHERE CatNo = {$cat} AND ShiftDate >= DATEADD(DAY, -7, GETDATE()) GROUP BY " . $ident($descCol) . ' ORDER BY total DESC', 5);
-                    $diag['items_cat' . $cat . '_last7'] = $rows
+                        "SELECT TOP 6 SubCatNo, COUNT(*) AS lines, SUM(AmtSold) AS total FROM [CenterEdge].[dbo].[Sales] WHERE CatNo = {$cat} AND ShiftDate >= DATEADD(DAY, -7, GETDATE()) GROUP BY SubCatNo ORDER BY total DESC", 6);
+                    $diag['subcats_cat' . $cat . '_last7'] = $rows
                         ? array_map(function ($r) {
-                            return trim((string)$r['item']) . ': $' . round((float)$r['total'], 2) . ' (' . $r['lines'] . ' lines)';
+                            return 'SubCatNo ' . $r['SubCatNo'] . ': $' . round((float)$r['total'], 2) . ' (' . $r['lines'] . ' lines)';
                         }, $rows)
                         : 'NO SALES in the last 7 days';
+                } catch (Exception $e) {
+                    $diag['subcats_cat' . $cat . '_last7'] = 'error: ' . $e->getMessage();
                 }
-            } else {
-                $diag['items_by_category'] = 'no item-description column recognized in Sales (see sales_columns)';
             }
         } catch (Exception $e) {
             $diag['schema_discovery'] = 'error: ' . $e->getMessage();
