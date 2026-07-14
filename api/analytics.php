@@ -179,6 +179,18 @@ function analyticsOverview(bool $hideMoney = false): void {
     $kpis = analyticsKpis($startIsoUtc, $endIsoUtc, $noTime);
     $previousKpis = analyticsKpis($prevStartIso, $prevEndIso, $noTime);
 
+    // How many plays the exclusion removed — the banner shows it so the
+    // "without passes" view is explicit about what it set aside.
+    $excludedTimePlays = null;
+    if ($noTime) {
+        $r = DB::queryOne(
+            'SELECT COUNT(*) AS c FROM game_play_transactions
+             WHERE transaction_time >= :p0 AND transaction_time < :p1 AND used_time_play = 1',
+            [$startIsoUtc, $endIsoUtc]
+        );
+        $excludedTimePlays = (int)($r['c'] ?? 0);
+    }
+
     // ---- Breakage: value expired off cards + card merges (system feed) ----
     // Points/tickets, not dollars — no view_revenue scrub needed.
     $kpis = array_merge($kpis, analyticsSystemTx($startIsoUtc, $endIsoUtc));
@@ -401,6 +413,7 @@ function analyticsOverview(bool $hideMoney = false): void {
         'system_tx_supported' => $sysTxSupported,
         'hide_money' => $hideMoney,
         'exclude_time_plays' => $noTime,
+        'excluded_time_plays' => $excludedTimePlays,
         'generated_at' => (new DateTime('now', $utc))->format('Y-m-d\TH:i:s\Z'),
     ];
 

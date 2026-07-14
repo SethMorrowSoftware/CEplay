@@ -58,8 +58,7 @@
         container.appendChild(App.el('div', {
             id: 'analytics-timeplay-note',
             className: 'analytics-timeplay-note',
-            style: { display: 'none' },
-            textContent: '⏱ Time-pass plays are excluded — every figure on this page (plays, tickets, points, payments) reflects non-pass traffic only. Flip the toggle to include them again.'
+            style: { display: 'none' }
         }));
         container.appendChild(buildKpiSection());
         container.appendChild(buildGuestSection());
@@ -234,13 +233,33 @@
         if (canSeeMoney) cards.push(kpiCardSkeleton('cash', 'Reader CC payments', 'Credit-card dollars paid at the game readers — sales at the front counter are not included'));
         cards.push(kpiCardSkeleton('points', 'Points charged', 'Card points games charged for plays in this period'));
         cards.push(kpiCardSkeleton('avg_tickets', 'Avg tickets / play', 'Average tickets dispensed per play'));
-        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg reader CC / play', 'Average card-at-reader payment per play'));
+        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg reader CC / play', 'Average card-at-reader payment per play. With time-pass plays excluded this usually reads HIGHER — free pass plays no longer dilute the average.'));
         cards.push(kpiCardSkeleton('unique_cards', 'Unique cards', 'Distinct play cards used in this period — a rough guest count'));
         cards.push(kpiCardSkeleton('credit_card_share', 'Credit-card plays', 'Plays paid by tapping a bank card at the reader instead of a play card'));
         // Breakage — value expired off cards by the card system itself.
         // Points/tickets, not dollars, so visible to every analytics role.
         cards.push(kpiCardSkeleton('expired', 'Expired value', 'Points and tickets that expired off guest cards (breakage)'));
         return App.el('div', { className: 'stats-grid', id: 'analytics-kpis' }, cards);
+    }
+
+    /**
+     * Banner shown while time-pass plays are excluded. Besides stating the
+     * mode, it pre-empts the classic misreading: totals DROP, but per-play /
+     * per-visit averages usually read HIGHER, because free pass plays no
+     * longer dilute the denominator — that's arithmetic, not a bug.
+     */
+    function renderTimePlayNote(data) {
+        var note = document.getElementById('analytics-timeplay-note');
+        if (!note) return;
+        if (!data.exclude_time_plays) {
+            note.style.display = 'none';
+            return;
+        }
+        var n = data.excluded_time_plays;
+        note.textContent = '⏱ ' + (n != null ? formatInt(n) + ' time-pass plays' : 'Time-pass plays')
+            + ' excluded — totals on this page reflect non-pass traffic only (an excluded play’s tickets, points, and payments drop out with it). '
+            + 'Heads-up: per-play and per-visit averages often read HIGHER in this view, because free pass plays no longer dilute them.';
+        note.style.display = '';
     }
 
     function kpiCardSkeleton(key, label, tip) {
@@ -343,7 +362,10 @@
             guestTile('Attach rate', pct(g.attach_rate), 'Guests with a card payment at a reader')
         ];
         if (canSeeMoney) {
-            tiles.push(guestTile('Reader CC / visit', formatCurrency(g.spend_per_visit), 'Card-at-reader payments on carded plays'));
+            var perVisitSub = data.exclude_time_plays
+                ? 'Pass plays excluded — often reads higher, since pass-only visits leave the average'
+                : 'Card-at-reader payments on carded plays';
+            tiles.push(guestTile('Reader CC / visit', formatCurrency(g.spend_per_visit), perVisitSub));
             tiles.push(guestTile('Reader CC / guest', formatCurrency(g.spend_per_guest), formatCurrency(g.total_spend) + ' total'));
         }
         body.appendChild(App.el('div', { className: 'guest-tile-grid' }, tiles));
@@ -556,6 +578,7 @@
             var data = await API.get('analytics/overview?' + qs);
             if (App.navGeneration() !== gen) return; // user navigated away
             state.overview = data;
+            renderTimePlayNote(data);
             renderKpis(data);
             renderGuests(data);
             renderFleet(data);
