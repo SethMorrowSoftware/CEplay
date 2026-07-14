@@ -15,6 +15,14 @@ require_once __DIR__ . '/../lib/validator.php';
 function handleGroups(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
+    // Group reads serve the Pause Groups page, the Dashboard, and the
+    // Schedules/Overrides pages (group names). Visible via any of those
+    // sections or their manage abilities.
+    if ($method === 'GET') {
+        Auth::requireAnyAccess(['view_groups', 'view_dashboard', 'view_schedules', 'view_overrides',
+                                'groups_manage', 'schedules_manage', 'overrides_manage']);
+    }
+
     $groupId = isset($parts[0]) && is_numeric($parts[0]) ? (int)$parts[0] : null;
     $action = $parts[1] ?? null;
 

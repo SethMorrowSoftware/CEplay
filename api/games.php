@@ -36,6 +36,15 @@ function payoutInClause(array $ids, int $startIdx): array {
 function handleGames(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
+    // Game reads serve several sections: the Games page itself, the
+    // Dashboard feed, the Pause Groups / Reader Groups member pickers, and
+    // the analytics pages' name lookups. Visible via any of those routes;
+    // hidden only when a role has none of them.
+    if ($method === 'GET') {
+        Auth::requireAnyAccess(['view_games', 'view_dashboard', 'view_groups',
+                                'groups_manage', 'reader_groups_manage', 'analytics']);
+    }
+
     $action = $parts[0] ?? '';
     $sub = $parts[1] ?? '';
 

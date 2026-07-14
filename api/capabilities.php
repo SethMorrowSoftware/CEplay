@@ -9,6 +9,11 @@ require_once __DIR__ . '/../lib/centeredge_client.php';
 function handleCapabilities(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
+    // Consumed by the Kiosks page and the Settings diagnostics panel.
+    if ($method === 'GET') {
+        Auth::requireAnyAccess(['view_kiosks', 'settings']);
+    }
+
     $client = new CenterEdgeClient();
     if (!$client->isConfigured()) {
         http_response_code(400);

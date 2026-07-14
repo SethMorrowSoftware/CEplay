@@ -25,6 +25,8 @@
     var roleCatalog = [];
     /** Full permission catalog { key: 'description' }, injected by GET /api/users. */
     var permissionCatalog = {};
+    /** Keys that gate page visibility (grouped as "Pages" in the role editor). */
+    var pagePermissionKeys = ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides'];
 
     function catalogEntry(slug) {
         return roleCatalog.filter(function(r) { return r.slug === slug; })[0] || null;
@@ -70,6 +72,7 @@
 
             var settings = settingsData || {};
             var users = usersData || {};
+            pagePermissionKeys = users.page_permission_keys || pagePermissionKeys;
             roleCatalog = (users.role_catalog && users.role_catalog.length)
                 ? users.role_catalog
                 : ((rolesData && rolesData.roles) || []);
@@ -987,10 +990,12 @@
             descInput
         ]));
 
-        // Permission checkboxes from the live catalog.
+        // Permission checkboxes from the live catalog, grouped: "Pages"
+        // (visibility keys — untick to hide that section from the role
+        // entirely) and "Access & abilities" (everything else).
         const checks = {};
         const permWrap = App.el('div', { className: 'perm-checklist' });
-        Object.keys(permCatalog).forEach(function(key) {
+        function addRow(key) {
             var cb = App.el('input', { type: 'checkbox', value: key });
             cb.checked = isEdit && (role.permissions || []).indexOf(key) !== -1;
             checks[key] = cb;
@@ -1001,12 +1006,20 @@
                     App.el('span', { className: 'text-sm text-secondary', textContent: ' — ' + permCatalog[key] })
                 ])
             ]));
-        });
+        }
+        var pageKeys = pagePermissionKeys.filter(function(k) { return permCatalog[k]; });
+        var abilityKeys = Object.keys(permCatalog).filter(function(k) { return pageKeys.indexOf(k) === -1; });
+        if (pageKeys.length) {
+            permWrap.appendChild(App.el('div', { className: 'perm-checklist-heading', textContent: 'Pages — untick to hide a section from this role' }));
+            pageKeys.forEach(addRow);
+            permWrap.appendChild(App.el('div', { className: 'perm-checklist-heading', textContent: 'Access & abilities' }));
+        }
+        abilityKeys.forEach(addRow);
         form.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('label', { className: 'form-label', textContent: 'Permissions' }),
             permWrap,
             App.el('span', { className: 'text-muted text-xs',
-                textContent: 'Anything not listed here (dashboard, game/kiosk status views, action log) is visible to every signed-in user.' })
+                textContent: 'Hidden pages disappear from the sidebar and their pages and data feeds are blocked for this role. The reporting pages (Analytics, Performance, Reader Groups, Card Lookup, Action Log, Settings) are controlled by their own keys under Access & abilities.' })
         ]));
 
         const saveBtn = App.el('button', {

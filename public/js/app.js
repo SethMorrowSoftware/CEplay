@@ -60,6 +60,8 @@ const App = {
      * user. The server re-checks every API call regardless.
      */
     PERMISSION_AREAS: [
+        'view_dashboard', 'view_games', 'view_groups',
+        'view_kiosks', 'view_schedules', 'view_overrides',
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'reader_groups_manage',
         'schedules_manage', 'settings', 'users', 'view_logs'
@@ -72,9 +74,38 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
-        manager: ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs'],
-        tech:    ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
+        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
+        manager: ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs'],
+        tech:    ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
+    },
+
+    /**
+     * Sections in sidebar order with the permission that makes each
+     * visible. Single source for the nav, the route guard, and the
+     * "where do I land?" fallback — so hiding a section can never strand
+     * a user on a page they can't see.
+     */
+    SECTION_AREAS: {
+        '#/dashboard':   'view_dashboard',
+        '#/games':       'view_games',
+        '#/performance': 'analytics',
+        '#/readers':     'analytics',
+        '#/cards':       'cards',
+        '#/groups':      'view_groups',
+        '#/kiosks':      'view_kiosks',
+        '#/schedules':   'view_schedules',
+        '#/overrides':   'view_overrides',
+        '#/analytics':   'analytics',
+        '#/logs':        'view_logs',
+        '#/settings':    'settings'
+    },
+
+    /** First section the current user may see, or null if their role hides everything. */
+    defaultHash() {
+        for (const [hash, area] of Object.entries(this.SECTION_AREAS)) {
+            if (this.canAccess(area)) return hash;
+        }
+        return null;
     },
 
     /** The current user's resolved permission keys. */
@@ -127,6 +158,19 @@ const App = {
         this.initTheme();
 
         window.addEventListener('hashchange', () => this.route());
+
+        // Landing spot for the pathological case where a role has every
+        // section unticked — renders a plain notice instead of bounce-looping
+        // between guards.
+        this.registerRoute('#/no-access', { render: (container) => {
+            container.appendChild(this.el('div', { className: 'card', style: { maxWidth: '30rem', margin: '10vh auto' } }, [
+                this.el('div', { className: 'card-body' }, [
+                    this.el('h2', { textContent: 'No pages enabled' }),
+                    this.el('p', { className: 'text-secondary', style: { marginTop: '0.5rem' }, textContent:
+                        'Your role currently has no sections enabled. Ask an administrator to enable at least one page for your role in Settings → Roles.' })
+                ])
+            ]));
+        } });
 
         // Create toast container
         this.toastContainer = document.createElement('div');
@@ -207,6 +251,7 @@ const App = {
 
     setDocumentTitle(hash) {
         const routeTitles = {
+            '#/no-access': 'No access',
             '#/dashboard': 'Dashboard',
             '#/games': 'Games',
             '#/performance': 'Performance',
@@ -267,27 +312,19 @@ const App = {
             return;
         }
         if (this.currentUser && (hash === '#/login' || hash === '#/' || hash === '')) {
-            window.location.hash = '#/dashboard';
+            window.location.hash = this.defaultHash() || '#/no-access';
             return;
         }
 
         // Role-based access guard. If a user types in a hash they aren't
         // allowed to reach (or follows a stale bookmark from before a role
-        // change) we route them back to the dashboard with a friendly toast
-        // rather than silently rendering a 403'd empty page.
-        if (this.currentUser) {
-            const restricted = {
-                '#/analytics':   'analytics',
-                '#/performance': 'analytics',
-                '#/readers':     'analytics',
-                '#/cards':       'cards',
-                '#/settings':    'settings',
-                '#/logs':        'view_logs'
-            };
-            const requiredArea = restricted[hash];
+        // change) we route them to their first visible section with a
+        // friendly toast rather than silently rendering a 403'd empty page.
+        if (this.currentUser && hash !== '#/no-access') {
+            const requiredArea = this.SECTION_AREAS[hash];
             if (requiredArea && !this.canAccess(requiredArea)) {
                 this.toast('You do not have permission to view that page.', 'warning');
-                window.location.hash = '#/dashboard';
+                window.location.hash = this.defaultHash() || '#/no-access';
                 return;
             }
         }
@@ -309,7 +346,7 @@ const App = {
         }
 
         if (!handler) {
-            window.location.hash = this.currentUser ? '#/dashboard' : '#/login';
+            window.location.hash = this.currentUser ? (this.defaultHash() || '#/no-access') : '#/login';
             return;
         }
 
@@ -421,18 +458,23 @@ const App = {
         const allNavItems = [
             { hash: '#/dashboard',   icon: Icons.dashboard,   label: 'Dashboard' },
             { hash: '#/games',       icon: Icons.games,       label: 'Games' },
-            { hash: '#/performance', icon: Icons.performance, label: 'Performance', area: 'analytics' },
-            { hash: '#/readers',     icon: Icons.readers,     label: 'Reader Groups', area: 'analytics' },
-            { hash: '#/cards',       icon: Icons.cards,       label: 'Card Lookup', area: 'cards' },
+            { hash: '#/performance', icon: Icons.performance, label: 'Performance' },
+            { hash: '#/readers',     icon: Icons.readers,     label: 'Reader Groups' },
+            { hash: '#/cards',       icon: Icons.cards,       label: 'Card Lookup' },
             { hash: '#/groups',    icon: Icons.groups,    label: 'Pause Groups' },
             { hash: '#/kiosks',    icon: Icons.kiosks,    label: 'Kiosks' },
             { hash: '#/schedules', icon: Icons.schedules, label: 'Schedules' },
             { hash: '#/overrides', icon: Icons.overrides, label: 'Overrides' },
-            { hash: '#/analytics', icon: Icons.analytics, label: 'Analytics',   area: 'analytics' },
-            { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log',  area: 'view_logs' },
-            { hash: '#/settings',  icon: Icons.settings,  label: 'Settings',    area: 'settings' }
+            { hash: '#/analytics', icon: Icons.analytics, label: 'Analytics' },
+            { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log' },
+            { hash: '#/settings',  icon: Icons.settings,  label: 'Settings' }
         ];
-        const navItems = allNavItems.filter(item => !item.area || this.canAccess(item.area));
+        // Every section is gated by its SECTION_AREAS permission — a role
+        // lacking the key simply doesn't get the nav item.
+        const navItems = allNavItems.filter(item => {
+            const area = this.SECTION_AREAS[item.hash];
+            return !area || this.canAccess(area);
+        });
 
         const nav = this.el('nav', { className: 'nav-section' });
         const navLabel = this.el('div', { className: 'nav-section-label', textContent: 'Navigation' });

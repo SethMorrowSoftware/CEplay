@@ -111,12 +111,25 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 11 keys incl.
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 17 keys incl.
   view_revenue, manual_control, reader_groups_manage). A read-only "Viewer"
-  role (analytics + view_revenue + cards + view_logs) is seeded once as a
-  normal custom role — fully editable/deletable in Settings. Mutation
-  buttons are also hidden client-side for roles lacking the relevant
-  permission (server re-checks regardless).
+  role (all pages + analytics + view_revenue + cards + view_logs) is seeded
+  once as a normal custom role — fully editable/deletable in Settings.
+  Mutation buttons are also hidden client-side for roles lacking the
+  relevant permission (server re-checks regardless).
+- Every sidebar section is hideable per role (and per user via the
+  grant/deny override editor): the six operational pages have view_* keys
+  (`Auth::PAGE_PERMISSIONS`, grouped as "Pages" in the role editor); the
+  reporting pages use their existing keys (analytics, cards, view_logs,
+  settings). Hiding removes the nav item, bounces the route
+  (`App.SECTION_AREAS` drives nav + guard + `App.defaultHash()` landing;
+  `#/no-access` covers roles with nothing enabled), and blocks reads:
+  shared GET endpoints use `Auth::requireAnyAccess([...])` dependency sets
+  (e.g. groups GET allows view_groups|view_dashboard|view_schedules|
+  view_overrides|the manage keys) so a visible section always has the data
+  it renders, and data closes only when every section needing it is hidden.
+  A one-time migration (`migration_view_keys_v1`) granted all six view keys
+  to every existing role so the upgrade changed nobody's access.
   `Auth::hasPermission()/canAccess()` resolve
   through the user's role; admin bypasses and is locked against edit/delete.
   The client gets the resolved permission list injected into

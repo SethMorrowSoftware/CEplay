@@ -61,6 +61,7 @@ function handleUsers(string $method, array $parts, ?array $input): void {
                 'roles'              => array_column($roleCatalog, 'slug'),
                 'role_catalog'       => $roleCatalog,
                 'permission_catalog' => Auth::PERMISSIONS,
+                'page_permission_keys' => Auth::PAGE_PERMISSIONS,
                 'current_role'       => $currentUser['role'] ?? null,
             ]);
             break;

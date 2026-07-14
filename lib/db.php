@@ -87,10 +87,10 @@ class DB {
              '["*"]'],
             ['manager', 'Manager',
              'Runs the floor and the automation: full analytics with reader CC payments, card lookup, and group/schedule management. No system settings or user management.',
-             '["analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","schedules_manage","view_logs"]'],
+             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
              'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No payment figures, card lookup, or group/schedule editing.',
-             '["analytics","manual_control","overrides_manage","settings","users"]'],
+             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","manual_control","overrides_manage","settings","users"]'],
         ];
         foreach ($seedRoles as $r) {
             try {
@@ -186,6 +186,41 @@ class DB {
             error_log('reader_groups_manage migration skipped: ' . $e->getMessage());
         }
 
+        // One-time migration: page-visibility keys (view_dashboard,
+        // view_games, view_groups, view_kiosks, view_schedules,
+        // view_overrides). These pages used to be visible to every signed-in
+        // user; now each is a catalog key so any section can be hidden per
+        // role. Grant all six to every existing role (system and custom
+        // alike, wildcard skipped) so the upgrade changes nobody's effective
+        // access — admins then untick to hide. Flagged so it runs once and
+        // never overrides later role edits.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_view_keys_v1'");
+            if (!$flag) {
+                $viewKeys = ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides'];
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms) || in_array('*', $perms, true)) {
+                        continue;
+                    }
+                    $missing = array_values(array_diff($viewKeys, $perms));
+                    if ($missing) {
+                        $perms = array_values(array_merge($perms, $missing));
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode($perms), (string)$rr['slug']]
+                        );
+                    }
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_view_keys_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('view keys migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
@@ -201,7 +236,7 @@ class DB {
                     'INSERT OR IGNORE INTO roles (slug, name, description, permissions, is_system) VALUES (:p0, :p1, :p2, :p3, 0)',
                     ['viewer', 'Viewer',
                      'Sees everything, changes nothing: full analytics and reporting, card lookup, and the action log — no floor controls, no group/schedule editing, no settings.',
-                     '["analytics","view_revenue","cards","view_logs"]']
+                     '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","view_logs"]']
                 );
                 self::execute(
                     "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('seed_viewer_role_v1', :p0, 0)",
