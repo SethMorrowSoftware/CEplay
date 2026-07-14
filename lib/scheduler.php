@@ -1551,8 +1551,15 @@ class Scheduler {
      * reporting page mid-day sees fresh numbers without waiting for cron; the
      * report endpoints treat today as live and never double-count it.
      *
+     * The same pass also recomputes the per-game HOURLY rollup
+     * (game_hourly_stats) for the same authoritative dates — hour-of-day is
+     * lost from game_daily_stats, and the Reader Groups staffing heatmaps
+     * (day-of-week × hour) need it to survive past raw retention. One raw
+     * scan feeds both tables inside one transaction, so they can never
+     * disagree about a day.
+     *
      * @param int $recomputeDays How many trailing local days to recompute.
-     * @return array{days_recomputed:int, rows_written:int}
+     * @return array{days_recomputed:int, rows_written:int, hourly_rows_written:int}
      */
     public static function rollupDailyStats(int $recomputeDays = 28): array {
         $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
@@ -1590,15 +1597,17 @@ class Scheduler {
         $rows = DB::query(
             'SELECT transaction_time, game_id, game_description, card_number,
                     redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
-                    regular_points, bonus_points
+                    regular_points, bonus_points, used_time_play
              FROM game_play_transactions
              WHERE transaction_time >= :p0 AND transaction_time < :p1',
             [$startIso, $endIso]
         );
 
         // Aggregate into [date][game_id] => totals, tracking distinct cards per
-        // (date, game) with a set so unique_cards is exact for that day.
+        // (date, game) with a set so unique_cards is exact for that day. The
+        // hourly aggregate rides along keyed by (date, hour, game).
         $agg = [];
+        $aggHourly = [];
         $names = [];
         $cardSets = [];
         foreach ($rows as $r) {
@@ -1630,6 +1639,19 @@ class Scheduler {
             $agg[$key]['regular_points'] += (float)($r['regular_points'] ?? 0);
             $agg[$key]['bonus_points']   += (float)($r['bonus_points'] ?? 0);
 
+            $hour = (int)$d->format('G');
+            $hKey = $date . "\0" . $hour . "\0" . $gid;
+            if (!isset($aggHourly[$hKey])) {
+                $aggHourly[$hKey] = [
+                    'date' => $date, 'hour' => $hour, 'game_id' => $gid,
+                    'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0,
+                ];
+            }
+            $aggHourly[$hKey]['plays']      += 1;
+            $aggHourly[$hKey]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
+            $aggHourly[$hKey]['cash']       += (float)($r['cash_amount'] ?? 0);
+            $aggHourly[$hKey]['time_plays'] += ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+
             $card = (string)($r['card_number'] ?? '');
             if ($card !== '' && $card !== '000000') {
                 $cardSets[$key][$card] = true;
@@ -1653,6 +1675,7 @@ class Scheduler {
             // to zero plays for a recomputed day don't leave stale rows behind.
             foreach (array_keys($targetDates) as $date) {
                 DB::execute('DELETE FROM game_daily_stats WHERE stat_date = :p0', [$date]);
+                DB::execute('DELETE FROM game_hourly_stats WHERE stat_date = :p0', [$date]);
             }
             $written = 0;
             foreach ($agg as $key => $a) {
@@ -1672,13 +1695,30 @@ class Scheduler {
                 );
                 $written++;
             }
+            $writtenHourly = 0;
+            foreach ($aggHourly as $h) {
+                DB::execute(
+                    'INSERT INTO game_hourly_stats
+                        (stat_date, hour, game_id, plays, tickets, cash, time_plays, updated_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, datetime(\'now\'))',
+                    [
+                        $h['date'], (int)$h['hour'], $h['game_id'], (int)$h['plays'],
+                        (float)$h['tickets'], (float)$h['cash'], (int)$h['time_plays'],
+                    ]
+                );
+                $writtenHourly++;
+            }
             $db->exec('COMMIT');
         } catch (Exception $e) {
             $db->exec('ROLLBACK');
             throw $e;
         }
 
-        return ['days_recomputed' => count($targetDates), 'rows_written' => $written];
+        return [
+            'days_recomputed'     => count($targetDates),
+            'rows_written'        => $written,
+            'hourly_rows_written' => $writtenHourly,
+        ];
     }
 
     /**
@@ -1826,6 +1866,18 @@ class Scheduler {
             [$cutoff]
         );
         $summary['system_tx_purged'] = $deleted;
+
+        // Trim the hourly rollup past 400 days. Day-of-week × hour staffing
+        // heatmaps only need enough depth for year-over-year comparison;
+        // game_daily_stats (kept forever) still answers anything older at
+        // day grain. stat_date is a local YYYY-MM-DD string — lexical
+        // comparison is chronological.
+        $cutoff = date('Y-m-d', strtotime('-400 days'));
+        $deleted = DB::execute(
+            'DELETE FROM game_hourly_stats WHERE stat_date < :p0',
+            [$cutoff]
+        );
+        $summary['hourly_stats_purged'] = $deleted;
 
         return $summary;
     }

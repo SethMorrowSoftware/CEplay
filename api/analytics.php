@@ -12,6 +12,11 @@
  *     - Pause-action breakdown by source/action/success and per-group
  *     - Most recent failures
  *
+ * GET /api/analytics/reader-groups?range=…   — per reader group: totals, play
+ *   averages, prior-period compare, busiest weekday/hour (staffing signal)
+ * GET /api/analytics/reader-group?id=…&range=… — one group: KPIs, trend,
+ *   day-of-week × hour heatmap, per-game breakdown
+ *
  * Aggregations operate on the local cache (game_play_transactions, action_log,
  * pause_groups, schedule_overrides, *_state_cache, action_retries). No live
  * CenterEdge calls — the watchdog already keeps these caches warm.
@@ -52,6 +57,21 @@ function handleAnalytics(string $method, array $parts, ?array $input): void {
     if ($method === 'GET' && $action === 'game') {
         $hideMoney = !Auth::hasPermission('view_revenue');
         analyticsGameDetail($hideMoney);
+        return;
+    }
+
+    // Reader Groups reporting: operator-defined groupings of games/readers
+    // ("Redemption Wall", "Front Room", …) compared over the same resolved
+    // windows, plus a per-group day-of-week × hour-of-day staffing heatmap
+    // stitched from game_hourly_stats (history) and the raw feed (recent).
+    if ($method === 'GET' && $action === 'reader-groups') {
+        $hideMoney = !Auth::hasPermission('view_revenue');
+        analyticsReaderGroupsList($hideMoney);
+        return;
+    }
+    if ($method === 'GET' && $action === 'reader-group') {
+        $hideMoney = !Auth::hasPermission('view_revenue');
+        analyticsReaderGroupDetail($hideMoney);
         return;
     }
 
@@ -1626,5 +1646,595 @@ function analyticsGameDetail(bool $hideMoney): void {
         'generated_at'    => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
     ];
     if ($hideMoney) perfScrubMoney($payload);
+    echo json_encode($payload);
+}
+
+// =====================================================================
+// Reader Groups reporting engine
+//
+// Reader groups are operator-defined groupings of games/readers (created on
+// the Reader Groups page, stored in reader_groups / reader_group_games) used
+// purely for analytics: comparing areas of the venue and finding when each
+// is busiest so staffing can follow demand.
+//
+//   GET /api/analytics/reader-groups → every group's period totals, play
+//       averages, prior-period comparison, and busiest weekday/hour.
+//   GET /api/analytics/reader-group?id=… → one group's KPIs, trend series,
+//       day-of-week × hour-of-day heatmap, and per-game breakdown.
+//
+// Day-grain numbers reuse the Performance stitch (game_daily_stats + raw
+// feed) so they cover the app's full history. Hour-grain numbers stitch the
+// game_hourly_stats rollup (written nightly alongside the daily rollup) with
+// the raw feed; hourly history only accumulates from the day this feature
+// ships, so heatmap payloads carry their actual coverage window and the UI
+// says so instead of implying full-range coverage.
+// =====================================================================
+
+/** Sunday-first weekday names matching PHP's date('w') indexing. */
+const READER_DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * Earliest venue-local date hour-grain data exists for: the hourly rollup's
+ * floor, or the raw feed's trusted window when the rollup is younger (or
+ * empty — e.g. before the first nightly cron after this feature shipped).
+ */
+function readerHourlyCoverageStart(DateTimeZone $tz): string {
+    $rawCoverStart = (new DateTime('now', $tz))->modify('-28 days')->format('Y-m-d');
+    $row = DB::queryOne('SELECT MIN(stat_date) AS d FROM game_hourly_stats');
+    $min = ($row && !empty($row['d'])) ? (string)$row['d'] : null;
+    return ($min !== null && $min < $rawCoverStart) ? $min : $rawCoverStart;
+}
+
+/**
+ * Resolve the hour-covered slice of a reporting window and count weekday
+ * occurrences inside it (the denominator for "average plays on a Saturday
+ * at 2 PM"). Calendar occurrences, not just days with plays — a dead
+ * Monday should drag Monday's average down, that's the staffing signal.
+ *
+ * @return array{from:?string, to:?string, full:bool, dow_counts:int[]}
+ */
+function readerHourlyCoverage(string $fromDate, string $toDate, DateTimeZone $tz): array {
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+    $to = ($toDate > $today) ? $today : $toDate;
+    $coverStart = readerHourlyCoverageStart($tz);
+    $from = ($fromDate > $coverStart) ? $fromDate : $coverStart;
+
+    $dowCounts = array_fill(0, 7, 0);
+    if ($from > $to) {
+        return ['from' => null, 'to' => null, 'full' => false, 'dow_counts' => $dowCounts];
+    }
+
+    $cursor = DateTime::createFromFormat('!Y-m-d', $from, $tz);
+    $stop   = DateTime::createFromFormat('!Y-m-d', $to, $tz);
+    // Coverage is bounded by hourly retention (~400 days) + the raw window,
+    // so this loop is short; the guard is belt-and-braces.
+    $guard = 800;
+    while ($cursor && $stop && $cursor <= $stop && $guard-- > 0) {
+        $dowCounts[(int)$cursor->format('w')]++;
+        $cursor->modify('+1 day');
+    }
+
+    return [
+        'from' => $from,
+        'to'   => $to,
+        'full' => ($from <= $fromDate),
+        'dow_counts' => $dowCounts,
+    ];
+}
+
+/**
+ * Hour-grain totals for a set of games over [$fromDate, $toDate] (inclusive
+ * local dates), one row per (date, hour, game): recent days from the raw
+ * feed, older days from the game_hourly_stats rollup — the same disjoint
+ * stitch perfDailyPerGame() uses, so nothing is double-counted.
+ *
+ * @param array<string,bool> $memberSet game_id => true
+ * @return array<int,array{date:string,hour:int,game_id:string,plays:int,tickets:float,cash:float,time_plays:int}>
+ */
+function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, array $memberSet): array {
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+    if ($toDate > $today) $toDate = $today;
+    if ($fromDate > $toDate || empty($memberSet)) return [];
+
+    $rawCoverStart = (new DateTime('now', $tz))->modify('-28 days')->format('Y-m-d');
+    $rawBefore = (new DateTime($rawCoverStart))->modify('-1 day')->format('Y-m-d');
+
+    $rows = [];
+
+    $rollupTo = ($toDate < $rawBefore) ? $toDate : $rawBefore;
+    if ($fromDate <= $rollupTo) {
+        foreach (DB::query(
+            'SELECT stat_date, hour, game_id, plays, tickets, cash, time_plays
+             FROM game_hourly_stats
+             WHERE stat_date >= :p0 AND stat_date <= :p1',
+            [$fromDate, $rollupTo]
+        ) as $r) {
+            $gid = (string)$r['game_id'];
+            if (!isset($memberSet[$gid])) continue;
+            $rows[] = [
+                'date'       => (string)$r['stat_date'],
+                'hour'       => (int)$r['hour'],
+                'game_id'    => $gid,
+                'plays'      => (int)$r['plays'],
+                'tickets'    => (float)$r['tickets'],
+                'cash'       => (float)$r['cash'],
+                'time_plays' => (int)$r['time_plays'],
+            ];
+        }
+    }
+
+    $rawFrom = ($fromDate > $rawCoverStart) ? $fromDate : $rawCoverStart;
+    if ($rawFrom <= $toDate) {
+        $utc = new DateTimeZone('UTC');
+        $start   = DateTime::createFromFormat('!Y-m-d', $rawFrom, $tz);
+        $endExcl = DateTime::createFromFormat('!Y-m-d', $toDate, $tz)->modify('+1 day');
+        // Pad ±1 day in UTC so an offset never clips boundary rows; re-filter
+        // by exact local date below.
+        $lo = (clone $start)->setTimezone($utc)->modify('-1 day')->format('Y-m-d\TH:i:s\Z');
+        $hi = (clone $endExcl)->setTimezone($utc)->modify('+1 day')->format('Y-m-d\TH:i:s\Z');
+
+        $agg = [];
+        foreach (DB::query(
+            'SELECT transaction_time, game_id, redemption_tickets,
+                    (cash_amount + credit_card_amount) AS cash_amount, used_time_play
+             FROM game_play_transactions
+             WHERE transaction_time >= :p0 AND transaction_time < :p1',
+            [$lo, $hi]
+        ) as $r) {
+            $gid = (string)($r['game_id'] ?? '');
+            if ($gid === '' || !isset($memberSet[$gid])) continue;
+            $tt = $r['transaction_time'] ?? '';
+            if ($tt === '') continue;
+            try {
+                $d = new DateTime($tt);
+            } catch (Exception $e) {
+                continue;
+            }
+            $d->setTimezone($tz);
+            $date = $d->format('Y-m-d');
+            if ($date < $rawFrom || $date > $toDate) continue;
+            $hour = (int)$d->format('G');
+            $k = $date . "\0" . $hour . "\0" . $gid;
+            if (!isset($agg[$k])) {
+                $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
+                            'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
+            }
+            $agg[$k]['plays']      += 1;
+            $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
+            $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
+            $agg[$k]['time_plays'] += ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+        }
+        foreach ($agg as $a) $rows[] = $a;
+    }
+
+    return $rows;
+}
+
+/**
+ * Fold hour-grain rows into a 7×24 day-of-week × hour matrix with both
+ * period totals and per-occurrence averages, plus the top busiest cells.
+ *
+ * @param array $rows readerHourlyRows() output (any game filtering already done)
+ * @param array $coverage readerHourlyCoverage() output for the same window
+ */
+function readerHeatmap(array $rows, array $coverage, DateTimeZone $tz): array {
+    $totals = [];
+    for ($d = 0; $d < 7; $d++) $totals[$d] = array_fill(0, 24, 0);
+
+    $dowByDate = [];
+    $timePlays = 0;
+    foreach ($rows as $r) {
+        $date = $r['date'];
+        if (!isset($dowByDate[$date])) {
+            $dt = DateTime::createFromFormat('!Y-m-d', $date, $tz);
+            $dowByDate[$date] = $dt ? (int)$dt->format('w') : 0;
+        }
+        $totals[$dowByDate[$date]][$r['hour']] += (int)$r['plays'];
+        $timePlays += (int)$r['time_plays'];
+    }
+
+    $avg = [];
+    $maxAvg = 0.0;
+    $maxTotal = 0;
+    $cells = [];
+    for ($d = 0; $d < 7; $d++) {
+        $avg[$d] = array_fill(0, 24, 0.0);
+        $n = (int)$coverage['dow_counts'][$d];
+        for ($h = 0; $h < 24; $h++) {
+            $t = $totals[$d][$h];
+            $a = $n > 0 ? round($t / $n, 1) : 0.0;
+            $avg[$d][$h] = $a;
+            if ($a > $maxAvg) $maxAvg = $a;
+            if ($t > $maxTotal) $maxTotal = $t;
+            if ($t > 0) {
+                $cells[] = ['dow' => $d, 'hour' => $h, 'plays' => $t, 'avg_plays' => $a];
+            }
+        }
+    }
+
+    usort($cells, function ($a, $b) {
+        if ($a['avg_plays'] == $b['avg_plays']) return $b['plays'] <=> $a['plays'];
+        return $b['avg_plays'] <=> $a['avg_plays'];
+    });
+    $busiest = array_map(function ($c) {
+        $c['label'] = READER_DOW_NAMES[$c['dow']] . ' ' . perfHourLabel($c['hour']);
+        return $c;
+    }, array_slice($cells, 0, 5));
+
+    return [
+        'heatmap' => [
+            'totals'     => $totals,
+            'avg'        => $avg,
+            'max_avg'    => $maxAvg,
+            'max_total'  => $maxTotal,
+            'dow_counts' => $coverage['dow_counts'],
+            'covered_from' => $coverage['from'],
+            'covered_to'   => $coverage['to'],
+            'full_coverage'=> (bool)$coverage['full'],
+        ],
+        'busiest'    => $busiest,
+        'time_plays' => $timePlays,
+    ];
+}
+
+/** Sum a per-game totals map over one group's member set. */
+function readerSumMembers(array $perGameTotals, array $memberSet): array {
+    $sum = ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'regular_points' => 0.0, 'bonus_points' => 0.0, 'active_games' => 0];
+    foreach ($memberSet as $gid => $_) {
+        if (!isset($perGameTotals[$gid])) continue;
+        $t = $perGameTotals[$gid];
+        $sum['plays']          += (int)$t['plays'];
+        $sum['tickets']        += (float)$t['tickets'];
+        $sum['cash']           += (float)$t['cash'];
+        $sum['regular_points'] += (float)$t['regular_points'];
+        $sum['bonus_points']   += (float)$t['bonus_points'];
+        if ((int)$t['plays'] > 0) $sum['active_games']++;
+    }
+    return $sum;
+}
+
+/** Days of the window that have elapsed (from → min(to, today)), inclusive. */
+function readerDaysElapsed(array $win, DateTimeZone $tz): int {
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+    $to = ($win['to'] < $today) ? $win['to'] : $today;
+    if ($win['from'] > $to) return 0;
+    try {
+        $ds = DateTime::createFromFormat('!Y-m-d', $win['from'], $tz);
+        $de = DateTime::createFromFormat('!Y-m-d', $to, $tz);
+        return ($ds && $de && $de >= $ds) ? ((int)$ds->diff($de)->days + 1) : 1;
+    } catch (Exception $e) {
+        return 1;
+    }
+}
+
+/** Zero every monetary field in a reader-group payload (no view_revenue). */
+function readerScrubMoney(array &$payload): void {
+    foreach (['totals', 'previous_totals'] as $k) {
+        if (isset($payload[$k]) && is_array($payload[$k])) {
+            if (array_key_exists('cash', $payload[$k])) $payload[$k]['cash'] = 0.0;
+            if (array_key_exists('avg_cash_per_play', $payload[$k])) $payload[$k]['avg_cash_per_play'] = 0.0;
+        }
+    }
+    foreach (['groups', 'games'] as $k) {
+        if (isset($payload[$k]) && is_array($payload[$k])) {
+            foreach ($payload[$k] as &$row) {
+                if (is_array($row)) {
+                    if (array_key_exists('cash', $row)) $row['cash'] = 0.0;
+                    if (array_key_exists('prev_cash', $row)) $row['prev_cash'] = 0.0;
+                }
+            }
+            unset($row);
+        }
+    }
+    if (isset($payload['series']['points']) && is_array($payload['series']['points'])) {
+        foreach ($payload['series']['points'] as &$pt) {
+            if (is_array($pt) && array_key_exists('cash', $pt)) $pt['cash'] = 0.0;
+        }
+        unset($pt);
+    }
+}
+
+/**
+ * GET /api/analytics/reader-groups — every reader group's totals, play
+ * averages, prior-period comparison, and busiest weekday/hour for the
+ * resolved window. Powers the comparison table on the Reader Groups page.
+ */
+function analyticsReaderGroupsList(bool $hideMoney): void {
+    list($tz, $tzName) = perfTimezone();
+    $win = perfResolveWindow($tz);
+
+    $groups = DB::query('SELECT id, name, description FROM reader_groups ORDER BY name ASC');
+
+    // Memberships: per-group sets, a reverse game → groups index, and the
+    // union set, so both the daily and hourly passes run once for all groups.
+    $members = [];
+    $groupsByGame = [];
+    $union = [];
+    foreach (DB::query('SELECT reader_group_id, game_id FROM reader_group_games') as $r) {
+        $gid = (int)$r['reader_group_id'];
+        $g = (string)$r['game_id'];
+        $members[$gid][$g] = true;
+        $groupsByGame[$g][] = $gid;
+        $union[$g] = true;
+    }
+
+    $daysElapsed = readerDaysElapsed($win, $tz);
+    $coverage = readerHourlyCoverage($win['from'], $win['to'], $tz);
+
+    $payload = [
+        'range'        => perfRangeMeta($win, $tzName),
+        'groups'       => [],
+        'venue_plays'  => 0,
+        'days_in_range'=> $daysElapsed,
+        'hourly_covered_from' => $coverage['from'],
+        'hourly_full_coverage'=> (bool)$coverage['full'],
+        'hide_money'   => $hideMoney,
+        'generated_at' => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
+    ];
+
+    if (empty($groups)) {
+        echo json_encode($payload);
+        return;
+    }
+
+    $dailyCur  = perfDailyPerGame($win['from'], $win['to'], $tz);
+    $dailyPrev = perfDailyPerGame($win['prev_from'], $win['prev_to'], $tz);
+    $curTot  = perfSumPerGame($dailyCur);
+    $prevTot = perfSumPerGame($dailyPrev);
+
+    $venueTotals = perfVenueTotals($curTot);
+    $payload['venue_plays'] = (int)$venueTotals['plays'];
+
+    // One hourly pass over the union of all member games, aggregated into a
+    // per-group 7×24 plays matrix (plus time-pass plays) via the reverse index.
+    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $union);
+    $cellsByGroup = [];
+    $timeByGroup = [];
+    $dowByDate = [];
+    foreach ($hourlyRows as $row) {
+        $date = $row['date'];
+        if (!isset($dowByDate[$date])) {
+            $dt = DateTime::createFromFormat('!Y-m-d', $date, $tz);
+            $dowByDate[$date] = $dt ? (int)$dt->format('w') : 0;
+        }
+        $dow = $dowByDate[$date];
+        foreach ($groupsByGame[$row['game_id']] ?? [] as $gid) {
+            if (!isset($cellsByGroup[$gid])) {
+                $cellsByGroup[$gid] = [];
+                for ($d = 0; $d < 7; $d++) $cellsByGroup[$gid][$d] = array_fill(0, 24, 0);
+                $timeByGroup[$gid] = 0;
+            }
+            $cellsByGroup[$gid][$dow][$row['hour']] += (int)$row['plays'];
+            $timeByGroup[$gid] += (int)$row['time_plays'];
+        }
+    }
+
+    $out = [];
+    foreach ($groups as $g) {
+        $gid = (int)$g['id'];
+        $memberSet = $members[$gid] ?? [];
+        $cur  = readerSumMembers($curTot, $memberSet);
+        $prev = readerSumMembers($prevTot, $memberSet);
+        $gameCount = count($memberSet);
+        $plays = (int)$cur['plays'];
+
+        // Busiest cell by per-occurrence average so a window spanning weeks
+        // ranks "typical Saturday 2 PM" fairly against "typical Tuesday 6 PM".
+        $busiest = null;
+        if (isset($cellsByGroup[$gid])) {
+            $bestAvg = 0.0; $bestTotal = 0;
+            for ($d = 0; $d < 7; $d++) {
+                $n = (int)$coverage['dow_counts'][$d];
+                if ($n < 1) continue;
+                for ($h = 0; $h < 24; $h++) {
+                    $t = $cellsByGroup[$gid][$d][$h];
+                    if ($t < 1) continue;
+                    $a = $t / $n;
+                    if ($a > $bestAvg || ($a == $bestAvg && $t > $bestTotal)) {
+                        $bestAvg = $a; $bestTotal = $t;
+                        $busiest = [
+                            'dow'   => $d,
+                            'hour'  => $h,
+                            'label' => READER_DOW_NAMES[$d] . ' ' . perfHourLabel($h),
+                            'avg_plays' => round($a, 1),
+                            'plays' => $t,
+                        ];
+                    }
+                }
+            }
+        }
+
+        $out[] = [
+            'id'          => $gid,
+            'name'        => (string)$g['name'],
+            'description' => (string)$g['description'],
+            'game_count'  => $gameCount,
+            'plays'       => $plays,
+            'tickets'     => round((float)$cur['tickets'], 2),
+            'cash'        => round((float)$cur['cash'], 2),
+            'time_plays'  => (int)($timeByGroup[$gid] ?? 0),
+            'active_games'=> (int)$cur['active_games'],
+            'avg_plays_per_day' => $daysElapsed > 0 ? round($plays / $daysElapsed, 1) : 0,
+            'avg_plays_per_game_per_day' => ($daysElapsed > 0 && $gameCount > 0)
+                ? round($plays / $gameCount / $daysElapsed, 1) : 0,
+            'share_pct'   => $venueTotals['plays'] > 0 ? round($plays / $venueTotals['plays'] * 100, 1) : null,
+            'busiest'     => $busiest,
+            'prev_plays'  => (int)$prev['plays'],
+            'prev_tickets'=> round((float)$prev['tickets'], 2),
+            'prev_cash'   => round((float)$prev['cash'], 2),
+        ];
+    }
+
+    // Busiest areas first — plays is the staffing signal.
+    usort($out, function ($a, $b) {
+        if ($a['plays'] == $b['plays']) return strcasecmp($a['name'], $b['name']);
+        return $b['plays'] <=> $a['plays'];
+    });
+
+    $payload['groups'] = $out;
+    if ($hideMoney) readerScrubMoney($payload);
+    echo json_encode($payload);
+}
+
+/**
+ * GET /api/analytics/reader-group?id=… — one reader group's KPIs (with
+ * prior-period comparison), trend series, day-of-week × hour heatmap, and
+ * per-game breakdown for the resolved window.
+ */
+function analyticsReaderGroupDetail(bool $hideMoney): void {
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    if ($id < 1) {
+        throw new RuntimeException('id is required.');
+    }
+    $group = DB::queryOne('SELECT id, name, description FROM reader_groups WHERE id = :p0', [$id]);
+    if (!$group) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Reader group not found']);
+        return;
+    }
+
+    list($tz, $tzName) = perfTimezone();
+    $win = perfResolveWindow($tz);
+
+    $memberRows = DB::query(
+        'SELECT m.game_id,
+                COALESCE(NULLIF(c.game_name, \'\'), NULLIF(m.game_name, \'\'), m.game_id) AS game_name,
+                c.operation_status
+         FROM reader_group_games m
+         LEFT JOIN game_state_cache c ON c.game_id = m.game_id
+         WHERE m.reader_group_id = :p0
+         ORDER BY game_name ASC',
+        [$id]
+    );
+    $memberSet = [];
+    foreach ($memberRows as $m) {
+        $memberSet[(string)$m['game_id']] = true;
+    }
+
+    $dailyCur  = perfDailyPerGame($win['from'], $win['to'], $tz);
+    $dailyPrev = perfDailyPerGame($win['prev_from'], $win['prev_to'], $tz);
+
+    // Restrict the stitched day-grain data to member games once; everything
+    // downstream (KPIs, trend, per-game rows) reads the filtered view.
+    $filterByDate = function (array $byDate) use ($memberSet): array {
+        $out = [];
+        foreach ($byDate as $date => $games) {
+            $f = array_intersect_key($games, $memberSet);
+            if (!empty($f)) $out[$date] = $f;
+        }
+        return $out;
+    };
+    $curByDate  = $filterByDate($dailyCur['byDate']);
+    $prevByDate = $filterByDate($dailyPrev['byDate']);
+    $curTot  = perfSumPerGame(['byDate' => $curByDate]);
+    $prevTot = perfSumPerGame(['byDate' => $prevByDate]);
+
+    $daysElapsed = readerDaysElapsed($win, $tz);
+    $gameCount = count($memberSet);
+
+    // Hour-grain: heatmap + busiest cells + time-pass plays (coverage-bound).
+    $coverage = readerHourlyCoverage($win['from'], $win['to'], $tz);
+    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $memberSet);
+    $heat = readerHeatmap($hourlyRows, $coverage, $tz);
+
+    $kpis = function (array $sum, int $days, int $nGames): array {
+        $plays = (int)$sum['plays'];
+        $tickets = (float)$sum['tickets'];
+        $cash = (float)$sum['cash'];
+        return [
+            'plays'   => $plays,
+            'tickets' => round($tickets, 2),
+            'cash'    => round($cash, 2),
+            'points'  => round((float)$sum['regular_points'] + (float)$sum['bonus_points'], 2),
+            'active_games' => (int)$sum['active_games'],
+            'avg_tickets_per_play' => $plays > 0 ? round($tickets / $plays, 2) : 0,
+            'avg_cash_per_play'    => $plays > 0 ? round($cash / $plays, 2) : 0,
+            'avg_plays_per_day'    => $days > 0 ? round($plays / $days, 1) : 0,
+            'avg_plays_per_game_per_day' => ($days > 0 && $nGames > 0) ? round($plays / $nGames / $days, 1) : 0,
+        ];
+    };
+    $totals = $kpis(readerSumMembers($curTot, $memberSet), $daysElapsed, $gameCount);
+    $totals['time_plays'] = (int)$heat['time_plays'];
+    // Prior period is a full span by construction; normalize per its own length.
+    $prevDays = 0;
+    try {
+        $pds = DateTime::createFromFormat('!Y-m-d', $win['prev_from'], $tz);
+        $pde = DateTime::createFromFormat('!Y-m-d', $win['prev_to'], $tz);
+        if ($pds && $pde && $pde >= $pds) $prevDays = (int)$pds->diff($pde)->days + 1;
+    } catch (Exception $e) {
+        $prevDays = 0;
+    }
+    $previousTotals = $kpis(readerSumMembers($prevTot, $memberSet), $prevDays, $gameCount);
+
+    // Trend series: hour buckets for a single-day window (from the stitched
+    // hourly rows), otherwise the shared day/month bucketing over the
+    // member-filtered daily data.
+    if ($win['granularity'] === 'hour') {
+        $buckets = array_fill(0, 24, ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0]);
+        foreach ($hourlyRows as $r) {
+            if ($r['date'] !== $win['from']) continue;
+            $buckets[$r['hour']]['plays']   += (int)$r['plays'];
+            $buckets[$r['hour']]['tickets'] += (float)$r['tickets'];
+            $buckets[$r['hour']]['cash']    += (float)$r['cash'];
+        }
+        $points = [];
+        for ($h = 0; $h < 24; $h++) {
+            $points[] = [
+                'label'   => perfHourLabel($h),
+                'plays'   => $buckets[$h]['plays'],
+                'tickets' => round($buckets[$h]['tickets'], 2),
+                'cash'    => round($buckets[$h]['cash'], 2),
+            ];
+        }
+        $series = ['granularity' => 'hour', 'points' => $points];
+    } else {
+        $series = perfBucketSeries($win, $tz, $curByDate, null);
+    }
+
+    // Per-game breakdown inside the group.
+    $zero = ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'regular_points' => 0.0, 'bonus_points' => 0.0];
+    $groupPlays = (int)$totals['plays'];
+    $gamesOut = [];
+    foreach ($memberRows as $m) {
+        $g = (string)$m['game_id'];
+        $c = $curTot[$g] ?? $zero;
+        $p = $prevTot[$g] ?? $zero;
+        $plays = (int)$c['plays'];
+        $gamesOut[] = [
+            'game_id'   => $g,
+            'game_name' => (string)$m['game_name'],
+            'status'    => $m['operation_status'] ?? null,
+            'plays'     => $plays,
+            'tickets'   => round((float)$c['tickets'], 2),
+            'cash'      => round((float)$c['cash'], 2),
+            'avg_plays_per_day' => $daysElapsed > 0 ? round($plays / $daysElapsed, 1) : 0,
+            'share_pct' => $groupPlays > 0 ? round($plays / $groupPlays * 100, 1) : null,
+            'prev_plays'=> (int)$p['plays'],
+        ];
+    }
+    usort($gamesOut, function ($a, $b) {
+        if ($a['plays'] == $b['plays']) return strcasecmp($a['game_name'], $b['game_name']);
+        return $b['plays'] <=> $a['plays'];
+    });
+
+    $payload = [
+        'group' => [
+            'id'          => (int)$group['id'],
+            'name'        => (string)$group['name'],
+            'description' => (string)$group['description'],
+            'game_count'  => $gameCount,
+        ],
+        'range'           => perfRangeMeta($win, $tzName),
+        'totals'          => $totals,
+        'previous_totals' => $previousTotals,
+        'series'          => $series,
+        'heatmap'         => $heat['heatmap'],
+        'busiest'         => $heat['busiest'],
+        'games'           => $gamesOut,
+        'days_in_range'   => $daysElapsed,
+        'hide_money'      => $hideMoney,
+        'generated_at'    => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
+    ];
+    if ($hideMoney) readerScrubMoney($payload);
     echo json_encode($payload);
 }

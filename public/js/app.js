@@ -17,6 +17,7 @@ const Icons = {
     overrides: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
     analytics: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21V8M9 21V4M15 21v-9M21 21v-6"/></svg>',
     performance:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/><circle cx="17" cy="7" r="1.3" fill="currentColor" stroke="none"/></svg>',
+    readers:   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
     logs:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M5 9h14M5 14h10M5 19h14"/></svg>',
     settings:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     sun:       '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>',
@@ -209,6 +210,7 @@ const App = {
             '#/dashboard': 'Dashboard',
             '#/games': 'Games',
             '#/performance': 'Performance',
+            '#/readers': 'Reader Groups',
             '#/cards': 'Card Lookup',
             '#/groups': 'Pause Groups',
             '#/kiosks': 'Kiosks',
@@ -277,6 +279,7 @@ const App = {
             const restricted = {
                 '#/analytics':   'analytics',
                 '#/performance': 'analytics',
+                '#/readers':     'analytics',
                 '#/cards':       'cards',
                 '#/settings':    'settings',
                 '#/logs':        'view_logs'
@@ -419,6 +422,7 @@ const App = {
             { hash: '#/dashboard',   icon: Icons.dashboard,   label: 'Dashboard' },
             { hash: '#/games',       icon: Icons.games,       label: 'Games' },
             { hash: '#/performance', icon: Icons.performance, label: 'Performance', area: 'analytics' },
+            { hash: '#/readers',     icon: Icons.readers,     label: 'Reader Groups', area: 'analytics' },
             { hash: '#/cards',       icon: Icons.cards,       label: 'Card Lookup', area: 'cards' },
             { hash: '#/groups',    icon: Icons.groups,    label: 'Pause Groups' },
             { hash: '#/kiosks',    icon: Icons.kiosks,    label: 'Kiosks' },

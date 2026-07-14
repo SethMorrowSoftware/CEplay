@@ -27,7 +27,12 @@ function sanitizeApiError(string $message): string {
 // Parse the request
 $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
 $scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
-$basePath = rtrim(dirname($scriptName), '/');
+// Under `php -S host:port index.php` (the documented local-dev mode) the
+// built-in server reports SCRIPT_NAME as the REQUEST path for routed URLs
+// (e.g. "/api/health"), which would make basePath swallow "/api" and break
+// every API route. Real deployments always execute index.php directly
+// (SCRIPT_NAME ends in ".php"), so only derive a prefix in that case.
+$basePath = substr($scriptName, -4) === '.php' ? rtrim(dirname($scriptName), '/') : '';
 
 /**
  * Cache-busting URL for a local asset. This app has no build step and serves
@@ -257,6 +262,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
             case 'analytics':
                 require_once __DIR__ . '/api/analytics.php';
                 handleAnalytics($method, $parts, $input);
+                break;
+            case 'reader-groups':
+                require_once __DIR__ . '/api/reader_groups.php';
+                handleReaderGroups($method, $parts, $input);
                 break;
             case 'health':
                 handleHealthCheck();
@@ -494,5 +503,6 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= htmlspecialchars($basePath) ?>/public/js/vendor/chart.umd.min.js?v=4.4.7"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/analytics.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/performance.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/readers.js') ?>"></script>
 </body>
 </html>

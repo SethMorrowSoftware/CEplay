@@ -62,6 +62,7 @@
 @import url("pages/tickets.css");
 @import url("pages/analytics.css");
 @import url("pages/performance.css");
+@import url("pages/readers.css");
 
 /* --- Cross-cutting components (must come after pages) ------- */
 @import url("components/clickable.css");

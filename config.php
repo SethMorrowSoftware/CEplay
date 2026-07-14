@@ -21,8 +21,15 @@ define('SESSION_LIFETIME', 7200);
 // Debug mode (when true, API 500 responses may include internal error details)
 define('APP_DEBUG', filter_var(getenv('PG_APP_DEBUG') ?: false, FILTER_VALIDATE_BOOLEAN));
 
-// Application base path (auto-detected)
-define('BASE_PATH', rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? ''), '/'));
+// Application base path (auto-detected). Only trust SCRIPT_NAME when it is
+// an actual PHP entry point: the `php -S` dev server reports the REQUEST
+// path (e.g. /api/auth/login) for routed URLs, which would mis-scope the
+// session cookie (and asset URLs) to /api/…. Real deployments execute
+// index.php directly, so their SCRIPT_NAME always ends in ".php".
+define('BASE_PATH', (static function () {
+    $s = $_SERVER['SCRIPT_NAME'] ?? '';
+    return substr($s, -4) === '.php' ? rtrim(dirname($s), '/') : '';
+})());
 
 // Lock file for concurrent execution prevention
 define('LOCK_FILE', __DIR__ . '/data/.scheduler.lock');
