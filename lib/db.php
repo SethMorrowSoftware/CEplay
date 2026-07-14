@@ -277,6 +277,36 @@ class DB {
             error_log('labor query v2 migration skipped: ' . $e->getMessage());
         }
 
+        // v3: the live connection fingerprint proved go-kart sales live under
+        // CatNo 106 (ride-pattern money; 108 reads zero). Upgrade the stored
+        // sales query only if it is still exactly a shipped 108 variant —
+        // hand-tuned queries are never clobbered.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v3'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                $shipped108 = [
+                    // v2-stamped range form
+                    "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* go-kart sales category */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)",
+                    // v1-stamped equality form
+                    "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* go-kart sales category */\n  AND ShiftDate = :date",
+                ];
+                $stored = self::queryOne("SELECT value FROM api_config WHERE key = 'labor_sales_sql'");
+                if ($stored && in_array(trim((string)$stored['value']), array_map('trim', $shipped108), true)) {
+                    self::execute(
+                        "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                        [LABOR_DEFAULT_SALES_SQL]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v3', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v3 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
