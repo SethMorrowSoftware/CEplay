@@ -84,10 +84,23 @@ function laborQueries(): array {
 function laborRideConfig(): array {
     $gid = DB::getConfig('labor_reader_group_id');
     $price = DB::getConfig('labor_price_per_ride');
+    $map = json_decode((string)(DB::getConfig('labor_ride_prices') ?: '{}'), true);
     return [
         'reader_group_id' => ($gid !== null && $gid !== '') ? (int)$gid : null,
+        // Fallback price for any track without its own entry below.
         'price_per_ride'  => ($price !== null && $price !== '') ? (float)$price : 11.0,
+        // Per-track (per-game/reader) prices: {game_id: price}. The venue
+        // runs multiple kart tracks at different price points.
+        'ride_prices'     => is_array($map) ? $map : [],
     ];
+}
+
+/** Price for one track: its own entry, or the flat fallback. */
+function laborPriceFor(string $gameId, array $ride): float {
+    if (isset($ride['ride_prices'][$gameId]) && $ride['ride_prices'][$gameId] !== '') {
+        return (float)$ride['ride_prices'][$gameId];
+    }
+    return (float)$ride['price_per_ride'];
 }
 
 /**
@@ -97,10 +110,14 @@ function laborRideConfig(): array {
  * paid-ride count can omit time-pass swipes — which the MSSQL Sales lines
  * cannot distinguish.
  *
+ * Each track (game/reader) is valued at its own price — the venue runs
+ * multiple kart tracks at different price points — falling back to the
+ * flat price for tracks without an entry.
+ *
  * @param string[] $dates ISO dates
- * @return array<string,array{rides:int,pass:int}> keyed by date
+ * @return array<string,array{rides:int,pass:int,value:float}> keyed by date
  */
-function laborRideStats(array $dates, int $groupId): array {
+function laborRideStats(array $dates, int $groupId, array $ride): array {
     $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
         'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$groupId]));
     $out = [];
@@ -112,13 +129,16 @@ function laborRideStats(array $dates, int $groupId): array {
     list($tz) = perfTimezone();
     $daily = perfDailyPerGame($dates[0], $dates[count($dates) - 1], $tz);
     foreach ($dates as $d) {
-        $rides = 0; $pass = 0;
+        $rides = 0; $pass = 0; $value = 0.0;
         foreach (($daily['byDate'][$d] ?? []) as $gid => $b) {
             if (!isset($memberSet[$gid])) continue;
-            $rides += (int)($b['plays'] ?? 0);
-            $pass  += (int)($b['time_plays'] ?? 0);
+            $p  = (int)($b['plays'] ?? 0);
+            $tp = (int)($b['time_plays'] ?? 0);
+            $rides += $p;
+            $pass  += $tp;
+            $value += max(0, $p - $tp) * laborPriceFor((string)$gid, $ride);
         }
-        $out[$d] = ['rides' => $rides, 'pass' => $pass];
+        $out[$d] = ['rides' => $rides, 'pass' => $pass, 'value' => round($value, 2)];
     }
     return $out;
 }
@@ -131,8 +151,14 @@ function laborGetSettings(): void {
     $out['configured'] = MssqlClient::isConfigured();
     $out['defaults'] = ['sales_sql' => LABOR_DEFAULT_SALES_SQL, 'labor_sql' => LABOR_DEFAULT_LABOR_SQL];
     // For the "value rides from this area" dropdown — read directly so the
-    // settings gate alone suffices.
+    // settings gate alone suffices. Members ship per group so the per-track
+    // price editor can rebuild instantly when the selection changes.
     $out['reader_groups'] = DB::query('SELECT id, name FROM reader_groups ORDER BY name');
+    $members = [];
+    foreach (DB::query('SELECT reader_group_id, game_id, game_name FROM reader_group_games ORDER BY game_name') as $m) {
+        $members[(string)$m['reader_group_id']][] = ['game_id' => $m['game_id'], 'game_name' => $m['game_name']];
+    }
+    $out['reader_group_members'] = $members;
     echo json_encode($out);
 }
 
@@ -190,6 +216,21 @@ function laborPutSettings(array $input): void {
             throw new RuntimeException('Price per ride must be between 0 and 10000.');
         }
         DB::setConfig('labor_price_per_ride', (string)$p);
+    }
+    // Per-track prices: {game_id: price}. Blank/absent entries fall back to
+    // the flat price; unknown keys are dropped rather than stored.
+    if (array_key_exists('ride_prices', $input)) {
+        $in = is_array($input['ride_prices']) ? $input['ride_prices'] : [];
+        $clean = [];
+        foreach ($in as $gameId => $price) {
+            if ($price === '' || $price === null) continue;
+            $p = (float)$price;
+            if ($p < 0 || $p > 10000) {
+                throw new RuntimeException('Track price must be between 0 and 10000.');
+            }
+            $clean[(string)$gameId] = $p;
+        }
+        DB::setConfig('labor_ride_prices', json_encode($clean));
     }
 
     try {
@@ -384,7 +425,7 @@ function laborRate(): void {
     $rideStats = [];
     if ($ride['reader_group_id']) {
         try {
-            $rideStats = laborRideStats($dates, $ride['reader_group_id']);
+            $rideStats = laborRideStats($dates, $ride['reader_group_id'], $ride);
         } catch (Exception $e) {
             error_log('labor ride stats failed: ' . $e->getMessage());
         }
@@ -405,11 +446,11 @@ function laborRate(): void {
             if (isset($rideStats[$d])) {
                 $rides = $rideStats[$d]['rides'];
                 $pass  = $rideStats[$d]['pass'];
-                $paid  = max(0, $rides - $pass);
-                $sales += $paid * $ride['price_per_ride'];
+                $sales += $rideStats[$d]['value'];
                 $day['rides'] = $rides;
                 $day['pass_rides'] = $pass;
-                $day['paid_rides'] = $paid;
+                $day['paid_rides'] = max(0, $rides - $pass);
+                $day['ride_value'] = $rideStats[$d]['value'];
             }
             $day['sales'] = round($sales, 2);
             $day['rate']  = $sales > 0 ? round($labor / $sales, 4) : null;

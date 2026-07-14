@@ -90,3 +90,13 @@
     white-space: pre-wrap;
     overflow-x: auto;
 }
+
+/* Per-track price editor rows. */
+.labor-track-prices { margin: 0.25rem 0 0.5rem; }
+.labor-track-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.25rem 0;
+}
+.labor-track-name { min-width: 14rem; font-size: 0.85rem; }
