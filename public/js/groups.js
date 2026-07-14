@@ -189,7 +189,7 @@
         // Quick-action buttons are interactive descendants — App.makeCardLink
         // ignores clicks/keystrokes that originate inside them, so the buttons
         // and the card-as-link both work without manual stopPropagation.
-        const quickActions = isActive && state !== 'empty'
+        const quickActions = isActive && state !== 'empty' && App.canAccess('manual_control')
             ? App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } }, [
                 state !== 'enabled' ? App.el('button', {
                     className: 'btn btn-sm btn-success',

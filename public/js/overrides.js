@@ -32,10 +32,10 @@
                 App.el('h1', { className: 'page-title', textContent: 'Schedule Overrides' }),
                 App.el('p', { className: 'page-subtitle', textContent: 'One-off pause / unpause windows that take precedence over the recurring schedule.' })
             ]),
-            App.el('button', {
+            App.canAccess('overrides_manage') ? App.el('button', {
                 className: 'btn btn-primary', textContent: '+ New Override',
                 onClick: showCreateForm
-            })
+            }) : App.el('span')
         ]));
 
         // Shared toolbar — search applies across all three sections.
@@ -198,7 +198,7 @@
                 ]),
                 App.el('div', { className: 'flex gap-sm' }, [
                     title === 'Active Now' ? App.el('span', { className: 'override-countdown', textContent: 'ends ' + App.formatRelative(o.end_datetime) }) : null,
-                    title !== 'Expired' ? App.el('button', {
+                    (title !== 'Expired' && App.canAccess('overrides_manage')) ? App.el('button', {
                         className: 'btn btn-ghost btn-sm text-danger', textContent: 'Delete',
                         onClick: function() { deleteOverride(o.id, title === 'Active Now'); }
                     }) : null

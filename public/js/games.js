@@ -41,13 +41,13 @@
                 App.el('h1', { className: 'page-title', textContent: 'Games' }),
                 App.el('p', { className: 'page-subtitle', textContent: 'Search and control individual games. Top earners and live play activity are spotlighted on the Dashboard.' })
             ]),
-            App.el('div', { className: 'flex gap-sm' }, [
+            App.el('div', { className: 'flex gap-sm' }, App.canAccess('manual_control') ? [
                 App.el('button', {
                     className: 'btn btn-primary',
                     textContent: 'Sync games',
                     onClick: function() { syncGames(); }
                 })
-            ])
+            ] : [])
         ]));
 
         // Surface an active filter chip so it's obvious why the list is
@@ -625,17 +625,20 @@
 
         // Status controls — Pause is one-shot (next scheduled state change for
         // the game's pause group resumes it); Out of service sticks because the
-        // scheduler skips outOfService games.
-        body.appendChild(App.el('div', { className: 'subsection' }, [
-            App.el('div', { className: 'subsection-title', textContent: 'Status' }),
-            App.el('div', { className: 'flex gap-sm', style: { flexWrap: 'wrap' } }, buildStatusButtons(game)),
-            App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem', marginBottom: '0' } }, [
-                document.createTextNode('Pause resumes on the next scheduled state change. Out of service is sticky — the scheduler will skip this game until you return it to service.')
-            ])
-        ]));
+        // scheduler skips outOfService games. Hidden for roles without
+        // manual_control (view-only roles see live status, no buttons).
+        if (App.canAccess('manual_control')) {
+            body.appendChild(App.el('div', { className: 'subsection' }, [
+                App.el('div', { className: 'subsection-title', textContent: 'Status' }),
+                App.el('div', { className: 'flex gap-sm', style: { flexWrap: 'wrap' } }, buildStatusButtons(game)),
+                App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem', marginBottom: '0' } }, [
+                    document.createTextNode('Pause resumes on the next scheduled state change. Out of service is sticky — the scheduler will skip this game until you return it to service.')
+                ])
+            ]));
+        }
 
         // RPC actions
-        var actions = game.supportedActions || [];
+        var actions = App.canAccess('manual_control') ? (game.supportedActions || []) : [];
         if (actions.length) {
             var actionsRow = App.el('div', { className: 'flex gap-sm', style: { marginTop: '1rem' } });
             actions.forEach(function(act) {
@@ -738,6 +741,9 @@
      * from the current status are included.
      */
     function buildStatusButtons(game) {
+        // Every call site (directory rows + detail modal) goes through here,
+        // so one gate keeps view-only roles button-free everywhere.
+        if (!App.canAccess('manual_control')) return [];
         var id = game.id != null ? game.id : game.game_id;
         var name = game.name || game.game_name || ('Game ' + id);
         var status = game.operationStatus || game.operation_status || 'enabled';

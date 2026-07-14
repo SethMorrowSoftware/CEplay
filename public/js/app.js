@@ -61,8 +61,8 @@ const App = {
      */
     PERMISSION_AREAS: [
         'analytics', 'view_revenue', 'cards', 'manual_control',
-        'overrides_manage', 'groups_manage', 'schedules_manage',
-        'settings', 'users', 'view_logs'
+        'overrides_manage', 'groups_manage', 'reader_groups_manage',
+        'schedules_manage', 'settings', 'users', 'view_logs'
     ],
 
     /**
@@ -72,8 +72,8 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
-        manager: ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'view_logs'],
+        admin:   ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
+        manager: ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs'],
         tech:    ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
     },
 

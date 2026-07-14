@@ -15,7 +15,9 @@
  * DELETE /api/reader-groups/{id}   — Delete group
  *
  * Viewing requires 'analytics' (the groups only exist for reporting);
- * structural changes require 'groups_manage', matching pause groups.
+ * structural changes require 'reader_groups_manage' — its own catalog key,
+ * separate from pause groups, so analytics-area editing can be handed out
+ * independently.
  */
 
 require_once __DIR__ . '/../lib/validator.php';
@@ -34,11 +36,11 @@ function handleReaderGroups(string $method, array $parts, ?array $input): void {
             }
             break;
         case 'POST':
-            Auth::requireAccess('groups_manage');
+            Auth::requireAccess('reader_groups_manage');
             readerGroupCreate($input);
             break;
         case 'PUT':
-            Auth::requireAccess('groups_manage');
+            Auth::requireAccess('reader_groups_manage');
             if (!$groupId) {
                 http_response_code(400);
                 echo json_encode(['error' => 'Reader group ID required']);
@@ -47,7 +49,7 @@ function handleReaderGroups(string $method, array $parts, ?array $input): void {
             readerGroupUpdate($groupId, $input);
             break;
         case 'DELETE':
-            Auth::requireAccess('groups_manage');
+            Auth::requireAccess('reader_groups_manage');
             if (!$groupId) {
                 http_response_code(400);
                 echo json_encode(['error' => 'Reader group ID required']);

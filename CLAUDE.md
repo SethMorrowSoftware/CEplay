@@ -64,7 +64,9 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   (per-occurrence averages for staffing), trend series, and per-game breakdown.
   Hour-grain data stitches `game_hourly_stats` + raw feed and reports its
   actual coverage window (hourly history only accumulates from feature ship).
-  View gate `analytics`; create/edit/delete gate `groups_manage`.
+  View gate `analytics`; create/edit/delete gate `reader_groups_manage`
+  (its own catalog key — a one-time migration granted it to roles that held
+  `groups_manage` when the key split).
 
 ### API Pattern
 - API handlers are loaded via `require_once` from `index.php` which pre-loads `db.php`, `auth.php`, `csrf.php`, `crypto.php`
@@ -102,8 +104,13 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 9 keys incl.
-  view_revenue, manual_control). `Auth::hasPermission()/canAccess()` resolve
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 11 keys incl.
+  view_revenue, manual_control, reader_groups_manage). A read-only "Viewer"
+  role (analytics + view_revenue + cards + view_logs) is seeded once as a
+  normal custom role — fully editable/deletable in Settings. Mutation
+  buttons are also hidden client-side for roles lacking the relevant
+  permission (server re-checks regardless).
+  `Auth::hasPermission()/canAccess()` resolve
   through the user's role; admin bypasses and is locked against edit/delete.
   The client gets the resolved permission list injected into
   `APP_CONFIG.user.permissions` (and login/status responses) —

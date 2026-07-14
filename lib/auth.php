@@ -43,6 +43,7 @@ class Auth {
         'manual_control'   => 'Operate the floor: pause/unpause groups, kiosk & game actions, force syncs',
         'overrides_manage' => 'Create and delete schedule overrides',
         'groups_manage'    => 'Create, edit, and delete pause groups',
+        'reader_groups_manage' => 'Create, edit, and delete reader groups (the analytics areas)',
         'schedules_manage' => 'Create, edit, and delete recurring schedules',
         'settings'         => 'System settings: CenterEdge API credentials, timezone',
         'users'            => 'Manage user accounts (admin accounts always excluded)',
@@ -57,7 +58,7 @@ class Auth {
     private const FALLBACK_ROLES = [
         'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
         'manager' => ['name' => 'Manager', 'is_system' => 1,
-                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'schedules_manage', 'view_logs']],
+                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs']],
         'tech'    => ['name' => 'Technician', 'is_system' => 1,
                       'permissions' => ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
     ];

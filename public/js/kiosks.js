@@ -42,11 +42,11 @@
                 App.el('h1', { className: 'page-title', textContent: 'Kiosks' }),
                 App.el('p', { className: 'page-subtitle', textContent: 'Pause, resume, and manage kiosks reported by the CenterEdge card system.' })
             ]),
-            App.el('button', {
+            App.canAccess('manual_control') ? App.el('button', {
                 className: 'btn btn-ghost',
                 textContent: 'Sync now',
                 onClick: function() { syncAndReload(); }
-            })
+            }) : App.el('span')
         ]));
 
         // Toolbar for search + status filter (rendered above the list)
@@ -168,10 +168,10 @@
             if (toolbarEl) toolbarEl.style.display = 'none';
             listEl.appendChild(App.emptyState('▢',
                 'No kiosks reported. If you just configured the card system, click "Sync now".',
-                App.el('button', {
+                App.canAccess('manual_control') ? App.el('button', {
                     className: 'btn btn-primary', textContent: 'Sync now',
                     onClick: function() { syncAndReload(); }
-                })));
+                }) : null));
             return;
         }
 
@@ -264,7 +264,11 @@
 
         var actionBtns = App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } });
 
-        if (pauseAllowed) {
+        // Roles without manual_control (view-only) get live status chips
+        // with no operate buttons; the server re-checks every action anyway.
+        var canOperate = App.canAccess('manual_control');
+
+        if (canOperate && pauseAllowed) {
             if (status !== 'enabled') {
                 actionBtns.appendChild(App.el('button', {
                     className: 'btn btn-sm btn-success',
@@ -293,8 +297,10 @@
         // the official OpenAPI 1.8.0 spec — so we ONLY render a button when
         // the kiosk advertises the action AND we haven't already proven the
         // endpoint isn't reachable on this build (rpcUnsupported flag).
-        var supportedActions = kiosk.supportedActions || [];
-        if (rpcUnsupported) {
+        var supportedActions = canOperate ? (kiosk.supportedActions || []) : [];
+        if (!canOperate) {
+            // No RPC buttons or explanations for view-only roles.
+        } else if (rpcUnsupported) {
             // Show a single muted explanation in place of the buttons so
             // operators understand why "Reboot" isn't available without
             // having to click and read a toast.
