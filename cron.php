@@ -100,7 +100,8 @@ try {
     try {
         $rollup = Scheduler::rollupDailyStats();
         $rollupOk = true;
-        echo "  Rolled up {$rollup['days_recomputed']} days, {$rollup['rows_written']} game-day rows.\n";
+        echo "  Rolled up {$rollup['days_recomputed']} days, {$rollup['rows_written']} game-day rows, "
+            . "{$rollup['hourly_rows_written']} game-hour rows.\n";
     } catch (Exception $e) {
         echo "  WARNING: Daily rollup failed: " . $e->getMessage() . "\n";
     }

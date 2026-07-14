@@ -464,6 +464,53 @@ class DB {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_date ON game_daily_stats(stat_date)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_game ON game_daily_stats(game_id)');
 
+        // Permanent per-game, per-hour rollup — same lifecycle as
+        // game_daily_stats (recomputed nightly from the raw feed by
+        // Scheduler::rollupDailyStats() BEFORE the purge) but at hour grain.
+        // Powers the Reader Groups day-of-week × hour-of-day heatmaps
+        // ("when is this area busiest?") for windows older than the raw
+        // feed's 30-day retention. stat_date/hour are venue-local so cells
+        // line up with the wall clock. time_plays is carried so time-pass
+        // usage can be reported per area. Retention is bounded (~400 days,
+        // see Scheduler::purgeOldData) — enough for year-over-year staffing
+        // comparisons without unbounded growth.
+        $db->exec('CREATE TABLE IF NOT EXISTS game_hourly_stats (
+            stat_date TEXT NOT NULL,
+            hour INTEGER NOT NULL,
+            game_id TEXT NOT NULL,
+            plays INTEGER NOT NULL DEFAULT 0,
+            tickets REAL NOT NULL DEFAULT 0,
+            cash REAL NOT NULL DEFAULT 0,
+            time_plays INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (stat_date, hour, game_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_date ON game_hourly_stats(stat_date)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_game ON game_hourly_stats(game_id)');
+
+        // Reader groups: operator-defined groupings of games/readers used
+        // ONLY for analytics (staffing heatmaps, per-area play averages).
+        // Deliberately separate from pause_groups — these never pause
+        // anything, and a game may belong to any number of reader groups
+        // (e.g. "Redemption Wall" and "Front Room" can overlap).
+        $db->exec('CREATE TABLE IF NOT EXISTS reader_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT \'\',
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+
+        $db->exec('CREATE TABLE IF NOT EXISTS reader_group_games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reader_group_id INTEGER NOT NULL,
+            game_id TEXT NOT NULL,
+            game_name TEXT NOT NULL DEFAULT \'\',
+            FOREIGN KEY (reader_group_id) REFERENCES reader_groups(id) ON DELETE CASCADE,
+            UNIQUE (reader_group_id, game_id)
+        )');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_rgg_group ON reader_group_games(reader_group_id)');
+
         // Durable per-card activity ledger for Guest Insights. The raw play
         // feed (game_play_transactions) is only kept ~30 days, so it cannot
         // tell whether a card seen today is genuinely new or a returning

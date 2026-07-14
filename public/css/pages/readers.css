@@ -1,0 +1,166 @@
+/* ============================================
+   Reader Groups page (#/readers)
+   Area comparison table, day-of-week × hour heatmap,
+   and the group editor's game picker.
+   ============================================ */
+
+/* Wide tables scroll inside the card instead of stretching the page. */
+.table-scroll-x {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Selected area row stays visibly "open" while its detail panel is shown. */
+.rg-row-selected,
+.rg-row-selected:hover {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+@supports not (background: color-mix(in srgb, red 10%, transparent)) {
+    .rg-row-selected,
+    .rg-row-selected:hover { background: rgba(91, 141, 239, 0.12); }
+}
+
+/* Plays column: number + proportional bar (mirrors .perf-share). */
+.rg-plays {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+.rg-plays-bar {
+    width: 54px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+    overflow: hidden;
+    flex: none;
+}
+.rg-plays-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    opacity: 0.85;
+}
+
+/* Busiest-time chips (table column + detail summary row). */
+.rg-busiest-chip {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+@supports not (background: color-mix(in srgb, red 10%, transparent)) {
+    .rg-busiest-chip {
+        background: rgba(91, 141, 239, 0.14);
+        border-color: rgba(91, 141, 239, 0.3);
+    }
+}
+.rg-busiest-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.85rem;
+}
+
+/* --------------------------------------------
+   Heatmap: CSS grid, one auto label column + N hour columns.
+   -------------------------------------------- */
+.rg-heatmap {
+    display: grid;
+    gap: 3px;
+    margin-top: 0.75rem;
+    min-width: 480px;
+}
+/* The grid can outgrow narrow phones — let the card body scroll it. */
+.rg-heatmap-holder,
+.rg-heatmap { overflow-x: auto; }
+
+.rg-heat-corner { min-width: 2.2rem; }
+.rg-heat-hour {
+    font-size: 0.66rem;
+    color: var(--text-muted, var(--text-secondary));
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.rg-heat-dow {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    padding-right: 0.35rem;
+    justify-content: flex-end;
+}
+.rg-heat-cell {
+    aspect-ratio: auto;
+    height: 26px;
+    border-radius: 4px;
+    background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+    cursor: default;
+    transition: transform 0.08s ease;
+}
+.rg-heat-cell:hover {
+    transform: scale(1.12);
+    outline: 1px solid var(--accent);
+}
+.rg-heat-cell-empty { opacity: 0.55; }
+
+.rg-heat-legend {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+.rg-heat-legend-swatches {
+    display: inline-flex;
+    gap: 3px;
+}
+.rg-heat-legend-swatch {
+    width: 18px;
+    height: 10px;
+    border-radius: 3px;
+    display: inline-block;
+}
+
+/* --------------------------------------------
+   Game picker inside the group editor modal.
+   -------------------------------------------- */
+.rg-picker-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.25rem;
+    background: var(--bg-input, transparent);
+}
+.rg-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+.rg-picker-item:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.05)); }
+.rg-picker-check { flex: none; accent-color: var(--accent); }
+.rg-picker-name {
+    flex: 1;
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+    .rg-heat-cell { height: 20px; }
+    .rg-plays-bar { display: none; }
+}

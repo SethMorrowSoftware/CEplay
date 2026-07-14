@@ -24,9 +24,9 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, kiosks, schedules, overrides, analytics, logs, users, capabilities)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, logs, users, capabilities)
 lib/          — 7 core libraries
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, logs, settings)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, logs, settings)
 public/css/   — Dark/light theme stylesheet
 data/         — Runtime: SQLite DB, locks, heartbeats, logs (gitignored)
 docs/         — Internal docs: security audit, CenterEdge API reference (HTML + OpenAPI YAML)
@@ -53,6 +53,18 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   `analytics` role gate + cash/revenue scrub the Analytics page uses (tech sees
   plays/tickets, never dollars). Powers the Performance page
   (Day/Week/Month/Year/Custom, searchable, with prior-period comparison).
+- The same nightly pass also writes `game_hourly_stats` (per-game, per-local-
+  hour; ~400-day retention) so hour-of-day history outlives the raw feed.
+- Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
+  `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
+  games/readers — they never pause anything, and a game may be in many groups.
+  `GET /api/analytics/reader-groups` compares every area (totals, avg plays
+  per day / per game per day, busiest weekday+hour, prior-period deltas);
+  `GET /api/analytics/reader-group?id=` adds the day-of-week × hour heatmap
+  (per-occurrence averages for staffing), trend series, and per-game breakdown.
+  Hour-grain data stitches `game_hourly_stats` + raw feed and reports its
+  actual coverage window (hourly history only accumulates from feature ship).
+  View gate `analytics`; create/edit/delete gate `groups_manage`.
 
 ### API Pattern
 - API handlers are loaded via `require_once` from `index.php` which pre-loads `db.php`, `auth.php`, `csrf.php`, `crypto.php`
