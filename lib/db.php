@@ -362,6 +362,34 @@ class DB {
             error_log('labor query v5 migration skipped: ' . $e->getMessage());
         }
 
+        // v6: the division dump found the real bucket — DivNo 808
+        // "Go Kart Readers" books the actual dollars spent at the kart
+        // readers (one aggregated posting per day). Upgrade the stored
+        // sales query only if it is exactly the shipped v5 (cash-only
+        // CatNo 108) text; hand-tuned queries are never touched. The
+        // rides × price add-on defaults OFF (labor_add_ride_value unset)
+        // so the estimate can't double count on top of real dollars.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v6'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                $v5Sales = "SELECT COALESCE(SUM(CASE WHEN AmtSold > 0 THEN AmtSold ELSE 0 END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts: walk-up cash only; rides are valued from the reader feed */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+                $stored = self::queryOne("SELECT value FROM api_config WHERE key = 'labor_sales_sql'");
+                if ($stored && trim((string)$stored['value']) === trim($v5Sales)) {
+                    self::execute(
+                        "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                        [LABOR_DEFAULT_SALES_SQL]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v6', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v6 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can

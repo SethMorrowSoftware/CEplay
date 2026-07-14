@@ -42,16 +42,16 @@ require_once __DIR__ . '/analytics.php';
 // midnight rows (observed live: zero sales while Grafana showed money).
 // The range form is correct for DATE, midnight-DATETIME, and timestamped
 // columns alike.
-// Category mapping settled by the live fingerprint (2026-07-14), category
-// names from the venue's own Categories table: 108 = "Go Karts"
-// (106 = "Beverages" — an earlier wrong turn). Rides paid at the card
-// reader post to 108 with AmtSold = 0 (the money books under 123 =
-// "Reader Sales" at card-load time), and no Sales column carries the ride
-// value. So the MSSQL query contributes only the WALK-UP CASH; the ride
-// component (paid swipes × per-ride price, with time-pass swipes omitted)
-// is computed from the app's own reader feed, which knows used_time_play
-// per swipe — see laborRideStats(). Group + price are Labor page settings.
-const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(CASE WHEN AmtSold > 0 THEN AmtSold ELSE 0 END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts: walk-up cash only; rides are valued from the reader feed */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+// The sales source was settled by the division dump in the live
+// fingerprint (2026-07-14): the POS books the REAL dollars spent at the
+// kart readers under DivNo 808 "Go Kart Readers" — one aggregated posting
+// per day ($2,832.11 on Sun 7/13). This is the venue's own attribution,
+// and time-pass swipes never post money there, so the "omit timed plays"
+// requirement is satisfied by the accounting itself. (The Go Karts sales
+// CATEGORY (108) posts rides at $0 and holds only rare walk-up cash; the
+// per-ride-price estimate remains available as an optional add-on — see
+// labor_add_ride_value — but defaults OFF to avoid double counting.)
+const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE DivNo = 808  /* \"Go Kart Readers\" division: real dollars spent at the kart readers */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
 
 const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
 
@@ -92,6 +92,11 @@ function laborRideConfig(): array {
         // Per-track (per-game/reader) prices: {game_id: price}. The venue
         // runs multiple kart tracks at different price points.
         'ride_prices'     => is_array($map) ? $map : [],
+        // Whether paid rides × price is ADDED to sales. Defaults OFF: the
+        // sales query now reads the POS's own "Go Kart Readers" division
+        // dollars, and adding an estimate on top would double count. When
+        // off, the Rides/Pass columns still render as context.
+        'add_ride_value'  => DB::getConfig('labor_add_ride_value') === '1',
     ];
 }
 
@@ -216,6 +221,9 @@ function laborPutSettings(array $input): void {
             throw new RuntimeException('Price per ride must be between 0 and 10000.');
         }
         DB::setConfig('labor_price_per_ride', (string)$p);
+    }
+    if (array_key_exists('add_ride_value', $input)) {
+        DB::setConfig('labor_add_ride_value', $input['add_ride_value'] ? '1' : '0');
     }
     // Per-track prices: {game_id: price}. Blank/absent entries fall back to
     // the flat price; unknown keys are dropped rather than stored.
@@ -507,11 +515,16 @@ function laborRate(): void {
             if (isset($rideStats[$d])) {
                 $rides = $rideStats[$d]['rides'];
                 $pass  = $rideStats[$d]['pass'];
-                $sales += $rideStats[$d]['value'];
+                // Rides/Pass always render as context; the price-based value
+                // is ADDED only when explicitly enabled — the default sales
+                // query already carries the POS's own reader dollars.
+                if ($ride['add_ride_value']) {
+                    $sales += $rideStats[$d]['value'];
+                    $day['ride_value'] = $rideStats[$d]['value'];
+                }
                 $day['rides'] = $rides;
                 $day['pass_rides'] = $pass;
                 $day['paid_rides'] = max(0, $rides - $pass);
-                $day['ride_value'] = $rideStats[$d]['value'];
             }
             $day['sales'] = round($sales, 2);
             $day['rate']  = $sales > 0 ? round($labor / $sales, 4) : null;
@@ -534,6 +547,7 @@ function laborRate(): void {
             'reader_group_id' => $ride['reader_group_id'],
             'price_per_ride'  => $ride['price_per_ride'],
             'active'          => (bool)$ride['reader_group_id'],
+            'add_ride_value'  => (bool)$ride['add_ride_value'],
         ],
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
     ]);

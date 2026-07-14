@@ -249,9 +249,9 @@
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    (state.data && state.data.ride_valuation && state.data.ride_valuation.active
-                        ? 'Sales = walk-up cash + paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '). Time-pass swipes are counted in Rides but omitted from the sales value. '
-                        : 'Sales come from the MSSQL query below (walk-up cash only until a reader group is selected for ride valuation). ')
+                    (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
+                        ? 'Sales = the MSSQL query + paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '). Time-pass swipes are counted in Rides but omitted from the sales value. '
+                        : 'Sales come from the MSSQL query below (the POS’s Go Kart Readers division — real dollars; pass swipes post nothing there). Rides/Pass columns are context from the reader feed. ')
                     + 'Labor rate = labor cost ÷ sales. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
             ])
         ]));
@@ -293,6 +293,17 @@
                 })));
         var priceIn = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
             value: s.price_per_ride != null ? String(s.price_per_ride) : '11', style: { maxWidth: '8rem' } });
+
+        // Whether rides × price is ADDED to sales. Off by default: the sales
+        // query reads the POS's own "Go Kart Readers" division dollars, and
+        // stacking the estimate on top would double count.
+        var addValueCb = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: !!s.add_ride_value });
+        var addValueToggle = App.el('label', { className: 'toggle-label', style: { marginTop: '0.35rem' },
+            title: 'Leave OFF when the sales query already returns real dollars (the Go Kart Readers division). Turn on only if you want sales estimated as paid rides × price instead.' }, [
+            addValueCb,
+            App.el('span', { className: 'toggle-switch' }),
+            App.el('span', { textContent: 'Add paid rides × price to sales (estimate mode)' })
+        ]);
 
         // Per-track price rows, rebuilt whenever the group selection changes.
         var trackPriceInputs = {};
@@ -336,6 +347,7 @@
                         sales_sql: salesTa.value, labor_sql: laborTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
                         price_per_ride: parseFloat(priceIn.value) || 0,
+                        add_ride_value: addValueCb.checked,
                         ride_prices: (function() {
                             var map = {};
                             Object.keys(trackPriceInputs).forEach(function(gid) {
@@ -419,9 +431,10 @@
                     field('Username', userIn), field('Password', passIn)
                 ]),
                 App.el('div', { className: 'labor-conn-grid', style: { gridTemplateColumns: '2fr 1fr' } }, [
-                    field('Value rides from this area (time-pass swipes omitted)', groupSel),
+                    field('Show ride counts from this area (time-pass swipes flagged)', groupSel),
                     field('Default price per paid ride ($)', priceIn)
                 ]),
+                addValueToggle,
                 trackPricesBox,
                 field('Walk-up cash for a day (:date)', salesTa),
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
