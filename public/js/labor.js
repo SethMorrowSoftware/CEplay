@@ -46,14 +46,17 @@
 
     // ------------------------------------------------------------------
     async function renderLabor(container) {
-        state.dates = [todayISO(), shiftDays(todayISO(), -7)];
+        // Default view: the last 7 days — the "how are we doing?" answer
+        // with zero clicks.
+        state.dates = [];
+        for (var i = 0; i < 7; i++) state.dates.push(shiftDays(todayISO(), -i));
         state.data = null;
 
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Go-Kart Labor' }),
                 App.el('p', { className: 'page-subtitle', textContent:
-                    'Sales vs labor cost per day from CenterEdge — pick days to compare your labor rate.' })
+                    'How much of each day’s go-kart money goes to staff wages. Lower is better — under 25% is great, over 40% deserves a look.' })
             ])
         ]));
 
@@ -109,15 +112,15 @@
 
         // One-click comparison starters
         var presets = App.el('div', { className: 'labor-presets' }, [
+            presetBtn('Last 7 days', function() {
+                var out = [], t = todayISO();
+                for (var i = 0; i < 7; i++) out.push(shiftDays(t, -i));
+                return out;
+            }),
             presetBtn('Last 4 Saturdays', function() {
                 var out = [], d = new Date();
                 d.setDate(d.getDate() - ((d.getDay() + 1) % 7)); // most recent Saturday
                 for (var i = 0; i < 4; i++) { out.push(d.toISOString().slice(0, 10)); d.setDate(d.getDate() - 7); }
-                return out;
-            }),
-            presetBtn('Last 7 days', function() {
-                var out = [], t = todayISO();
-                for (var i = 0; i < 7; i++) out.push(shiftDays(t, -i));
                 return out;
             }),
             presetBtn('Today vs last week', function() {
@@ -128,6 +131,17 @@
 
         box.appendChild(App.el('div', { className: 'labor-picker-row' }, [chips, input, addBtn]));
         box.appendChild(presets);
+    }
+
+    function insightCard(emoji, cls, label, value, sub) {
+        return App.el('div', { className: 'insight-card ' + cls }, [
+            App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'insight-body' }, [
+                App.el('div', { className: 'insight-label', textContent: label }),
+                App.el('div', { className: 'insight-value', textContent: value }),
+                App.el('div', { className: 'insight-sub', textContent: sub })
+            ])
+        ]);
     }
 
     function presetBtn(label, datesFn) {
@@ -237,22 +251,63 @@
         ]);
 
         var avg = null;
-        var sumSales = 0, sumLabor = 0;
-        good.forEach(function(d) { sumSales += d.sales || 0; sumLabor += d.labor || 0; });
+        var sumSales = 0, sumLabor = 0, sumRides = 0, haveRides = false;
+        good.forEach(function(d) {
+            sumSales += d.sales || 0; sumLabor += d.labor || 0;
+            if (d.rides != null) { haveRides = true; sumRides += d.rides; }
+        });
         if (sumSales > 0) avg = sumLabor / sumSales;
+
+        // Plain-language summary for a non-technical reader: the period
+        // rate, the day that worked best, the day that needs a look, and
+        // what one ride costs in wages.
+        var summary = null;
+        var rated = good.filter(function(d) { return d.rate != null; });
+        if (rated.length >= 2) {
+            var best = rated.reduce(function(a, b) { return b.rate < a.rate ? b : a; });
+            var worst = rated.reduce(function(a, b) { return b.rate > a.rate ? b : a; });
+            var cards = [
+                insightCard('🏁', avg != null && avg <= 0.4 ? (avg <= 0.25 ? 'insight-good' : 'insight-accent') : 'insight-warn',
+                    'This period', avg != null ? fmtPct(avg) + ' labor rate' : '—',
+                    fmtMoney(sumLabor) + ' in wages earned ' + fmtMoney(sumSales) + ' in go-kart sales'),
+                insightCard('✅', 'insight-good', 'Best day',
+                    dayLabel(best.date) + ' — ' + fmtPct(best.rate),
+                    fmtMoney(best.sales) + ' sales vs ' + fmtMoney(best.labor) + ' wages'),
+                insightCard('⚠️', 'insight-warn', 'Needs a look',
+                    dayLabel(worst.date) + ' — ' + fmtPct(worst.rate),
+                    fmtMoney(worst.sales) + ' sales vs ' + fmtMoney(worst.labor) + ' wages')
+            ];
+            if (haveRides && sumRides > 0) {
+                cards.push(insightCard('🏎️', 'insight-quiet', 'Wages per ride',
+                    fmtMoney(sumLabor / sumRides),
+                    'across ' + sumRides.toLocaleString() + ' rides (passes included)'));
+            }
+            summary = App.el('div', { className: 'insight-row' }, cards);
+        }
+
+        if (summary) box.appendChild(summary);
+
+        // Legend in words, so the colors never need explaining in person.
+        var legend = App.el('span', { className: 'text-sm labor-legend' }, [
+            App.el('span', { className: 'labor-rate labor-rate-good', textContent: 'under 25% great' }),
+            App.el('span', { className: 'text-muted', textContent: ' · ' }),
+            App.el('span', { className: 'labor-rate labor-rate-warn', textContent: '25–40% watch' }),
+            App.el('span', { className: 'text-muted', textContent: ' · ' }),
+            App.el('span', { className: 'labor-rate labor-rate-bad', textContent: 'over 40% high' })
+        ]);
 
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [
                 App.el('h3', { textContent: 'Labor rate by day' }),
-                App.el('span', { className: 'text-sm text-secondary', textContent:
-                    avg != null ? 'Combined: ' + fmtPct(avg) + ' (' + fmtMoney(sumLabor) + ' labor on ' + fmtMoney(sumSales) + ' sales)' : '' })
+                legend
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
-                        ? 'Sales = the MSSQL query + paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '). Time-pass swipes are counted in Rides but omitted from the sales value. '
-                        : 'Sales come from the MSSQL query below (the POS’s Go Kart Readers division — real dollars; pass swipes post nothing there). Rides/Pass columns are context from the reader feed. ')
-                    + 'Labor rate = labor cost ÷ sales. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
+                    'Labor rate = wages ÷ go-kart sales for the same day. '
+                    + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
+                        ? 'Sales are estimated as paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + ') plus the MSSQL query; time-pass swipes are not counted as money. '
+                        : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). Rides and Pass show how busy the track was. ')
+                    + 'Today includes staff currently on the clock. A punch that was never clocked out counts zero on past days — fix it in CenterEdge and the day recalculates.' })
             ])
         ]));
     }
@@ -422,8 +477,11 @@
             ? 'Available PHP driver' + (s.drivers.length > 1 ? 's' : '') + ': ' + s.drivers.join(', ')
             : 'No MSSQL PHP driver in this PHP runtime. Containerized host (Fedora CoreOS etc.): rebuild the app image with deploy/Containerfile.mssql — step-by-step in docs/MSSQL_DRIVER.md. Bare installs: pdo_sqlsrv, pdo_dblib (FreeTDS), or pdo_odbc.';
 
-        box.appendChild(App.el('div', { className: 'card' }, [
-            App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Connection & queries (admin)' })]),
+        // Collapsed by default: the SQL and connection plumbing is for
+        // admins — a non-technical reader should only ever meet the
+        // summary and the table above.
+        box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
+            App.el('summary', { className: 'labor-admin-summary', textContent: '⚙️ Connection & queries (admin setup)' }),
             App.el('div', { className: 'card-body' }, [
                 App.el('p', { className: 'text-sm ' + ((s.drivers && s.drivers.length) ? 'text-secondary' : 'labor-driver-missing'), textContent: driverNote }),
                 App.el('div', { className: 'labor-conn-grid' }, [
