@@ -1,0 +1,66 @@
+/* ============================================
+   Insight cards — plain-language headline row.
+   Shared by Reader Groups and Performance: each card is one sentence a
+   non-technical reader can act on ("Busiest time — Saturdays, 2–3 PM").
+   Color is an accent on the card frame; text stays in ink tokens.
+   ============================================ */
+
+:root {
+    /* Warm "busy" hue for data-viz highlights (heatmaps, peak markers).
+       Bright orange for dark surfaces (#f97316 → 6.3:1 on the card). */
+    --viz-heat-rgb: 249, 115, 22;
+}
+:root[data-theme="light"] {
+    /* Deep orange for light surfaces (#c2410c → 5.2:1 on white). */
+    --viz-heat-rgb: 194, 65, 12;
+}
+
+.insight-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.insight-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-hover, rgba(255, 255, 255, 0.03));
+    border-left-width: 4px;
+}
+.insight-icon {
+    font-size: 1.35rem;
+    line-height: 1.4;
+}
+.insight-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+.insight-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0.1rem 0;
+    overflow-wrap: anywhere;
+}
+.insight-sub {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+/* Accent variants — the frame hints at meaning; the words carry it. */
+.insight-heat   { border-left-color: rgb(var(--viz-heat-rgb)); background: rgba(var(--viz-heat-rgb), 0.07); }
+.insight-accent { border-left-color: var(--accent); background: var(--accent-soft, rgba(91, 141, 239, 0.06)); }
+.insight-quiet  { border-left-color: var(--text-muted, #8891a8); }
+.insight-good   { border-left-color: var(--success, #3dd68c); background: color-mix(in srgb, var(--success, #3dd68c) 7%, transparent); }
+.insight-warn   { border-left-color: var(--danger, #e5534b); background: color-mix(in srgb, var(--danger, #e5534b) 7%, transparent); }
+@supports not (background: color-mix(in srgb, red 10%, transparent)) {
+    .insight-good { background: rgba(61, 214, 140, 0.08); }
+    .insight-warn { background: rgba(229, 83, 75, 0.08); }
+}

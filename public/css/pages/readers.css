@@ -9,20 +9,18 @@
    contrast-checked ≥5:1 on both surfaces.
    ============================================ */
 
-:root {
-    /* Bright orange for dark surfaces (#f97316 → 6.3:1 on the card). */
-    --rg-heat-rgb: 249, 115, 22;
-}
-:root[data-theme="light"] {
-    /* Deep orange for light surfaces (#c2410c → 5.2:1 on white). */
-    --rg-heat-rgb: 194, 65, 12;
-}
+/* The warm heat token and the insight-card component live in
+   components/insight-cards.css (shared with the Performance page). */
 
 /* Wide tables scroll inside the card instead of stretching the page. */
 .table-scroll-x {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
 }
+
+/* The detail panel stacks several cards inside one wrapper div — give it
+   the same rhythm the page-level owl gives top-level sections. */
+#rg-detail > * + * { margin-top: 1.15rem; }
 
 /* Selected area row stays visibly "open" while its detail panel is shown. */
 .rg-row-selected,
@@ -88,55 +86,10 @@
     font-size: 0.78rem;
     font-weight: 600;
     white-space: nowrap;
-    color: rgb(var(--rg-heat-rgb));
-    background: rgba(var(--rg-heat-rgb), 0.12);
-    border: 1px solid rgba(var(--rg-heat-rgb), 0.3);
+    color: rgb(var(--viz-heat-rgb));
+    background: rgba(var(--viz-heat-rgb), 0.12);
+    border: 1px solid rgba(var(--viz-heat-rgb), 0.3);
 }
-
-/* --------------------------------------------
-   Insight cards — the plain-language headline row.
-   Color is an accent on the card frame; text stays in ink tokens.
-   -------------------------------------------- */
-.rg-insights {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-}
-.rg-insight {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.7rem;
-    padding: 0.85rem 1rem;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: var(--bg-hover, rgba(255, 255, 255, 0.03));
-    border-left-width: 4px;
-}
-.rg-insight-icon {
-    font-size: 1.35rem;
-    line-height: 1.4;
-}
-.rg-insight-label {
-    font-size: 0.72rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-secondary);
-}
-.rg-insight-value {
-    font-size: 1.15rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    margin: 0.1rem 0;
-}
-.rg-insight-sub {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-}
-.rg-insight-hot   { border-left-color: rgb(var(--rg-heat-rgb)); background: rgba(var(--rg-heat-rgb), 0.07); }
-.rg-insight-day   { border-left-color: var(--accent); background: var(--accent-soft, rgba(91, 141, 239, 0.06)); }
-.rg-insight-quiet { border-left-color: var(--text-muted, #8891a8); }
 
 /* --------------------------------------------
    Heatmap + busiest ranking layout.
@@ -197,7 +150,7 @@
 }
 .rg-heat-cell:hover {
     transform: scale(1.12);
-    outline: 1px solid rgb(var(--rg-heat-rgb));
+    outline: 1px solid rgb(var(--viz-heat-rgb));
     z-index: 1;
 }
 .rg-heat-cell-empty { opacity: 0.55; }
@@ -283,7 +236,7 @@
 }
 .rg-rank-num-top {
     color: #fff;
-    background: rgb(var(--rg-heat-rgb));
+    background: rgb(var(--viz-heat-rgb));
 }
 .rg-rank-main { flex: 1; min-width: 0; }
 .rg-rank-label {
@@ -299,8 +252,8 @@
 .rg-rank-peak-tag {
     font-size: 0.68rem;
     font-weight: 700;
-    color: rgb(var(--rg-heat-rgb));
-    background: rgba(var(--rg-heat-rgb), 0.12);
+    color: rgb(var(--viz-heat-rgb));
+    background: rgba(var(--viz-heat-rgb), 0.12);
     border-radius: 999px;
     padding: 0.05rem 0.45rem;
     flex: none;

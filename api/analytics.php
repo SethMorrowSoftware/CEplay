@@ -1546,6 +1546,20 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
         ];
     }
 
+    // Plain-language headliners for the page's insight cards — computed over
+    // the WHOLE venue before any search filter, so the headline never quietly
+    // shrinks to "best match of your search".
+    $mostPlayed = null;
+    $topTickets = null;
+    foreach ($rows as $r) {
+        if ($r['plays'] > 0 && ($mostPlayed === null || $r['plays'] > $mostPlayed['plays'])) {
+            $mostPlayed = ['game_id' => $r['game_id'], 'game_name' => $r['game_name'], 'plays' => $r['plays']];
+        }
+        if ($r['tickets'] > 0 && ($topTickets === null || $r['tickets'] > $topTickets['tickets'])) {
+            $topTickets = ['game_id' => $r['game_id'], 'game_name' => $r['game_name'], 'tickets' => $r['tickets'], 'plays' => $r['plays']];
+        }
+    }
+
     if ($search !== '') {
         $needle = mb_strtolower($search);
         $rows = array_values(array_filter($rows, function ($r) use ($needle) {
@@ -1600,6 +1614,7 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
         'days_in_range'   => $daysInRange,
         'venue_payout_pct'=> $redPointsTotal > 0 ? round($redTicketsTotal / $redPointsTotal * 100, 1) : null,
         'redemption_games'=> count($redemption),
+        'headliners'      => ['most_played' => $mostPlayed, 'top_tickets' => $topTickets],
         'hide_money'      => $hideMoney,
         'generated_at'    => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
     ];

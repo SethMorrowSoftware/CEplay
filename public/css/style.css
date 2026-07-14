@@ -23,6 +23,7 @@
 /* --- Core components (1st pass) ----------------------------- */
 @import url("components/roles.css");
 @import url("components/cards.css");
+@import url("components/insight-cards.css");
 @import url("components/buttons.css");
 @import url("components/forms.css");
 @import url("components/tables.css");
