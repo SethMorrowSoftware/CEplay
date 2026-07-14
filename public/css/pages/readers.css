@@ -1,8 +1,22 @@
 /* ============================================
    Reader Groups page (#/readers)
-   Area comparison table, day-of-week × hour heatmap,
+   Area comparison table, plain-language insight cards,
+   day-of-week × hour heatmap with busiest-times ranking,
    and the group editor's game picker.
+
+   The heat ramp is ONE warm hue whose alpha carries magnitude
+   (sequential encoding): deeper orange = busier. Peak steps are
+   contrast-checked ≥5:1 on both surfaces.
    ============================================ */
+
+:root {
+    /* Bright orange for dark surfaces (#f97316 → 6.3:1 on the card). */
+    --rg-heat-rgb: 249, 115, 22;
+}
+:root[data-theme="light"] {
+    /* Deep orange for light surfaces (#c2410c → 5.2:1 on white). */
+    --rg-heat-rgb: 194, 65, 12;
+}
 
 /* Wide tables scroll inside the card instead of stretching the page. */
 .table-scroll-x {
@@ -44,42 +58,112 @@
     opacity: 0.85;
 }
 
-/* Busiest-time chips (table column + detail summary row). */
+/* Week-rhythm mini bars: Sun→Sat plays profile; peak day wears the heat hue. */
+.rg-rhythm {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 26px;
+}
+.rg-rhythm-bar {
+    width: 7px;
+    height: 100%;
+    display: inline-flex;
+    align-items: flex-end;
+    background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+    border-radius: 2px;
+    overflow: hidden;
+}
+.rg-rhythm-fill {
+    display: block;
+    width: 100%;
+    border-radius: 2px 2px 0 0;
+}
+
+/* Busiest-time chips (table column). */
 .rg-busiest-chip {
     display: inline-block;
-    padding: 0.15rem 0.5rem;
+    padding: 0.18rem 0.55rem;
     border-radius: 999px;
     font-size: 0.78rem;
-    font-weight: 500;
+    font-weight: 600;
     white-space: nowrap;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-}
-@supports not (background: color-mix(in srgb, red 10%, transparent)) {
-    .rg-busiest-chip {
-        background: rgba(91, 141, 239, 0.14);
-        border-color: rgba(91, 141, 239, 0.3);
-    }
-}
-.rg-busiest-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
-    margin-top: 0.85rem;
+    color: rgb(var(--rg-heat-rgb));
+    background: rgba(var(--rg-heat-rgb), 0.12);
+    border: 1px solid rgba(var(--rg-heat-rgb), 0.3);
 }
 
 /* --------------------------------------------
-   Heatmap: CSS grid, one auto label column + N hour columns.
+   Insight cards — the plain-language headline row.
+   Color is an accent on the card frame; text stays in ink tokens.
    -------------------------------------------- */
+.rg-insights {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.rg-insight {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-hover, rgba(255, 255, 255, 0.03));
+    border-left-width: 4px;
+}
+.rg-insight-icon {
+    font-size: 1.35rem;
+    line-height: 1.4;
+}
+.rg-insight-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+.rg-insight-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0.1rem 0;
+}
+.rg-insight-sub {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.rg-insight-hot   { border-left-color: rgb(var(--rg-heat-rgb)); background: rgba(var(--rg-heat-rgb), 0.07); }
+.rg-insight-day   { border-left-color: var(--accent); background: var(--accent-soft, rgba(91, 141, 239, 0.06)); }
+.rg-insight-quiet { border-left-color: var(--text-muted, #8891a8); }
+
+/* --------------------------------------------
+   Heatmap + busiest ranking layout.
+   -------------------------------------------- */
+.rg-heat-caption {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.6rem;
+}
+.rg-heat-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+}
+@media (min-width: 1100px) {
+    .rg-heat-layout { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+.rg-heat-main { min-width: 0; }
+
+/* Heatmap: CSS grid, one auto label column + N hour columns + summary col. */
 .rg-heatmap {
     display: grid;
     gap: 3px;
     margin-top: 0.75rem;
     min-width: 480px;
 }
-/* The grid can outgrow narrow phones — let the card body scroll it. */
 .rg-heatmap-holder,
 .rg-heatmap { overflow-x: auto; }
 
@@ -91,6 +175,10 @@
     white-space: nowrap;
     overflow: hidden;
 }
+.rg-heat-rowsum-head {
+    text-align: right;
+    padding-left: 0.4rem;
+}
 .rg-heat-dow {
     font-size: 0.72rem;
     color: var(--text-secondary);
@@ -100,7 +188,7 @@
     justify-content: flex-end;
 }
 .rg-heat-cell {
-    aspect-ratio: auto;
+    position: relative;
     height: 26px;
     border-radius: 4px;
     background: var(--bg-hover, rgba(255, 255, 255, 0.04));
@@ -109,9 +197,36 @@
 }
 .rg-heat-cell:hover {
     transform: scale(1.12);
-    outline: 1px solid var(--accent);
+    outline: 1px solid rgb(var(--rg-heat-rgb));
+    z-index: 1;
 }
 .rg-heat-cell-empty { opacity: 0.55; }
+.rg-heat-cell-peak {
+    outline: 2px solid var(--text-primary);
+    outline-offset: -1px;
+}
+.rg-heat-star {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+}
+.rg-heat-rowsum {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-left: 0.4rem;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
 
 .rg-heat-legend {
     display: flex;
@@ -128,6 +243,86 @@
     height: 10px;
     border-radius: 3px;
     display: inline-block;
+}
+
+/* Top-5 busiest times ranking beside the heatmap. */
+.rg-rank-list {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    background: var(--bg-hover, rgba(255, 255, 255, 0.02));
+}
+.rg-rank-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+.rg-rank-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted, var(--text-secondary));
+    margin-bottom: 0.65rem;
+}
+.rg-rank-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.35rem 0;
+}
+.rg-rank-num {
+    flex: none;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+}
+.rg-rank-num-top {
+    color: #fff;
+    background: rgb(var(--rg-heat-rgb));
+}
+.rg-rank-main { flex: 1; min-width: 0; }
+.rg-rank-label {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.rg-rank-peak-tag {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: rgb(var(--rg-heat-rgb));
+    background: rgba(var(--rg-heat-rgb), 0.12);
+    border-radius: 999px;
+    padding: 0.05rem 0.45rem;
+    flex: none;
+}
+.rg-rank-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+.rg-rank-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+}
+.rg-rank-val {
+    flex: none;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
 }
 
 /* --------------------------------------------
@@ -163,4 +358,6 @@
 @media (max-width: 640px) {
     .rg-heat-cell { height: 20px; }
     .rg-plays-bar { display: none; }
+    .rg-rhythm { height: 20px; }
+    .rg-rhythm-bar { width: 5px; }
 }

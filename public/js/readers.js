@@ -36,6 +36,7 @@
 
     var RANGE_LABELS = { day: 'Day', week: 'Week', month: 'Month', year: 'Year', custom: 'Custom' };
     var DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    var DOW_FULL  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
     function canManage() { return App.canAccess('groups_manage'); }
 
@@ -270,17 +271,20 @@
             { label: 'Area', cls: '' },
             { label: 'Games', cls: 'text-right' },
             { label: 'Plays', cls: 'text-right' },
-            { label: 'Avg/day', cls: 'text-right' },
-            { label: 'Avg/game/day', cls: 'text-right' }
+            { label: 'Avg/day', cls: 'text-right', tip: 'Average plays per day over this period' },
+            { label: 'Avg/game/day', cls: 'text-right', tip: 'Average plays per game per day — compares areas of different sizes fairly' }
         ];
-        if (money) headers.push({ label: 'Revenue', cls: 'text-right' });
-        headers.push({ label: 'Busiest time', cls: '' });
-        headers.push({ label: 'vs prev', cls: 'text-right' });
+        if (money) headers.push({ label: 'Reader CC', cls: 'text-right', tip: 'Credit-card payments taken at the readers' });
+        headers.push({ label: 'Week rhythm', cls: '', tip: 'Plays by weekday, Sunday through Saturday — the orange bar is the busiest day' });
+        headers.push({ label: 'Busiest time', cls: '', tip: 'The single busiest hour of the week for this area' });
+        headers.push({ label: 'vs prev', cls: 'text-right', tip: 'Plays compared with the previous period' });
         if (canManage()) headers.push({ label: '', cls: 'text-right' });
 
         var thead = App.el('thead', {}, [
             App.el('tr', {}, headers.map(function(h) {
-                return App.el('th', { className: h.cls, textContent: h.label });
+                var attrs = { className: h.cls, textContent: h.label };
+                if (h.tip) attrs.title = h.tip;
+                return App.el('th', attrs);
             }))
         ]);
 
@@ -315,11 +319,12 @@
                 cells.push(App.el('td', { className: 'text-right num-cell',
                     textContent: g.cash > 0 ? formatCurrency(g.cash) : '—' }));
             }
+            cells.push(App.el('td', {}, [buildWeekRhythm(g)]));
             cells.push(App.el('td', {}, [
                 g.busiest
                     ? App.el('span', { className: 'rg-busiest-chip',
-                        textContent: g.busiest.label,
-                        title: 'Averages ' + formatNum(g.busiest.avg_plays) + ' plays that hour (' + formatInt(g.busiest.plays) + ' total in this period)' })
+                        textContent: '🔥 ' + DOW_SHORT[g.busiest.dow] + ' ' + hourRangeLabel(g.busiest.hour),
+                        title: 'Usually around ' + formatNum(g.busiest.avg_plays) + ' plays in that hour on a ' + DOW_FULL[g.busiest.dow] + ' (' + formatInt(g.busiest.plays) + ' plays there in this whole period)' })
                     : App.el('span', { className: 'text-muted', textContent: '—' })
             ]));
             cells.push(App.el('td', { className: 'text-right' }, [delta(g.plays, g.prev_plays)]));
@@ -357,6 +362,46 @@
                 'Busiest-time detail uses hour-by-hour history collected since ' + state.data.hourly_covered_from +
                 '; totals and averages cover the whole period.' }));
         }
+    }
+
+    /**
+     * Seven tiny weekday bars (Sun→Sat) showing where an area's week peaks
+     * at a glance. All bars share the accent hue; only the busiest day wears
+     * the warm heat color, and the adjacent "Busiest time" chip names that
+     * day in words, so the highlight is never color-alone.
+     */
+    function buildWeekRhythm(g) {
+        var dowPlays = g.dow_plays || [];
+        var counts = (state.data && state.data.dow_counts) || [];
+        var max = 0;
+        for (var i = 0; i < 7; i++) max = Math.max(max, Number(dowPlays[i]) || 0);
+        if (!(max > 0)) return App.el('span', { className: 'text-muted', textContent: '—' });
+        var theme = readThemeColors();
+        var peak = -1;
+        for (i = 0; i < 7; i++) if ((Number(dowPlays[i]) || 0) === max) { peak = i; break; }
+
+        var wrap = App.el('div', { className: 'rg-rhythm', role: 'img',
+            'aria-label': 'Plays by weekday, Sunday through Saturday' });
+        for (var d = 0; d < 7; d++) {
+            var v = Number(dowPlays[d]) || 0;
+            var hpct = v > 0 ? Math.max(14, Math.round(v / max * 100)) : 0;
+            var n = Number(counts[d]) || 0;
+            var tip = v > 0
+                ? (DOW_FULL[d] + 's: ' + (n > 0 ? 'usually around ' + formatNum(v / n) + ' plays (' + formatInt(v) + ' total)' : formatInt(v) + ' plays'))
+                : DOW_FULL[d] + 's: no plays in this period';
+            var bar = App.el('span', { className: 'rg-rhythm-bar', title: tip });
+            if (v > 0) {
+                bar.appendChild(App.el('span', {
+                    className: 'rg-rhythm-fill',
+                    style: {
+                        height: hpct + '%',
+                        background: d === peak ? theme.heatSolid : 'rgba(' + theme.accentRgb + ',0.6)'
+                    }
+                }));
+            }
+            wrap.appendChild(bar);
+        }
+        return wrap;
     }
 
     function selectGroup(id) {
@@ -423,6 +468,12 @@
             onClick: function() { selectGroup(d.group.id); } // toggles off
         }));
 
+        // Header card: group identity, then the plain-language insight cards
+        // (the headline for a non-technical reader), then the KPI grid.
+        var insights = buildInsights(d);
+        var kpiBody = [];
+        if (insights) kpiBody.push(insights);
+        kpiBody.push(buildKpiGrid(t, p, money));
         var kpiCard = App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header flex-between' }, [
                 App.el('div', {}, [
@@ -433,7 +484,7 @@
                 ]),
                 App.el('div', { className: 'flex gap-sm' }, headActions)
             ]),
-            App.el('div', { className: 'card-body' }, [buildKpiGrid(t, p, money)])
+            App.el('div', { className: 'card-body' }, kpiBody)
         ]);
         panel.appendChild(kpiCard);
 
@@ -466,7 +517,7 @@
             ['Avg plays / game / day', formatNum(t.avg_plays_per_game_per_day), delta(t.avg_plays_per_game_per_day, p.avg_plays_per_game_per_day)],
             ['Tickets', formatInt(Math.round(t.tickets)), delta(t.tickets, p.tickets)]
         ];
-        if (money) cards.push(['Revenue', formatCurrency(t.cash), delta(t.cash, p.cash)]);
+        if (money) cards.push(['Reader CC payments', formatCurrency(t.cash), delta(t.cash, p.cash)]);
         cards.push(['Time-pass plays', formatInt(t.time_plays), null]);
         cards.push(['Games with plays', formatInt(t.active_games), null]);
 
@@ -481,17 +532,72 @@
     }
 
     // ------------------------------------------------------------------
+    // Plain-language insight cards — the headline answers, up front:
+    // when is this area busiest, which day carries it, which day is dead.
+    // Derived from the heatmap's per-occurrence averages so a long window
+    // still reads as "a typical Saturday", never a lifetime total.
+    // ------------------------------------------------------------------
+    function buildInsights(d) {
+        var heat = d.heatmap;
+        if (!heat || !(Number(heat.max_total) > 0)) return null;
+
+        var typical = [];
+        for (var dw = 0; dw < 7; dw++) {
+            var s = 0;
+            for (var h = 0; h < 24; h++) s += Number(heat.avg[dw][h]) || 0;
+            typical.push(s);
+        }
+        var busiestDay = -1, quietDay = -1;
+        for (dw = 0; dw < 7; dw++) {
+            if (typical[dw] <= 0) continue;
+            if (busiestDay < 0 || typical[dw] > typical[busiestDay]) busiestDay = dw;
+            if (quietDay < 0 || typical[dw] < typical[quietDay]) quietDay = dw;
+        }
+
+        var cards = [];
+        var top = (d.busiest && d.busiest[0]) || null;
+        if (top) {
+            cards.push(insightCard('🔥', 'rg-insight-hot', 'Busiest time',
+                DOW_FULL[top.dow] + 's, ' + hourRangeLabel(top.hour),
+                'usually around ' + formatNum(top.avg_plays) + ' plays in that hour'));
+        }
+        if (busiestDay >= 0) {
+            cards.push(insightCard('📅', 'rg-insight-day', 'Busiest day',
+                DOW_FULL[busiestDay] + 's',
+                'usually around ' + formatInt(Math.round(typical[busiestDay])) + ' plays over the day'));
+        }
+        if (quietDay >= 0 && quietDay !== busiestDay) {
+            cards.push(insightCard('🌙', 'rg-insight-quiet', 'Quietest day',
+                DOW_FULL[quietDay] + 's',
+                'usually around ' + formatInt(Math.round(typical[quietDay])) + ' plays over the day'));
+        }
+        if (cards.length === 0) return null;
+        return App.el('div', { className: 'rg-insights' }, cards);
+    }
+
+    function insightCard(emoji, cls, label, value, sub) {
+        return App.el('div', { className: 'rg-insight ' + cls }, [
+            App.el('div', { className: 'rg-insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'rg-insight-body' }, [
+                App.el('div', { className: 'rg-insight-label', textContent: label }),
+                App.el('div', { className: 'rg-insight-value', textContent: value }),
+                App.el('div', { className: 'rg-insight-sub', textContent: sub })
+            ])
+        ]);
+    }
+
+    // ------------------------------------------------------------------
     // Heatmap
     // ------------------------------------------------------------------
     function buildHeatmapCard(d) {
         var toggle = App.el('div', { className: 'perf-metric-toggle' },
-            [['avg', 'Typical'], ['total', 'Total']].map(function(m) {
+            [['avg', 'Typical week'], ['total', 'Period totals']].map(function(m) {
                 return App.el('button', {
                     className: 'btn btn-sm ' + (m[0] === state.heatMetric ? 'btn-secondary' : 'btn-ghost'),
                     textContent: m[1],
                     title: m[0] === 'avg'
-                        ? 'Average plays per hour for each weekday across the period — the staffing view'
-                        : 'Total plays per hour cell across the whole period',
+                        ? 'What a normal week looks like: average plays for each weekday hour — the staffing view'
+                        : 'Raw totals: every play in this period added up per weekday hour',
                     onClick: function() {
                         if (state.heatMetric === m[0]) return;
                         state.heatMetric = m[0];
@@ -505,22 +611,16 @@
         var heat = d.heatmap;
         var grid = buildHeatmapGrid(d);
         if (grid) {
-            body.push(grid.legendTop);
-            body.push(grid.el);
+            body.push(App.el('p', { className: 'rg-heat-caption', textContent:
+                state.heatMetric === 'avg'
+                    ? 'Each square is one hour of the week. Deeper orange = busier on a typical week. ★ marks the single busiest hour. Hover any square for the exact numbers.'
+                    : 'Each square is one hour of the week. Deeper orange = more plays in total over this period. ★ marks the single busiest hour. Hover any square for the exact numbers.' }));
+            var layout = [App.el('div', { className: 'rg-heat-main' }, [grid.legendTop, grid.el])];
+            var rankList = buildBusiestList(d);
+            if (rankList) layout.push(rankList);
+            body.push(App.el('div', { className: 'rg-heat-layout' }, layout));
         } else {
             body.push(App.emptyState('🕐', 'No hour-by-hour play data for this period yet.'));
-        }
-
-        if (d.busiest && d.busiest.length > 0) {
-            body.push(App.el('div', { className: 'rg-busiest-row' },
-                [App.el('span', { className: 'text-sm text-secondary', textContent: 'Busiest times:' })].concat(
-                    d.busiest.map(function(b) {
-                        return App.el('span', { className: 'rg-busiest-chip',
-                            textContent: b.label + ' · ' + formatNum(b.avg_plays) + '/hr',
-                            title: formatInt(b.plays) + ' plays total in this period' });
-                    })
-                )
-            ));
         }
 
         if (heat && heat.full_coverage === false && heat.covered_from) {
@@ -534,12 +634,50 @@
                 App.el('div', { className: 'flex-center gap-sm' }, [
                     App.el('div', { className: 'card-title', textContent: 'When is it busiest?' }),
                     App.el('span', { className: 'text-sm text-secondary',
-                        textContent: state.heatMetric === 'avg' ? 'typical plays per hour, by weekday' : 'total plays per hour, by weekday' })
+                        textContent: state.heatMetric === 'avg' ? 'a typical week, hour by hour' : 'this period’s totals, hour by hour' })
                 ]),
                 toggle
             ]),
             App.el('div', { className: 'card-body' }, body)
         ]);
+    }
+
+    /**
+     * Ranked "top 5 busiest times" list beside the heatmap — the same facts
+     * as the strongest cells, but readable without decoding any colors.
+     * All bars share one hue (length carries the ranking); the #1 row gets
+     * an explicit Peak tag so nothing relies on color alone.
+     */
+    function buildBusiestList(d) {
+        var items = d.busiest || [];
+        if (items.length === 0) return null;
+        var theme = readThemeColors();
+        var maxAvg = 0;
+        items.forEach(function(b) { maxAvg = Math.max(maxAvg, Number(b.avg_plays) || 0); });
+
+        var rows = items.map(function(b, i) {
+            var pct = maxAvg > 0 ? Math.max(6, Math.round((Number(b.avg_plays) || 0) / maxAvg * 100)) : 6;
+            var labelBits = [App.el('span', { textContent: DOW_FULL[b.dow] + 's, ' + hourRangeLabel(b.hour) })];
+            if (i === 0) labelBits.push(App.el('span', { className: 'rg-rank-peak-tag', textContent: '🔥 Peak' }));
+            return App.el('div', {
+                className: 'rg-rank-row',
+                title: 'Usually around ' + formatNum(b.avg_plays) + ' plays in that hour (' + formatInt(b.plays) + ' plays there in this whole period)'
+            }, [
+                App.el('span', { className: 'rg-rank-num' + (i === 0 ? ' rg-rank-num-top' : ''), textContent: (i + 1) }),
+                App.el('div', { className: 'rg-rank-main' }, [
+                    App.el('div', { className: 'rg-rank-label' }, labelBits),
+                    App.el('div', { className: 'rg-rank-bar' }, [
+                        App.el('span', { className: 'rg-rank-bar-fill',
+                            style: { width: pct + '%', background: 'rgba(' + theme.heatRgb + ',0.9)' } })
+                    ])
+                ]),
+                App.el('span', { className: 'rg-rank-val', textContent: '~' + formatNum(b.avg_plays) + '/hr' })
+            ]);
+        });
+
+        return App.el('div', { className: 'rg-rank-list' },
+            [App.el('div', { className: 'rg-rank-title', textContent: 'Top 5 busiest times' }),
+             App.el('div', { className: 'rg-rank-sub', textContent: 'on a typical week' })].concat(rows));
     }
 
     /**
@@ -572,14 +710,29 @@
 
         var theme = readThemeColors();
 
+        // Single busiest cell of the current view gets the ★ marker; per-row
+        // day summaries give each weekday a number without hovering.
+        var peakD = -1, peakH = -1, peakVal = 0;
+        var rowSums = [];
+        for (var dws = 0; dws < 7; dws++) {
+            var rs = 0;
+            for (var hs = 0; hs < 24; hs++) {
+                var vv = Number(matrix[dws][hs]) || 0;
+                rs += vv;
+                if (vv > peakVal) { peakVal = vv; peakD = dws; peakH = hs; }
+            }
+            rowSums.push(rs);
+        }
+
         var gridEl = App.el('div', {
             className: 'rg-heatmap',
-            style: { gridTemplateColumns: 'auto repeat(' + hours.length + ', minmax(0, 1fr))' },
+            style: { gridTemplateColumns: 'auto repeat(' + hours.length + ', minmax(0, 1fr)) auto' },
             role: 'img',
             'aria-label': 'Heatmap of plays by weekday and hour'
         });
 
-        // Header row: hour labels (sparse when narrow — every other label).
+        // Header row: hour labels (sparse when narrow — every other label),
+        // then the day-summary column header.
         gridEl.appendChild(App.el('div', { className: 'rg-heat-corner' }));
         hours.forEach(function(h, idx) {
             gridEl.appendChild(App.el('div', {
@@ -587,6 +740,8 @@
                 textContent: (hours.length > 14 && idx % 2 === 1) ? '' : hourLabel(h)
             }));
         });
+        gridEl.appendChild(App.el('div', { className: 'rg-heat-hour rg-heat-rowsum-head',
+            textContent: state.heatMetric === 'avg' ? 'typical day' : 'day total' }));
 
         for (var dw = 0; dw < 7; dw++) {
             gridEl.appendChild(App.el('div', { className: 'rg-heat-dow', textContent: DOW_SHORT[dw] }));
@@ -599,41 +754,68 @@
                 if (val > 0) {
                     // sqrt curve lifts mid-range values so quieter-but-real
                     // hours stay visible next to the peak.
-                    cellStyle.background = heatColor(theme, Math.sqrt(intensity));
+                    cellStyle.background = heatColor(theme, heatCurve(intensity));
                 }
                 var n = Number((heat.dow_counts || [])[dw]) || 0;
-                var tip = DOW_SHORT[dw] + ' ' + hourLabel(h2) + '–' + hourLabel((h2 + 1) % 24) + ': ';
+                var tip = DOW_FULL[dw] + ', ' + hourRangeLabel(h2) + ': ';
                 if (state.heatMetric === 'avg') {
-                    tip += formatNum(val) + ' plays on a typical ' + DOW_SHORT[dw] +
-                        ' (' + formatInt(totalVal) + ' total across ' + n + ' ' + DOW_SHORT[dw] + (n === 1 ? '' : 's') + ')';
+                    tip += 'usually around ' + formatNum(val) + ' plays' +
+                        ' (' + formatInt(totalVal) + ' total across ' + n + ' ' + DOW_FULL[dw] + (n === 1 ? '' : 's') + ')';
                 } else {
-                    tip += formatInt(val) + ' plays total' + (n > 0 ? ' across ' + n + ' ' + DOW_SHORT[dw] + (n === 1 ? '' : 's') : '');
+                    tip += formatInt(val) + ' plays in total' + (n > 0 ? ' across ' + n + ' ' + DOW_FULL[dw] + (n === 1 ? '' : 's') : '');
                 }
-                gridEl.appendChild(App.el('div', {
-                    className: 'rg-heat-cell' + (val > 0 ? '' : ' rg-heat-cell-empty'),
+                var isPeak = (dw === peakD && h2 === peakH && val > 0);
+                var cell = App.el('div', {
+                    className: 'rg-heat-cell' + (val > 0 ? '' : ' rg-heat-cell-empty') + (isPeak ? ' rg-heat-cell-peak' : ''),
                     style: cellStyle,
-                    title: tip
-                }));
+                    title: isPeak ? tip + ' — the busiest hour of the week' : tip
+                });
+                if (isPeak) cell.appendChild(App.el('span', { className: 'rg-heat-star', 'aria-hidden': 'true', textContent: '★' }));
+                gridEl.appendChild(cell);
             }
+            gridEl.appendChild(App.el('div', {
+                className: 'rg-heat-rowsum',
+                textContent: rowSums[dw] > 0
+                    ? (state.heatMetric === 'avg' ? '~' + formatInt(Math.round(rowSums[dw])) : formatInt(rowSums[dw]))
+                    : '—',
+                title: rowSums[dw] > 0
+                    ? (state.heatMetric === 'avg'
+                        ? 'Usually around ' + formatInt(Math.round(rowSums[dw])) + ' plays over a typical ' + DOW_FULL[dw]
+                        : formatInt(rowSums[dw]) + ' plays on ' + DOW_FULL[dw] + 's in this period')
+                    : 'No plays on ' + DOW_FULL[dw] + 's in this period'
+            }));
         }
 
         // Legend: low → high gradient swatches.
         var legendTop = App.el('div', { className: 'rg-heat-legend' }, [
             App.el('span', { className: 'text-xs text-muted', textContent: 'Quiet' }),
             App.el('span', { className: 'rg-heat-legend-swatches' }, [0.15, 0.35, 0.6, 1].map(function(s) {
-                return App.el('span', { className: 'rg-heat-legend-swatch', style: { background: heatColor(theme, Math.sqrt(s)) } });
+                return App.el('span', { className: 'rg-heat-legend-swatch', style: { background: heatColor(theme, heatCurve(s)) } });
             })),
-            App.el('span', { className: 'text-xs text-muted', textContent: 'Busy — peak ' +
-                (state.heatMetric === 'avg' ? formatNum(maxVal) + ' plays/hr' : formatInt(maxVal) + ' plays') })
+            App.el('span', { className: 'text-xs text-muted', textContent: 'Busy — peak is ' +
+                (state.heatMetric === 'avg' ? '~' + formatNum(maxVal) + ' plays/hr' : formatInt(maxVal) + ' plays') })
         ]);
 
         return { el: gridEl, legendTop: legendTop };
     }
 
-    /** Accent-tinted cell color; alpha carries the intensity. */
+    /**
+     * Sequential heat color: ONE warm hue, alpha carries the magnitude, so
+     * the ramp runs light→dark against whichever surface the theme paints
+     * (the anchor flips automatically in dark mode). Peak steps were
+     * contrast-checked on both surfaces (≥5:1).
+     */
     function heatColor(theme, intensity) {
-        var a = 0.08 + 0.88 * Math.max(0, Math.min(1, intensity));
-        return 'rgba(' + theme.accentRgb + ',' + a.toFixed(3) + ')';
+        var a = 0.1 + 0.85 * Math.max(0, Math.min(1, intensity));
+        return 'rgba(' + theme.heatRgb + ',' + a.toFixed(3) + ')';
+    }
+
+    /**
+     * Perceptual lift for cell intensity: a 0.7 power keeps quiet-but-real
+     * hours visible without flattening the mid-range the way sqrt does.
+     */
+    function heatCurve(x) {
+        return Math.pow(Math.max(0, Math.min(1, x)), 0.7);
     }
 
     // ------------------------------------------------------------------
@@ -641,7 +823,7 @@
     // ------------------------------------------------------------------
     function buildMetricToggle() {
         var metrics = [['plays', 'Plays'], ['tickets', 'Tickets']];
-        if (App.canSeeMoney()) metrics.push(['cash', 'Revenue']);
+        if (App.canSeeMoney()) metrics.push(['cash', 'Reader CC']);
         return App.el('div', { className: 'perf-metric-toggle', id: 'rg-metric-toggle' },
             metrics.map(function(m) {
                 return App.el('button', {
@@ -683,7 +865,7 @@
             data: {
                 labels: labels,
                 datasets: [{
-                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Revenue' : 'Tickets'),
+                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Reader CC' : 'Tickets'),
                     data: values,
                     backgroundColor: barColor,
                     borderRadius: 4,
@@ -741,7 +923,7 @@
                 { label: '% of area', cls: 'text-right' },
                 { label: 'Tickets', cls: 'text-right' }
             ];
-            if (money) headers.push({ label: 'Revenue', cls: 'text-right' });
+            if (money) headers.push({ label: 'Reader CC', cls: 'text-right' });
             headers.push({ label: 'vs prev', cls: 'text-right' });
 
             var thead = App.el('thead', {}, [
@@ -979,6 +1161,16 @@
         return hour12 + suffix;
     }
 
+    function hour12(h) { var v = h % 12; return v === 0 ? 12 : v; }
+    function meridiem(h) { return h < 12 ? 'AM' : 'PM'; }
+
+    /** Owner-friendly one-hour window, e.g. "2–3 PM" or "11 AM–12 PM". */
+    function hourRangeLabel(h) {
+        var e = (h + 1) % 24;
+        if (meridiem(h) === meridiem(e)) return hour12(h) + '–' + hour12(e) + ' ' + meridiem(h);
+        return hour12(h) + ' ' + meridiem(h) + '–' + hour12(e) + ' ' + meridiem(e);
+    }
+
     function delta(cur, prev) {
         cur = Number(cur) || 0; prev = Number(prev) || 0;
         var cls, text;
@@ -1013,6 +1205,10 @@
         return {
             accent:        accent,
             accentRgb:     hexToRgb(accent) || '91,141,239',
+            // Warm single-hue ramp for the heatmap / busiest bars — deeper
+            // orange in light mode, brighter in dark, both ≥5:1 at peak.
+            heatRgb:       get('--rg-heat-rgb', isLight ? '194,65,12' : '249,115,22'),
+            heatSolid:     'rgb(' + (get('--rg-heat-rgb', isLight ? '194,65,12' : '249,115,22')) + ')',
             success:       get('--success', '#3dd68c'),
             tickets:       get('--tickets', '#f5b942'),
             text:          get('--text-primary', '#e1e4ed'),

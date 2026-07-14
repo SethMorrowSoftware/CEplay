@@ -1966,6 +1966,7 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
         'groups'       => [],
         'venue_plays'  => 0,
         'days_in_range'=> $daysElapsed,
+        'dow_counts'   => $coverage['dow_counts'],
         'hourly_covered_from' => $coverage['from'],
         'hourly_full_coverage'=> (bool)$coverage['full'],
         'hide_money'   => $hideMoney,
@@ -1989,6 +1990,7 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
     // per-group 7×24 plays matrix (plus time-pass plays) via the reverse index.
     $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $union);
     $cellsByGroup = [];
+    $dowPlaysByGroup = [];
     $timeByGroup = [];
     $dowByDate = [];
     foreach ($hourlyRows as $row) {
@@ -2002,9 +2004,11 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
             if (!isset($cellsByGroup[$gid])) {
                 $cellsByGroup[$gid] = [];
                 for ($d = 0; $d < 7; $d++) $cellsByGroup[$gid][$d] = array_fill(0, 24, 0);
+                $dowPlaysByGroup[$gid] = array_fill(0, 7, 0);
                 $timeByGroup[$gid] = 0;
             }
             $cellsByGroup[$gid][$dow][$row['hour']] += (int)$row['plays'];
+            $dowPlaysByGroup[$gid][$dow] += (int)$row['plays'];
             $timeByGroup[$gid] += (int)$row['time_plays'];
         }
     }
@@ -2059,6 +2063,9 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
                 ? round($plays / $gameCount / $daysElapsed, 1) : 0,
             'share_pct'   => $venueTotals['plays'] > 0 ? round($plays / $venueTotals['plays'] * 100, 1) : null,
             'busiest'     => $busiest,
+            // Hour-covered plays per weekday (Sun..Sat) — powers the "week
+            // rhythm" mini-bars; divide by dow_counts for per-occurrence avgs.
+            'dow_plays'   => $dowPlaysByGroup[$gid] ?? array_fill(0, 7, 0),
             'prev_plays'  => (int)$prev['plays'],
             'prev_tickets'=> round((float)$prev['tickets'], 2),
             'prev_cash'   => round((float)$prev['cash'], 2),

@@ -8,7 +8,7 @@
  *   - Daily plays + tickets trend (line)
  *   - Plays by hour of day (bar)  &  Plays by day of week (bar)
  *   - Top games by plays / by tickets (horizontal bars)
- *   - Revenue mix and Pause-action source breakdown (donuts)
+ *   - Reader CC / points value mix and Pause-action source breakdown (donuts)
  *   - Top groups by automation activity (horizontal bar)
  *   - Recent automation failures (table)
  *
@@ -190,17 +190,20 @@
     }
 
     function buildKpiSection() {
-        // Cash revenue and avg cash/play are monetary — hidden from the
-        // 'tech' role, which sees plays / tickets / points only.
+        // Reader CC payments and avg reader CC/play are monetary — hidden
+        // from the 'tech' role, which sees plays / tickets / points only.
+        // "Reader CC payments" (not "revenue"): the play feed only carries
+        // card-at-reader charges, not POS sales, so calling it revenue
+        // oversells what it measures.
         var canSeeMoney = App.canSeeMoney();
         var cards = [
             kpiCardSkeleton('plays', 'Plays'),
             kpiCardSkeleton('tickets', 'Tickets dispensed')
         ];
-        if (canSeeMoney) cards.push(kpiCardSkeleton('cash', 'Cash revenue'));
+        if (canSeeMoney) cards.push(kpiCardSkeleton('cash', 'Reader CC payments'));
         cards.push(kpiCardSkeleton('points', 'Points charged'));
         cards.push(kpiCardSkeleton('avg_tickets', 'Avg tickets / play'));
-        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg cash / play'));
+        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg reader CC / play'));
         cards.push(kpiCardSkeleton('unique_cards', 'Unique cards'));
         cards.push(kpiCardSkeleton('credit_card_share', 'Credit-card plays'));
         // Breakage — value expired off cards by the card system itself.
@@ -226,7 +229,7 @@
                 App.el('div', {}, [
                     App.el('div', { className: 'card-title', textContent: 'Guest insights' }),
                     App.el('div', { className: 'text-muted text-sm',
-                        textContent: 'New vs returning guests, visit frequency and spend — carded plays only (a “visit” is one day a card was active).' })
+                        textContent: 'New vs returning guests, visit frequency and reader CC spend — carded plays only (a “visit” is one day a card was active).' })
                 ])
             ]),
             App.el('div', { className: 'card-body', id: 'analytics-guests-body' }, [
@@ -306,11 +309,11 @@
         var tiles = [
             guestTile('Repeat-visit rate', pct(g.repeat_rate), 'Guests who came back more than once'),
             guestTile('Avg visits / guest', (g.avg_visits != null ? g.avg_visits.toFixed(2) : '—'), formatInt(g.total_visits || 0) + ' total visits'),
-            guestTile('Attach rate', pct(g.attach_rate), 'Guests who spent cash or credit')
+            guestTile('Attach rate', pct(g.attach_rate), 'Guests with a card payment at a reader')
         ];
         if (canSeeMoney) {
-            tiles.push(guestTile('Spend / visit', formatCurrency(g.spend_per_visit), 'Cash + credit on carded plays'));
-            tiles.push(guestTile('Spend / guest', formatCurrency(g.spend_per_guest), formatCurrency(g.total_spend) + ' total'));
+            tiles.push(guestTile('Reader CC / visit', formatCurrency(g.spend_per_visit), 'Card-at-reader payments on carded plays'));
+            tiles.push(guestTile('Reader CC / guest', formatCurrency(g.spend_per_guest), formatCurrency(g.total_spend) + ' total'));
         }
         body.appendChild(App.el('div', { className: 'guest-tile-grid' }, tiles));
 
@@ -391,9 +394,9 @@
         if (canSeeMoney) {
             grid.appendChild(chartCard('Credit-card brands', 'analytics-chart-cc-brands', '', 240));
         }
-        // Revenue mix surfaces cash totals — hidden from the tech role.
+        // The value-mix donut surfaces reader CC totals — hidden from tech.
         if (canSeeMoney) {
-            grid.appendChild(chartCard('Revenue mix', 'analytics-chart-revenue', '', 240));
+            grid.appendChild(chartCard('Value mix — reader CC / points', 'analytics-chart-revenue', '', 240));
         }
         grid.appendChild(chartCard('Pause actions by source', 'analytics-chart-actions-source', '', 240));
         grid.appendChild(chartCard('Pause action outcomes', 'analytics-chart-actions-outcome', '', 240));
@@ -767,7 +770,7 @@
         // mixed-payment plays, noted in the card subtitle).
         var pm = charts.payment_mix || {};
         registerChart('analytics-chart-payment-mix', donutConfig(
-            ['Points', 'Cash', 'Credit card', 'Time play', 'Privilege'],
+            ['Points', 'Reader cash', 'Reader CC', 'Time play', 'Privilege'],
             [pm.points_plays || 0, pm.cash_plays || 0, pm.credit_card_plays || 0,
              pm.time_plays || 0, pm.privilege_plays || 0],
             palette(5, theme),
@@ -788,12 +791,12 @@
             ));
         }
 
-        // Revenue mix donut (cash / points / bonus). Tech doesn't get the
-        // canvas so the registerChart call no-ops on a missing node, but
+        // Value-mix donut (reader CC $ / points / bonus). Tech doesn't get
+        // the canvas so the registerChart call no-ops on a missing node, but
         // skip the work entirely to keep intent explicit.
         if (App.canSeeMoney()) {
             var k = data.kpis || {};
-            var revenueLabels = ['Cash', 'Points', 'Bonus points'];
+            var revenueLabels = ['Reader CC', 'Points', 'Bonus points'];
             var revenueData   = [Math.round((k.cash || 0) * 100) / 100, Math.round(k.points || 0), Math.round(k.bonus_points || 0)];
             var revenueColors = [theme.success, theme.accent, theme.tickets];
             registerChart('analytics-chart-revenue', donutConfig(revenueLabels, revenueData, revenueColors, theme, '$/pts'));
@@ -947,7 +950,7 @@
                 var ds = ctx.dataset.data || [];
                 var sum = ds.reduce(function(a, b) { return a + (Number(b) || 0); }, 0);
                 var pct = sum > 0 ? Math.round((v / sum) * 100) : 0;
-                var formatted = unitHint === '$/pts' && ctx.label === 'Cash' ? formatCurrency(v) : formatInt(Math.round(v));
+                var formatted = unitHint === '$/pts' && ctx.label === 'Reader CC' ? formatCurrency(v) : formatInt(Math.round(v));
                 return ctx.label + ': ' + formatted + ' (' + pct + '%)';
             }
         };
