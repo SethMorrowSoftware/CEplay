@@ -37,6 +37,12 @@ class Auth {
      * locked against editing/deletion so an install can never lock itself out.
      */
     public const PERMISSIONS = [
+        'view_dashboard'   => 'See the Dashboard page (group status, live floor feed)',
+        'view_games'       => 'See the Games page (directory, status, play feed)',
+        'view_groups'      => 'See the Pause Groups page',
+        'view_kiosks'      => 'See the Kiosks page',
+        'view_schedules'   => 'See the Schedules page',
+        'view_overrides'   => 'See the Overrides page',
         'analytics'        => 'View Analytics & Performance reporting (plays and tickets)',
         'view_revenue'     => 'See reader CC payment (dollar) figures in reporting',
         'cards'            => 'Card lookup: balances, transaction history, PIN checks',
@@ -51,6 +57,18 @@ class Auth {
     ];
 
     /**
+     * The subset of PERMISSIONS that controls page/section VISIBILITY for
+     * the operational pages (the reporting pages have their own keys:
+     * analytics, cards, view_logs, settings). Unticking one hides the
+     * section — nav item, route, and its read APIs. The Settings role
+     * editor groups these under "Pages".
+     */
+    public const PAGE_PERMISSIONS = [
+        'view_dashboard', 'view_games', 'view_groups',
+        'view_kiosks', 'view_schedules', 'view_overrides',
+    ];
+
+    /**
      * Fallback role definitions used ONLY if the roles table is unreadable
      * (e.g. mid-upgrade). Mirrors the seeds in DB::initSchema so behavior is
      * identical either way.
@@ -58,9 +76,9 @@ class Auth {
     private const FALLBACK_ROLES = [
         'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
         'manager' => ['name' => 'Manager', 'is_system' => 1,
-                      'permissions' => ['analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs']],
+                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs']],
         'tech'    => ['name' => 'Technician', 'is_system' => 1,
-                      'permissions' => ['analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
+                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
     ];
 
     /** @var array<string,array>|null Per-request cache of the roles table. */
@@ -498,6 +516,24 @@ class Auth {
             exit;
         }
         return $user;
+    }
+
+    /**
+     * Require access to ANY of the named areas. Read endpoints shared by
+     * several sections use this: a role may reach the data through
+     * whichever visible section (or manage ability) legitimately needs it,
+     * and loses access only when every route to it is hidden.
+     */
+    public static function requireAnyAccess(array $areas): array {
+        $user = self::requireAuth();
+        foreach ($areas as $area) {
+            if (self::canAccess((string)$area)) {
+                return $user;
+            }
+        }
+        http_response_code(403);
+        echo json_encode(['error' => 'You do not have permission to access this resource.']);
+        exit;
     }
 
     /**

@@ -12,6 +12,10 @@ require_once __DIR__ . '/../lib/validator.php';
 function handleSchedules(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
+    if ($method === 'GET') {
+        Auth::requireAnyAccess(['view_schedules', 'schedules_manage']);
+    }
+
     $scheduleId = isset($parts[0]) && is_numeric($parts[0]) ? (int)$parts[0] : null;
 
     switch ($method) {

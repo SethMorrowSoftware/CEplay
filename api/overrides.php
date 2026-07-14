@@ -11,6 +11,10 @@ require_once __DIR__ . '/../lib/validator.php';
 function handleOverrides(string $method, array $parts, ?array $input): void {
     $user = Auth::requireAuth();
 
+    if ($method === 'GET') {
+        Auth::requireAnyAccess(['view_overrides', 'overrides_manage']);
+    }
+
     $overrideId = isset($parts[0]) && is_numeric($parts[0]) ? (int)$parts[0] : null;
 
     switch ($method) {

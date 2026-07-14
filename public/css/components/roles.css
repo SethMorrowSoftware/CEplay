@@ -207,3 +207,16 @@
     font-size: 0.8rem;
     color: var(--text-primary);
 }
+
+/* Group headings inside the role editor's permission checklist. */
+.perm-checklist-heading {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    padding: 0.55rem 0 0.15rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.3rem;
+}
+.perm-checklist-heading:first-child { padding-top: 0; }
