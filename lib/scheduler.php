@@ -1630,6 +1630,7 @@ class Scheduler {
                     'date' => $date, 'game_id' => $gid,
                     'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0,
                     'regular_points' => 0.0, 'bonus_points' => 0.0,
+                    'time_plays' => 0,
                 ];
                 $cardSets[$key] = [];
             }
@@ -1638,6 +1639,7 @@ class Scheduler {
             $agg[$key]['cash']           += (float)($r['cash_amount'] ?? 0);
             $agg[$key]['regular_points'] += (float)($r['regular_points'] ?? 0);
             $agg[$key]['bonus_points']   += (float)($r['bonus_points'] ?? 0);
+            $agg[$key]['time_plays']     += ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
 
             $hour = (int)$d->format('G');
             $hKey = $date . "\0" . $hour . "\0" . $gid;
@@ -1684,13 +1686,14 @@ class Scheduler {
                 DB::execute(
                     'INSERT INTO game_daily_stats
                         (stat_date, game_id, game_name, plays, tickets, cash,
-                         regular_points, bonus_points, unique_cards, updated_at)
-                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, datetime(\'now\'))',
+                         regular_points, bonus_points, unique_cards, time_plays, updated_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, :p8, :p9, datetime(\'now\'))',
                     [
                         $a['date'], $gid, $name, (int)$a['plays'],
                         (float)$a['tickets'], (float)$a['cash'],
                         (float)$a['regular_points'], (float)$a['bonus_points'],
                         count($cardSets[$key] ?? []),
+                        (int)$a['time_plays'],
                     ]
                 );
                 $written++;

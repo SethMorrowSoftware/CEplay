@@ -26,6 +26,7 @@
         groupId: null,        // selected group (detail panel)
         metric: 'plays',      // trend chart metric
         heatMetric: 'avg',    // heatmap cells: 'avg' (per weekday) or 'total'
+        includeTimePlays: true, // toggle: count time-pass plays in play figures
         data: null,           // last list payload
         detail: null,         // last detail payload
         charts: [],
@@ -170,7 +171,28 @@
         ]);
 
         return App.el('div', { className: 'card perf-controls' }, [
-            App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom])
+            App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom, buildTimePlaysToggle()])
+        ]);
+    }
+
+    /**
+     * Include/exclude time-pass plays. Flipping it re-queries everything so
+     * an owner can compare the area's numbers with and without pass traffic.
+     */
+    function buildTimePlaysToggle() {
+        var input = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: state.includeTimePlays });
+        input.addEventListener('change', function() {
+            state.includeTimePlays = input.checked;
+            load();
+        });
+        return App.el('label', {
+            className: 'toggle-label',
+            style: { marginLeft: 'auto' },
+            title: 'Time-pass plays are games started on an unlimited-play time pass. Switch off to see play counts without them — tickets and payments always reflect everything.'
+        }, [
+            input,
+            App.el('span', { className: 'toggle-switch' }),
+            App.el('span', { textContent: 'Include time-pass plays' })
         ]);
     }
 
@@ -198,6 +220,7 @@
         } else {
             q.push('offset=' + encodeURIComponent(state.offset));
         }
+        if (!state.includeTimePlays) q.push('exclude_time_plays=1');
         return q.join('&');
     }
 
@@ -357,6 +380,13 @@
         ]);
         el.appendChild(wrap);
 
+        if (state.data.exclude_time_plays) {
+            var noteBits = 'Play counts exclude time-pass plays. Tickets and reader CC payments still include everything.';
+            if (state.data.time_split_since && state.data.range && state.data.range.from < state.data.time_split_since) {
+                noteBits += ' Day-level splits are tracked since ' + state.data.time_split_since + '; older days can’t separate pass plays.';
+            }
+            el.appendChild(App.el('p', { className: 'text-xs rg-exclude-note', style: { marginTop: '0.5rem' }, textContent: '⏱ ' + noteBits }));
+        }
         if (state.data.hourly_full_coverage === false && state.data.hourly_covered_from) {
             el.appendChild(App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' } , textContent:
                 'Busiest-time detail uses hour-by-hour history collected since ' + state.data.hourly_covered_from +
@@ -518,7 +548,8 @@
             ['Tickets', formatInt(Math.round(t.tickets)), delta(t.tickets, p.tickets)]
         ];
         if (money) cards.push(['Reader CC payments', formatCurrency(t.cash), delta(t.cash, p.cash)]);
-        cards.push(['Time-pass plays', formatInt(t.time_plays), null]);
+        var excluding = state.detail && state.detail.exclude_time_plays;
+        cards.push([excluding ? 'Time-pass plays (excluded)' : 'Time-pass plays', formatInt(t.time_plays), null]);
         cards.push(['Games with plays', formatInt(t.active_games), null]);
 
         return App.el('div', { className: 'perf-kpi-grid' }, cards.map(function(k) {
@@ -611,10 +642,11 @@
         var heat = d.heatmap;
         var grid = buildHeatmapGrid(d);
         if (grid) {
-            body.push(App.el('p', { className: 'rg-heat-caption', textContent:
-                state.heatMetric === 'avg'
-                    ? 'Each square is one hour of the week. Deeper orange = busier on a typical week. ★ marks the single busiest hour. Hover any square for the exact numbers.'
-                    : 'Each square is one hour of the week. Deeper orange = more plays in total over this period. ★ marks the single busiest hour. Hover any square for the exact numbers.' }));
+            var cap = state.heatMetric === 'avg'
+                ? 'Each square is one hour of the week. Deeper orange = busier on a typical week. ★ marks the single busiest hour. Hover any square for the exact numbers.'
+                : 'Each square is one hour of the week. Deeper orange = more plays in total over this period. ★ marks the single busiest hour. Hover any square for the exact numbers.';
+            if (d.exclude_time_plays) cap += ' Time-pass plays are excluded from these counts.';
+            body.push(App.el('p', { className: 'rg-heat-caption', textContent: cap }));
             var layout = [App.el('div', { className: 'rg-heat-main' }, [grid.legendTop, grid.el])];
             var rankList = buildBusiestList(d);
             if (rankList) layout.push(rankList);

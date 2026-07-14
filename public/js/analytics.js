@@ -37,6 +37,7 @@
             rangeKey: '7d',
             from: '',
             to: '',
+            includeTimePlays: true, // toggle: count time-pass plays
             overview: null,
             charts: [],
             refreshCleanup: null,
@@ -52,6 +53,14 @@
         state = freshState();
 
         container.appendChild(buildHeader());
+        // Banner shown while the time-pass toggle is excluding plays, so a
+        // screenshot or glance can never be misread as the full picture.
+        container.appendChild(App.el('div', {
+            id: 'analytics-timeplay-note',
+            className: 'analytics-timeplay-note',
+            style: { display: 'none' },
+            textContent: '⏱ Time-pass plays are excluded — every figure on this page (plays, tickets, points, payments) reflects non-pass traffic only. Flip the toggle to include them again.'
+        }));
         container.appendChild(buildKpiSection());
         container.appendChild(buildGuestSection());
         container.appendChild(buildFleetSection());
@@ -172,10 +181,32 @@
             style: { minWidth: '7.5rem', textAlign: 'right' }
         });
 
+        // Include/exclude time-pass plays across the whole page. On this
+        // page the exclusion is exact and total: an excluded play's
+        // tickets/points/payments drop out with it (each raw transaction
+        // carries the flag), so the owner sees the venue as if pass traffic
+        // never happened.
+        var timeToggleInput = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: state.includeTimePlays });
+        timeToggleInput.addEventListener('change', function() {
+            state.includeTimePlays = timeToggleInput.checked;
+            var note = document.getElementById('analytics-timeplay-note');
+            if (note) note.style.display = state.includeTimePlays ? 'none' : '';
+            loadAndRender();
+        });
+        var timeToggle = App.el('label', {
+            className: 'toggle-label',
+            title: 'Time-pass plays are games started on an unlimited-play time pass. Switch off to see every number on this page without them — the excluded plays’ tickets, points, and payments drop out too.'
+        }, [
+            timeToggleInput,
+            App.el('span', { className: 'toggle-switch' }),
+            App.el('span', { textContent: 'Time-pass plays' })
+        ]);
+
         var actions = App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', flexWrap: 'wrap' } }, [
             App.el('label', { className: 'text-sm text-muted', textContent: 'Range:' }),
             rangeSelect,
             customRow,
+            timeToggle,
             refreshBtn,
             lastUpdated
         ]);
@@ -516,6 +547,7 @@
         if (state.rangeKey === 'custom' && state.from && state.to) {
             qs += '&from=' + encodeURIComponent(state.from) + '&to=' + encodeURIComponent(state.to);
         }
+        if (!state.includeTimePlays) qs += '&exclude_time_plays=1';
 
         var lastUpdatedEl = document.getElementById('analytics-last-updated');
         if (lastUpdatedEl && showSpinner) lastUpdatedEl.textContent = 'Loading…';

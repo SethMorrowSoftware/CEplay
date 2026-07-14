@@ -216,3 +216,14 @@
 @media (max-width: 720px) {
     .guest-freq-row { grid-template-columns: 4.5rem 1fr 4.5rem; gap: 0.5rem; }
 }
+
+/* Banner shown while the time-pass toggle is excluding plays. */
+.analytics-timeplay-note {
+    border: 1px solid rgba(var(--viz-heat-rgb), 0.35);
+    background: rgba(var(--viz-heat-rgb), 0.08);
+    color: rgb(var(--viz-heat-rgb));
+    border-radius: var(--radius-lg);
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
