@@ -100,3 +100,23 @@
     padding: 0.25rem 0;
 }
 .labor-track-name { min-width: 14rem; font-size: 0.85rem; }
+
+/* Admin plumbing hides behind a collapsed details block. */
+.labor-admin-details > summary.labor-admin-summary {
+    cursor: pointer;
+    padding: 0.85rem 1.25rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    list-style: none;
+    user-select: none;
+}
+.labor-admin-details > summary.labor-admin-summary::-webkit-details-marker { display: none; }
+.labor-admin-details > summary.labor-admin-summary::before {
+    content: '▸ ';
+    color: var(--text-muted);
+}
+.labor-admin-details[open] > summary.labor-admin-summary::before { content: '▾ '; }
+.labor-admin-details[open] > summary.labor-admin-summary { border-bottom: 1px solid var(--border); }
+
+.labor-legend .labor-rate { font-weight: 600; font-size: 0.8rem; }
