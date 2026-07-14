@@ -267,13 +267,11 @@
                 App.el('h1', { className: 'page-title', textContent: 'Command Center' }),
                 App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Syncing live venue state…' })
             ]),
-            App.el('div', { className: 'page-header-actions' }, [
-                headerInfo,
-                App.el('button', {
+            App.el('div', { className: 'page-header-actions' },
+                [headerInfo].concat(App.canAccess('manual_control') ? [App.el('button', {
                     className: 'btn btn-secondary', id: 'sync-btn', textContent: 'Sync now',
                     onClick: syncGames
-                })
-            ])
+                })] : []))
         ]));
 
         // Security warnings banner (populated by loadDashboard)
@@ -2625,7 +2623,8 @@
         if (activeGroups.length === 0) {
             el.appendChild(App.el('div', { className: 'empty-state', style: { padding: '2rem' } }, [
                 App.el('div', { className: 'empty-state-icon', textContent: '\u25CB' }),
-                App.el('div', { className: 'empty-state-text', textContent: 'No active groups configured.' }),
+                App.el('div', { className: 'empty-state-text', textContent: 'No active groups configured.' })
+            ].concat(App.canAccess('groups_manage') ? [
                 App.el('div', { className: 'empty-state-action' }, [
                     App.el('button', {
                         className: 'btn btn-primary btn-sm',
@@ -2633,12 +2632,14 @@
                         onClick: function() { window.location.hash = '#/groups/new'; }
                     })
                 ])
-            ]));
+            ] : [])));
             return;
         }
 
-        // Master controls
-        if (masterEl && activeGroups.length > 1) {
+        // Master controls — operating the floor needs manual_control; a
+        // view-only role gets the live states with no buttons (the server
+        // re-checks every action regardless).
+        if (masterEl && activeGroups.length > 1 && App.canAccess('manual_control')) {
             var hasAnyPaused = activeGroups.some(function(g) { return g.effective_state === 'paused' || g.effective_state === 'mixed'; });
             var hasAnyEnabled = activeGroups.some(function(g) { return g.effective_state === 'enabled' || g.effective_state === 'mixed'; });
 
@@ -2767,17 +2768,17 @@
             var manualOvr = group.manual_override;
             if (manualOvr) {
                 var manualLabel = manualOvr.action === 'pause' ? 'Manually Paused' : 'Manually Unpaused';
-                card.appendChild(App.el('div', { className: 'group-control-context group-control-context-manual' }, [
-                    App.el('span', { textContent: '\u270B' }),
-                    App.el('span', { style: { fontWeight: '500' }, textContent: manualLabel }),
-                    App.el('span', { style: { opacity: '0.7' }, textContent: ' \u2022 since ' + App.formatDatetime(manualOvr.at) }),
-                    App.el('button', {
+                card.appendChild(App.el('div', { className: 'group-control-context group-control-context-manual' },
+                    [
+                        App.el('span', { textContent: '\u270B' }),
+                        App.el('span', { style: { fontWeight: '500' }, textContent: manualLabel }),
+                        App.el('span', { style: { opacity: '0.7' }, textContent: ' \u2022 since ' + App.formatDatetime(manualOvr.at) })
+                    ].concat(App.canAccess('manual_control') ? [App.el('button', {
                         className: 'btn btn-ghost btn-xs',
                         textContent: 'Resume Schedule',
                         style: { marginLeft: 'auto', fontSize: '0.72rem' },
                         onClick: function() { clearManualOverride(group.id, group.name); }
-                    })
-                ]));
+                    })] : [])));
             } else if (override) {
                 card.appendChild(App.el('div', { className: 'group-control-context group-control-context-override' }, [
                     App.el('span', { textContent: '\u26A1' }),
@@ -2791,8 +2792,16 @@
                 ]));
             }
 
-            // Action buttons
+            // Action buttons — hidden entirely for roles without
+            // manual_control so a viewer sees clean live status, not
+            // buttons that would 403.
             var actionRow = App.el('div', { className: 'group-control-actions' });
+
+            if (!App.canAccess('manual_control')) {
+                card.appendChild(actionRow);
+                el.appendChild(card);
+                return;
+            }
 
             if (isEmpty) {
                 actionRow.appendChild(App.el('span', { className: 'text-muted text-xs', style: { padding: '0.35rem 0', display: 'block', textAlign: 'center', width: '100%' }, textContent: 'No games or kiosks assigned to this group' }));

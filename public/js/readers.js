@@ -38,7 +38,7 @@
     var DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     var DOW_FULL  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-    function canManage() { return App.canAccess('groups_manage'); }
+    function canManage() { return App.canAccess('reader_groups_manage'); }
 
     async function renderReadersPage(container, params) {
         var query = (params && params._query) || {};
