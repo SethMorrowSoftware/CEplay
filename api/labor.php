@@ -225,6 +225,27 @@ function laborTest(): void {
             }
             $diag['category_names'] = $catNames ?: 'no matching category lookup found (candidates tried: ' . implode(', ', $tried) . ')';
 
+            // Category 108 ("Go Karts") posts rides at AmtSold = 0 because
+            // payment happens at the card reader. Some POS configurations
+            // still carry the ride's VALUE on those lines (e.g. list price
+            // offset by a 100% discount) — sum every numeric column so a
+            // usable value column shows itself if one exists.
+            try {
+                $row = $client->rows(
+                    "SELECT COUNT(*) AS lines, SUM(QtySold) AS qty, SUM(AmtSold) AS amt, SUM(Discounts) AS discounts, SUM(NumberTickets) AS tickets, SUM(CostSold) AS cost FROM [CenterEdge].[dbo].[Sales] WHERE CatNo = 108 AND ShiftDate >= DATEADD(DAY, -7, GETDATE())", 1);
+                if ($row) {
+                    $r = $row[0];
+                    $diag['cat108_value_columns_last7'] =
+                        'lines=' . $r['lines'] . ', QtySold=' . round((float)$r['qty'], 2)
+                        . ', AmtSold=$' . round((float)$r['amt'], 2)
+                        . ', Discounts=$' . round((float)$r['discounts'], 2)
+                        . ', NumberTickets=' . round((float)$r['tickets'], 2)
+                        . ', CostSold=$' . round((float)$r['cost'], 2);
+                }
+            } catch (Exception $e) {
+                $diag['cat108_value_columns_last7'] = 'error: ' . $e->getMessage();
+            }
+
             // No item names exist in Sales, so the finest split available is
             // the SubCatNo breakdown inside each candidate category.
             foreach ([106, 108] as $cat) {
