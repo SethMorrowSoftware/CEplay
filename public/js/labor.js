@@ -294,6 +294,15 @@
                 }
             } });
 
+        var resetBtn = App.el('button', { className: 'btn btn-ghost', textContent: 'Reset queries to defaults',
+            title: 'Fill both query boxes with the shipped go-kart defaults (CatNo 106 / Karting job code). Nothing is saved until you press Save settings.',
+            onClick: function() {
+                if (!s.defaults) return;
+                salesTa.value = s.defaults.sales_sql || salesTa.value;
+                laborTa.value = s.defaults.labor_sql || laborTa.value;
+                statusEl.textContent = 'Defaults restored — review, then Save settings.';
+            } });
+
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test connection',
             onClick: async function() {
                 statusEl.textContent = 'Testing…';
@@ -326,7 +335,7 @@
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :date. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
-                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, statusEl])
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, resetBtn, statusEl])
             ])
         ]));
 

@@ -5,20 +5,50 @@ needs one PHP extension the stock runtime doesn't ship: `pdo_dblib`
 (FreeTDS), `pdo_sqlsrv` (Microsoft), or `pdo_odbc`. The page's **Test
 connection** button tells you whether one is present.
 
-## Fedora CoreOS (containerized app) — the normal case
+## This repo's FCOS install (setup-fcos.sh) — automatic
 
-On FCOS the host is immutable and the app runs in a container, so the driver
-goes **into the container image**, not onto the host. A ready-made overlay
-build is included at `deploy/Containerfile.mssql` (FreeTDS / `pdo_dblib` —
-small, no external repos, plenty for this report's read-only SELECTs).
+`setup-fcos.sh` handles the driver end-to-end. On the server:
 
-1. Find the image your app container currently uses:
+```bash
+cd /var/persist/pause-groups-src
+sudo git pull
+sudo bash setup-fcos.sh          # safe to re-run; won't touch your database
+sudo systemctl restart pause-groups-fpm
+```
 
-   ```bash
-   podman ps --format '{{.Names}}  {{.Image}}'
-   ```
+During step 4 the script now:
+1. pulls the stock `php:8.3-fpm` image as always;
+2. builds a thin overlay on top of it from `deploy/Containerfile.mssql`
+   (FreeTDS / `pdo_dblib` — a couple of MB, no external repos);
+3. **saves the built image to `/var/persist/pause-groups/php-fpm-mssql.tar`**
+   — this matters because podman's image cache does NOT survive FCOS's
+   automatic OS rebuilds (Mon/Tue 2:30 AM). The `pause-groups-fpm` unit
+   reloads the image from that tar after a rebuild, no internet needed,
+   driver intact;
+4. points the `pause-groups-fpm` service at the overlay image.
 
-2. Build the overlay from the repo checkout, pointing at that image:
+If the overlay build fails (typically: no route to the Debian package
+mirrors), the script says so and falls back to the stock image — everything
+except the Go-Kart Labor report keeps working. Fix the issue and re-run.
+
+Verify after the restart:
+
+```bash
+sudo podman exec pause-groups-fpm php -m | grep -i pdo_dblib
+```
+
+Then open the Go-Kart Labor page and hit **Test connection** — it should
+report `Connected via dblib` with today's sales and labor figures.
+
+Network note: the PHP-FPM container runs with `--network host`, so it
+reaches the SQL box (TCP 1433) exactly like the VM itself does. If the test
+times out, check that SQL Server allows remote TCP connections and that
+1433 is open on ITS firewall — nothing on the FCOS side needs opening.
+
+## Other containerized setups (generic)
+
+1. Find your app image: `podman ps --format '{{.Names}}  {{.Image}}'`
+2. Build the overlay:
 
    ```bash
    podman build -f deploy/Containerfile.mssql \
@@ -26,30 +56,15 @@ small, no external repos, plenty for this report's read-only SELECTs).
        -t ceplay-app:mssql .
    ```
 
-3. Point the service at the new tag and restart:
-   - **Quadlet** (`/etc/containers/systemd/*.container`): change `Image=` to
-     `ceplay-app:mssql`, then `systemctl daemon-reload && systemctl restart <unit>`.
-   - **podman-compose**: change the `image:` line, then `podman-compose up -d`.
+3. Point your unit/compose at `ceplay-app:mssql` and restart.
+4. If your host wipes the image cache on updates (immutable OSes), persist
+   the image with `podman save`/`podman load` the way `setup-fcos.sh` does.
 
-4. Verify and test:
-
-   ```bash
-   podman exec <container> php -m | grep -i pdo_dblib
-   ```
-
-   Then reload the Go-Kart Labor page and hit **Test connection** — it
-   should report `Connected via dblib` with today's sales and labor figures.
-
-Notes:
-- The app connects out to the SQL box on TCP 1433; FCOS's default firewall
-  and SELinux policy allow outbound container traffic, so no host changes
-  are usually needed. If the test times out, check that the SQL Server
-  allows remote TCP connections and that 1433 is open on ITS firewall.
-- `deploy/Containerfile.mssql` handles both Debian- and Alpine-based
-  official `php:*` images. If your app image is NOT derived from
-  `docker.io/library/php` (`docker-php-ext-install` missing), the FreeTDS
-  package for your base distro plus its `pdo_dblib` package is the
-  equivalent — or ask and we'll adapt the Containerfile.
+`deploy/Containerfile.mssql` handles both Debian- and Alpine-based official
+`php:*` images. If your app image is NOT derived from
+`docker.io/library/php` (`docker-php-ext-install` missing), the FreeTDS
+package for your base distro plus its `pdo_dblib` package is the
+equivalent — or ask and we'll adapt the Containerfile.
 
 ## Prefer Microsoft's official driver instead? (`pdo_sqlsrv`)
 

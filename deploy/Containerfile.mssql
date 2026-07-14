@@ -1,26 +1,26 @@
-# Layer an MSSQL PDO driver onto the existing CEplay PHP container image.
+# Layer the MSSQL PDO driver onto the app's PHP-FPM container image.
 #
-# On Fedora CoreOS the PHP runtime lives inside the app container, so the
-# driver is added by rebuilding the image — NOT by installing packages on
-# the host. Point BASE_IMAGE at whatever image the app currently runs
-# (docker.io/library/php:8.2-apache, a custom build, etc.):
+# On THIS repo's Fedora CoreOS install you never run this by hand:
+# setup-fcos.sh builds it automatically during step 4 (on top of the same
+# PHP_IMAGE it just pulled), saves the result to
+# /var/persist/pause-groups/php-fpm-mssql.tar so it survives FCOS OS
+# rebuilds, and points the pause-groups-fpm unit at it. Updating the app
+# the documented way (git pull + re-run setup-fcos.sh) refreshes it.
 #
+# Manual build (other setups):
 #   podman build -f deploy/Containerfile.mssql \
 #       --build-arg BASE_IMAGE=<your current app image> \
 #       -t ceplay-app:mssql .
 #
-# Then swap the image reference in your systemd quadlet / podman-compose
-# unit to ceplay-app:mssql and restart the service. Verify with:
+# Verify: podman run --rm ceplay-app:mssql php -m | grep -i dblib
 #
-#   podman exec <container> php -m | grep -i -E 'dblib|sqlsrv'
-#
-# This default route uses FreeTDS (pdo_dblib): small, no external repos,
-# and entirely sufficient for the Go-Kart Labor report's read-only
-# aggregate SELECTs. If you prefer Microsoft's official driver
-# (pdo_sqlsrv), see docs/MSSQL_DRIVER.md — it needs the Microsoft package
-# repo and a PECL build, so the image is bigger and slower to build.
+# This route uses FreeTDS (pdo_dblib): small, no external repos, and
+# entirely sufficient for the Go-Kart Labor report's read-only aggregate
+# SELECTs. If you prefer Microsoft's official driver (pdo_sqlsrv), see
+# docs/MSSQL_DRIVER.md — it needs the Microsoft package repo and a PECL
+# build, so the image is bigger and slower to build.
 
-ARG BASE_IMAGE=docker.io/library/php:8.2-apache
+ARG BASE_IMAGE=docker.io/library/php:8.3-fpm
 FROM ${BASE_IMAGE}
 
 # Works on both Debian-based (php:*-apache) and Alpine-based (php:*-alpine)
