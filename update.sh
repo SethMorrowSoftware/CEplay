@@ -12,8 +12,10 @@
 #    3. Syncs the new code into the live app dir, PRESERVING data/ and .env.
 #    4. Removes install.php / fresh_install.php from the web root (security).
 #    5. Runs the database migrations (idempotent, non-destructive).
-#    6. Restarts PHP-FPM so the new code goes live.
-#    7. Health-checks the app.
+#    6. Rebuilds the MSSQL driver overlay image (pdo_dblib for the Go-Kart
+#       Labor report), persists it to /var/persist so FCOS OS rebuilds can't
+#       drop it, and points the FPM unit at it. Skipped gracefully on failure.
+#    7. Restarts PHP-FPM so the new code goes live, then health-checks.
 #
 #  Your database, users, API keys and encryption key are preserved. Safe to
 #  re-run. If an update goes wrong, roll it back with:  sudo bash revert.sh
@@ -55,10 +57,16 @@ LATEST_MARKER="${BACKUP_ROOT}/LATEST_UPDATE"
 FPM_SERVICE="pause-groups-fpm"
 KEEP_BACKUPS=15
 
-# Detect the PHP image from the installed FPM unit so we match the operator's
-# chosen PHP version; fall back to the setup-fcos.sh default.
-PHP_IMAGE="$(grep -ohE 'docker.io/library/php:[0-9.]+-fpm' \
-    /etc/systemd/system/${FPM_SERVICE}.service 2>/dev/null | head -1 || true)"
+# Detect the operator's chosen PHP version from the installed FPM unit.
+# Units written by deploy/write-fpm-unit.sh record it in a BASE_PHP_IMAGE
+# comment (the ExecStart image may be the MSSQL overlay tag); older units
+# name the stock image directly. Fall back to the setup-fcos.sh default.
+PHP_IMAGE="$(grep -oE '^# BASE_PHP_IMAGE=\S+' \
+    /etc/systemd/system/${FPM_SERVICE}.service 2>/dev/null | head -1 | cut -d= -f2 || true)"
+if [[ -z "$PHP_IMAGE" ]]; then
+    PHP_IMAGE="$(grep -ohE 'docker.io/library/php:[0-9.]+-fpm' \
+        /etc/systemd/system/${FPM_SERVICE}.service 2>/dev/null | head -1 || true)"
+fi
 PHP_IMAGE="${PHP_IMAGE:-docker.io/library/php:8.3-fpm}"
 
 echo -e "${BOLD}${GRN}pause-groups — update${NC}"
@@ -90,7 +98,7 @@ FROM_SHA="$(git -C "$SRC_DIR" rev-parse HEAD)"
 # =============================================================================
 #  1. Backup (BEFORE anything changes)
 # =============================================================================
-hdr "1/6  Backup database + key"
+hdr "1/7  Backup database + key"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BK="${BACKUP_ROOT}/update-${STAMP}"
 mkdir -p "$BK"
@@ -140,7 +148,7 @@ fi
 # =============================================================================
 #  2. Pull
 # =============================================================================
-hdr "2/6  git pull (${BRANCH})"
+hdr "2/7  git pull (${BRANCH})"
 pulled=0
 for attempt in 1 2 3 4; do
     if git -C "$SRC_DIR" pull --ff-only 2>&1; then pulled=1; break; fi
@@ -157,7 +165,7 @@ fi
 # =============================================================================
 #  3. Sync code into the live app dir (preserving data/ and .env)
 # =============================================================================
-hdr "3/6  Sync app files"
+hdr "3/7  Sync app files"
 if command -v rsync &>/dev/null; then
     rsync -a --delete --exclude='.git/' --exclude='data/' --exclude='.env' \
         "${SRC_DIR}/" "${INSTALL_DIR}/"
@@ -170,7 +178,7 @@ ok "App files synced (data/ and .env untouched)."
 # =============================================================================
 #  4. Security cleanup — never leave installers in the web root
 # =============================================================================
-hdr "4/6  Remove installers from web root"
+hdr "4/7  Remove installers from web root"
 for f in install.php fresh_install.php; do
     if [[ -f "${INSTALL_DIR}/${f}" ]]; then rm -f "${INSTALL_DIR}/${f}"; ok "Removed ${f}"; fi
 done
@@ -183,7 +191,7 @@ chmod -R o+rX "$INSTALL_DIR"
 # =============================================================================
 #  5. Run database migrations (idempotent, non-destructive)
 # =============================================================================
-hdr "5/6  Migrate database"
+hdr "5/7  Migrate database"
 # DB::getInstance() runs CREATE TABLE IF NOT EXISTS + the ALTER/data migrations.
 podman run --rm --network host \
     --env-file "$ENV_FILE" \
@@ -194,9 +202,46 @@ podman run --rm --network host \
     && ok "Schema migrated." || die "Migration step failed — restore with: sudo bash revert.sh"
 
 # =============================================================================
-#  6. Restart + health check
+#  6. MSSQL driver overlay (Go-Kart Labor report)
 # =============================================================================
-hdr "6/6  Restart + verify"
+hdr "6/7  MSSQL driver overlay"
+# Rebuild the pdo_dblib overlay on the operator's PHP base so the Go-Kart
+# Labor report can reach the CenterEdge MSSQL database. The built image is
+# persisted to /var/persist (podman's cache does NOT survive FCOS OS
+# rebuilds) and the FPM unit is rewritten via the shared unit writer.
+# On any failure the unit is left untouched: a service already running the
+# overlay keeps its tar, and a stock-image service stays stock — the app
+# works either way, only the Labor report needs the driver.
+MSSQL_IMAGE="localhost/pause-groups-fpm-mssql:latest"
+MSSQL_TAR="${INSTALL_DIR}/php-fpm-mssql.tar"
+if [[ -f "${SRC_DIR}/deploy/Containerfile.mssql" && -f "${SRC_DIR}/deploy/write-fpm-unit.sh" ]]; then
+    info "Building the pdo_dblib overlay on ${PHP_IMAGE} (first run takes a minute or two)..."
+    if podman build -f "${SRC_DIR}/deploy/Containerfile.mssql" \
+            --build-arg BASE_IMAGE="${PHP_IMAGE}" \
+            -t "${MSSQL_IMAGE}" "${SRC_DIR}"; then
+        if podman save -o "${MSSQL_TAR}.tmp" "${MSSQL_IMAGE}" && mv -f "${MSSQL_TAR}.tmp" "${MSSQL_TAR}"; then
+            ok "Overlay built and persisted to ${MSSQL_TAR}."
+            bash "${SRC_DIR}/deploy/write-fpm-unit.sh" \
+                "$ENV_FILE" "$INSTALL_DIR" "$MSSQL_IMAGE" "$PHP_IMAGE" "$MSSQL_TAR"
+            ok "FPM unit points at the MSSQL-enabled image."
+        else
+            rm -f "${MSSQL_TAR}.tmp"
+            warn "Overlay built but could not be saved to ${MSSQL_TAR} (disk space?)."
+            warn "Unit left unchanged — re-run update.sh after freeing space."
+        fi
+    else
+        warn "Overlay build failed — unit left unchanged; the app still runs."
+        warn "Everything except the Go-Kart Labor report works without it."
+        warn "Fix the build issue (usually package-mirror access) and re-run."
+    fi
+else
+    note "deploy/Containerfile.mssql not in source tree — skipping."
+fi
+
+# =============================================================================
+#  7. Restart + health check
+# =============================================================================
+hdr "7/7  Restart + verify"
 systemctl restart "$FPM_SERVICE"
 sleep 4
 if systemctl is-active --quiet "$FPM_SERVICE"; then ok "${FPM_SERVICE} is active."; else warn "${FPM_SERVICE} not active — check: journalctl -eu ${FPM_SERVICE}"; fi

@@ -387,7 +387,6 @@ fi
 MSSQL_IMAGE="localhost/pause-groups-fpm-mssql:latest"
 MSSQL_TAR="${INSTALL_DIR}/php-fpm-mssql.tar"
 RUNTIME_IMAGE="${PHP_IMAGE}"
-IMAGE_LOAD_PRE=""
 if [[ -f "${SOURCE_DIR}/deploy/Containerfile.mssql" ]]; then
     echo ""
     info "Building the MSSQL driver overlay (pdo_dblib, for the Go-Kart Labor report)..."
@@ -395,7 +394,6 @@ if [[ -f "${SOURCE_DIR}/deploy/Containerfile.mssql" ]]; then
             --build-arg BASE_IMAGE="${PHP_IMAGE}" \
             -t "${MSSQL_IMAGE}" "${SOURCE_DIR}"; then
         RUNTIME_IMAGE="${MSSQL_IMAGE}"
-        IMAGE_LOAD_PRE="ExecStartPre=-/usr/bin/bash -c '/usr/bin/podman image exists ${MSSQL_IMAGE} || /usr/bin/podman load -i ${MSSQL_TAR}'"
         info "Saving the built image to ${MSSQL_TAR} (survives OS rebuilds)..."
         if podman save -o "${MSSQL_TAR}.tmp" "${MSSQL_IMAGE}" && mv -f "${MSSQL_TAR}.tmp" "${MSSQL_TAR}"; then
             ok "MSSQL-enabled PHP image built and persisted."
@@ -507,47 +505,13 @@ note "app to PHP-FPM on port ${PHP_PORT}. They communicate over localhost"
 note "using the host network mode."
 echo ""
 
-PHPFPM_SERVICE="/etc/systemd/system/pause-groups-fpm.service"
+# The unit content lives in deploy/write-fpm-unit.sh — shared with update.sh
+# so the fresh-install and routine-update paths can never drift apart.
+LOAD_TAR_ARG=""
+[[ "$RUNTIME_IMAGE" == "$MSSQL_IMAGE" ]] && LOAD_TAR_ARG="$MSSQL_TAR"
+bash "${SOURCE_DIR}/deploy/write-fpm-unit.sh" \
+    "$ENV_FILE" "$INSTALL_DIR" "$RUNTIME_IMAGE" "$PHP_IMAGE" "$LOAD_TAR_ARG"
 
-cat > "${PHPFPM_SERVICE}" <<UNIT
-[Unit]
-Description=pause-groups PHP-FPM
-Documentation=https://hub.docker.com/_/php
-# Start after network is up so Podman can resolve image references
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-# Restart the container automatically if it exits for any reason
-Restart=always
-RestartSec=10s
-
-# Remove any stale container from a previous run before starting
-ExecStartPre=-/usr/bin/podman rm -f pause-groups-fpm
-# Podman's image cache is wiped by FCOS OS rebuilds; reload the MSSQL-enabled
-# image from /var/persist when it's gone (no-op while it's cached).
-${IMAGE_LOAD_PRE}
-
-# Start PHP-FPM in the foreground (-F) inside the official php:fpm container.
-# --network host   shares the host network namespace so Nginx can reach port ${PHP_PORT}
-# --env-file       loads PG_ENCRYPTION_KEY for encrypting stored API credentials
-# -v               mounts the app at the same path as on the host
-# -w               sets the working directory (must match app dir for DB_PATH to resolve)
-ExecStart=/usr/bin/podman run --rm \\
-    --name pause-groups-fpm \\
-    --network host \\
-    --env-file ${ENV_FILE} \\
-    -v ${INSTALL_DIR}:${INSTALL_DIR}:z \\
-    -w ${INSTALL_DIR} \\
-    ${RUNTIME_IMAGE}
-
-ExecStop=/usr/bin/podman stop --time 10 pause-groups-fpm
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-systemctl daemon-reload
 systemctl enable --now pause-groups-fpm
 
 # Give it a moment to start up
