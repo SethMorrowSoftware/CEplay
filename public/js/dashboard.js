@@ -32,6 +32,7 @@
     var payoutTargetPct = 33; // House payout target — refreshed from ticket-stats on every poll
     var hourlyToday = null;  // Server 24-bin hourly plays/tickets for today (accurate peak hour)
     var hourlyRecent = null; // Server 12-bin last-12-clock-hours (accurate hero sparkline)
+    var lastActiveOverrides = []; // Last-seen active overrides — lets optimistic re-renders refresh the insight row
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -265,7 +266,7 @@
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', { className: 'page-header-titleblock' }, [
                 App.el('h1', { className: 'page-title', textContent: 'Command Center' }),
-                App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Syncing live venue state…' })
+                App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Getting the latest from the venue…' })
             ]),
             App.el('div', { className: 'page-header-actions' },
                 [headerInfo].concat(App.canAccess('manual_control') ? [App.el('button', {
@@ -276,6 +277,11 @@
 
         // Security warnings banner (populated by loadDashboard)
         container.appendChild(App.el('div', { id: 'security-warnings' }));
+
+        // Plain-words headline row — is everything running, is anyone
+        // holding a manual override, when was the room busiest. Populated
+        // by renderDashInsights() on every poll.
+        container.appendChild(App.el('div', { id: 'dash-insights' }));
 
         // Stats cards (game-state counts only — ticket KPIs live in the
         // ticket-summary banner below)
@@ -685,6 +691,8 @@
             var activeOverrides = overridesData.active || [];
 
             renderStats(allGames);
+            lastActiveOverrides = activeOverrides;
+            renderDashInsights(allGames, activeOverrides);
             if (canSeeSales) {
                 renderHeroPulse();
                 renderTicketSummary();
@@ -713,8 +721,8 @@
             var syncEl = document.getElementById('last-sync');
             if (syncEl) {
                 syncEl.textContent = gamesData.last_synced
-                    ? 'Last synced: ' + App.formatDatetime(gamesData.last_synced) + ' (' + App.appTimezone + ')'
-                    : 'Not yet synced';
+                    ? 'Live view of every game and kiosk — updated ' + App.formatDatetime(gamesData.last_synced) + ' (' + App.appTimezone + ')'
+                    : 'Live view of every game and kiosk — waiting for the first sync';
             }
 
             // Live feed + top-games widget — fire-and-forget; failure shouldn't
@@ -2155,6 +2163,71 @@
         await Promise.all([loadFeed(), loadTopGames()]);
     }
 
+    /**
+     * Plain-words headline row above the stat tiles — the first three
+     * questions a non-technical owner asks: is everything on, is a person
+     * (not the schedule) steering part of the floor, and when was the room
+     * busiest today. Same shared .insight-card look as Labor / Analytics.
+     */
+    function renderDashInsights(games, activeOverrides) {
+        var box = document.getElementById('dash-insights');
+        if (!box) return;
+        box.innerHTML = '';
+
+        var canSeeSales = App.canAccess('analytics');
+        var cards = [];
+
+        var total = games.length;
+        var enabled = games.filter(function(g) { return g.operation_status === 'enabled'; }).length;
+        var paused = games.filter(function(g) { return g.operation_status === 'paused'; }).length;
+        var oos = games.filter(function(g) { return g.operation_status === 'outOfService'; }).length;
+        if (total > 0) {
+            var bits = [];
+            if (paused > 0) bits.push(paused + ' paused');
+            if (oos > 0) bits.push(oos + ' out of service');
+            cards.push(insightCard('🕹', oos > 0 ? 'insight-warn' : 'insight-good',
+                'Games right now', enabled + ' of ' + total + ' running',
+                bits.length ? bits.join(' · ') : 'Everything that can run is running'));
+        }
+
+        // Active overrides outrank the recurring schedule — worth a headline
+        // when a temporary exception, not the plan, is running the floor.
+        var ovCount = (activeOverrides || []).length;
+        cards.push(insightCard(ovCount > 0 ? '✋' : '🗓',
+            ovCount > 0 ? 'insight-accent' : 'insight-quiet',
+            'Active overrides', ovCount === 0 ? 'None' : String(ovCount),
+            ovCount === 0 ? 'The regular schedule is running the day'
+                : (ovCount === 1 ? 'One temporary exception is beating the schedule'
+                    : ovCount + ' temporary exceptions are beating the schedule')));
+
+        // Busiest hour so far — the hour bins ride in on the sales-stats
+        // feed, so this card only exists for roles that can see sales.
+        if (canSeeSales) {
+            var peak = computePeakHourToday();
+            if (peak) {
+                cards.push(insightCard('⏰', 'insight-heat', 'Busiest hour so far',
+                    peak.label,
+                    formatBigNumber(peak.plays) + ' plays'
+                        + (peak.tickets > 0 ? ' · ' + formatBigNumber(peak.tickets) + ' tickets' : '')));
+            }
+        }
+
+        if (cards.length === 0) { box.style.display = 'none'; return; }
+        box.style.display = '';
+        box.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
+    function insightCard(emoji, cls, label, value, sub) {
+        return App.el('div', { className: 'insight-card ' + cls }, [
+            App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'insight-body' }, [
+                App.el('div', { className: 'insight-label', textContent: label }),
+                App.el('div', { className: 'insight-value', textContent: value }),
+                App.el('div', { className: 'insight-sub', textContent: sub })
+            ])
+        ]);
+    }
+
     function renderStats(games) {
         var grid = document.getElementById('stats-grid');
         if (!grid) return;
@@ -2849,6 +2922,7 @@
         var desiredStatus = action === 'pause' ? 'paused' : 'enabled';
         applyOptimisticGroupAction(groupId, desiredStatus);
         renderStats(allGames);
+        renderDashInsights(allGames, lastActiveOverrides);
         renderGroupControls(allGroups);
         renderStatusFilters(allGames);
         renderGameView(allGames);
@@ -2870,6 +2944,7 @@
             // Reconcile with actual server response
             applyChangedGames(result.details);
             renderStats(allGames);
+            renderDashInsights(allGames, lastActiveOverrides);
             renderStatusFilters(allGames);
             renderGameView(allGames);
 
@@ -2900,6 +2975,7 @@
             applyOptimisticGroupAction(grp.id, desiredStatus);
         }
         renderStats(allGames);
+        renderDashInsights(allGames, lastActiveOverrides);
         renderGroupControls(allGroups);
         renderStatusFilters(allGames);
         renderGameView(allGames);
@@ -3166,6 +3242,7 @@
             // Apply any state changes from enforcement for instant UI feedback
             applyChangedGames(result.enforced);
             renderStats(allGames);
+            renderDashInsights(allGames, lastActiveOverrides);
             renderStatusFilters(allGames);
             renderGameView(allGames);
 
