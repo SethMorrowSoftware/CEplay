@@ -312,7 +312,7 @@
 
         var driverNote = (s.drivers && s.drivers.length)
             ? 'Available PHP driver' + (s.drivers.length > 1 ? 's' : '') + ': ' + s.drivers.join(', ')
-            : 'No MSSQL PHP driver installed on this server — install pdo_sqlsrv (Windows/Linux), pdo_dblib (FreeTDS), or pdo_odbc, then reload.';
+            : 'No MSSQL PHP driver in this PHP runtime. Containerized host (Fedora CoreOS etc.): rebuild the app image with deploy/Containerfile.mssql — step-by-step in docs/MSSQL_DRIVER.md. Bare installs: pdo_sqlsrv, pdo_dblib (FreeTDS), or pdo_odbc.';
 
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Connection & queries (admin)' })]),

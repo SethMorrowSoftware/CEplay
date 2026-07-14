@@ -1,0 +1,40 @@
+# Layer an MSSQL PDO driver onto the existing CEplay PHP container image.
+#
+# On Fedora CoreOS the PHP runtime lives inside the app container, so the
+# driver is added by rebuilding the image — NOT by installing packages on
+# the host. Point BASE_IMAGE at whatever image the app currently runs
+# (docker.io/library/php:8.2-apache, a custom build, etc.):
+#
+#   podman build -f deploy/Containerfile.mssql \
+#       --build-arg BASE_IMAGE=<your current app image> \
+#       -t ceplay-app:mssql .
+#
+# Then swap the image reference in your systemd quadlet / podman-compose
+# unit to ceplay-app:mssql and restart the service. Verify with:
+#
+#   podman exec <container> php -m | grep -i -E 'dblib|sqlsrv'
+#
+# This default route uses FreeTDS (pdo_dblib): small, no external repos,
+# and entirely sufficient for the Go-Kart Labor report's read-only
+# aggregate SELECTs. If you prefer Microsoft's official driver
+# (pdo_sqlsrv), see docs/MSSQL_DRIVER.md — it needs the Microsoft package
+# repo and a PECL build, so the image is bigger and slower to build.
+
+ARG BASE_IMAGE=docker.io/library/php:8.2-apache
+FROM ${BASE_IMAGE}
+
+# Works on both Debian-based (php:*-apache) and Alpine-based (php:*-alpine)
+# official PHP images: try apt first, fall back to apk.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends freetds-dev freetds-bin; \
+        rm -rf /var/lib/apt/lists/*; \
+        # Debian multiarch puts libsybdb where PHP's configure doesn't look
+        ln -s /usr/lib/x86_64-linux-gnu/libsybdb.so /usr/lib/libsybdb.so 2>/dev/null || true; \
+        ln -s /usr/lib/x86_64-linux-gnu/libsybdb.a /usr/lib/libsybdb.a 2>/dev/null || true; \
+    else \
+        apk add --no-cache freetds freetds-dev; \
+    fi; \
+    docker-php-ext-install pdo_dblib; \
+    php -m | grep -i pdo_dblib
