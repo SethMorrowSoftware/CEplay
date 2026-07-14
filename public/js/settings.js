@@ -997,7 +997,13 @@
         const permWrap = App.el('div', { className: 'perm-checklist' });
         function addRow(key) {
             var cb = App.el('input', { type: 'checkbox', value: key });
-            cb.checked = isEdit && (role.permissions || []).indexOf(key) !== -1;
+            // Editing shows the saved state. A NEW role starts with every
+            // page visible and every ability off — pages were always visible
+            // before the visibility keys existed, so a hand-built "viewer"
+            // role shouldn't be born blind; hiding is the deliberate act.
+            cb.checked = isEdit
+                ? (role.permissions || []).indexOf(key) !== -1
+                : pageKeys.indexOf(key) !== -1;
             checks[key] = cb;
             permWrap.appendChild(App.el('label', { className: 'checkbox-label perm-checklist-row' }, [
                 cb,
