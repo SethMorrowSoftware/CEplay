@@ -43,19 +43,21 @@
 .labor-rate-warn { color: var(--warning); }
 .labor-rate-bad  { color: var(--danger); }
 
+/* Stacked money bar: red segment = wages, green = left after wages. */
 .labor-bar-track {
+    display: flex;
     height: 10px;
     border-radius: var(--radius-full);
     background: var(--bg-elevated);
     overflow: hidden;
     min-width: 6rem;
 }
-.labor-bar {
+.labor-bar-seg {
     height: 100%;
-    border-radius: var(--radius-full);
-    background: linear-gradient(90deg, var(--viz-heat, #f59e0b), var(--danger));
     transition: width 0.3s ease;
 }
+.labor-bar-labor  { background: var(--danger); }
+.labor-bar-profit { background: var(--success); }
 
 /* Admin form */
 .labor-conn-grid {
@@ -118,5 +120,3 @@
 }
 .labor-admin-details[open] > summary.labor-admin-summary::before { content: '▾ '; }
 .labor-admin-details[open] > summary.labor-admin-summary { border-bottom: 1px solid var(--border); }
-
-.labor-legend .labor-rate { font-weight: 600; font-size: 0.8rem; }

@@ -56,7 +56,7 @@
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Go-Kart Labor' }),
                 App.el('p', { className: 'page-subtitle', textContent:
-                    'How much of each day’s go-kart money goes to staff wages. Lower is better — under 25% is great, over 40% deserves a look.' })
+                    'How much of each day’s go-kart money goes to staff wages. Lower is better.' })
             ])
         ]));
 
@@ -208,9 +208,13 @@
             if (!good.length) return;
         }
 
-        // Bar scale: worst (highest) labor rate = full width
-        var maxRate = 0;
-        good.forEach(function(d) { if (d.rate != null && d.rate > maxRate) maxRate = d.rate; });
+        // Bar scale: the biggest money day (sales or wages, whichever is
+        // larger) spans the full track, so bar lengths compare in dollars
+        // across days.
+        var maxMoney = 0;
+        good.forEach(function(d) {
+            maxMoney = Math.max(maxMoney, d.sales || 0, d.labor || 0);
+        });
 
         var showRides = good.some(function(d) { return d.rides != null; });
         var headCells = [App.el('th', { textContent: 'Day' })];
@@ -226,7 +230,14 @@
         var table = App.el('table', { className: 'data-table' }, [
             App.el('thead', {}, [App.el('tr', {}, headCells)]),
             App.el('tbody', {}, good.map(function(d) {
-                var pctW = (d.rate != null && maxRate > 0) ? Math.max(4, Math.round(d.rate / maxRate * 100)) : 0;
+                // The day's money as a stacked bar: red = wages, green =
+                // what's left of sales after wages. A day where red beats
+                // green (or there's no green at all) is instantly visible.
+                var daySales = d.sales || 0, dayLabor = d.labor || 0;
+                var dayProfit = Math.max(0, daySales - dayLabor);
+                var laborW = maxMoney > 0 ? dayLabor / maxMoney * 100 : 0;
+                var profitW = maxMoney > 0 ? dayProfit / maxMoney * 100 : 0;
+                if (dayLabor > 0 && laborW < 1.5) laborW = 1.5; // keep small wages visible
                 var rateClass = d.rate == null ? '' : (d.rate <= 0.25 ? 'labor-rate-good' : (d.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
                 var cells = [
                     App.el('td', {}, [App.el('strong', { textContent: dayLabel(d.date) }),
@@ -241,8 +252,17 @@
                     App.el('td', { textContent: fmtMoney(d.labor) }),
                     App.el('td', {}, [App.el('span', { className: 'labor-rate ' + rateClass, textContent: fmtPct(d.rate) })]),
                     App.el('td', { style: { width: '26%' } }, [
-                        App.el('div', { className: 'labor-bar-track' }, [
-                            App.el('div', { className: 'labor-bar', style: { width: pctW + '%' } })
+                        App.el('div', {
+                            className: 'labor-bar-track',
+                            title: fmtMoney(dayLabor) + ' wages (red)'
+                                + (daySales >= dayLabor
+                                    ? ' · ' + fmtMoney(dayProfit) + ' left after wages (green)'
+                                    : (daySales > 0
+                                        ? ' — wages exceeded sales by ' + fmtMoney(dayLabor - daySales)
+                                        : ' — no sales recorded that day'))
+                        }, [
+                            App.el('div', { className: 'labor-bar-seg labor-bar-labor', style: { width: laborW + '%' } }),
+                            App.el('div', { className: 'labor-bar-seg labor-bar-profit', style: { width: profitW + '%' } })
                         ])
                     ])
                 );
@@ -287,23 +307,14 @@
 
         if (summary) box.appendChild(summary);
 
-        // Legend in words, so the colors never need explaining in person.
-        var legend = App.el('span', { className: 'text-sm labor-legend' }, [
-            App.el('span', { className: 'labor-rate labor-rate-good', textContent: 'under 25% great' }),
-            App.el('span', { className: 'text-muted', textContent: ' · ' }),
-            App.el('span', { className: 'labor-rate labor-rate-warn', textContent: '25–40% watch' }),
-            App.el('span', { className: 'text-muted', textContent: ' · ' }),
-            App.el('span', { className: 'labor-rate labor-rate-bad', textContent: 'over 40% high' })
-        ]);
-
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [
-                App.el('h3', { textContent: 'Labor rate by day' }),
-                legend
+                App.el('h3', { textContent: 'Labor rate by day' })
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Labor rate = wages ÷ go-kart sales for the same day. '
+                    'In the bars, red is wages and green is what’s left of sales after wages — a longer bar is a bigger day. '
+                    + 'Labor rate = wages ÷ go-kart sales for the same day. '
                     + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
                         ? 'Sales are estimated as paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + ') plus the MSSQL query; time-pass swipes are not counted as money. '
                         : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). Rides and Pass show how busy the track was. ')
