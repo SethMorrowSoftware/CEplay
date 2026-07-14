@@ -39,10 +39,16 @@ require_once __DIR__ . '/../lib/validator.php';
 // midnight rows (observed live: zero sales while Grafana showed money).
 // The range form is correct for DATE, midnight-DATETIME, and timestamped
 // columns alike.
-// CatNo 106 confirmed against live data via the connection fingerprint
-// (2026-07-14): category 106 shows ride-pattern sales (~$11 × 92 lines on
-// a Sunday) while 108 had zero — matching the operator's original query.
-const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 106  /* go-kart sales category */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+// Category mapping settled by the live fingerprint (2026-07-14), category
+// names from the venue's own Categories table: 108 = "Go Karts"
+// (106 = "Beverages" — an earlier wrong turn). Rides paid at the card
+// reader post to 108 with AmtSold = 0 (the money books under 123 =
+// "Reader Sales" at card-load time), and no Sales column carries the ride
+// value (Discounts probe ruled it out). What Sales DOES track precisely
+// is QtySold — ~3,486 rides/week live. So: cash lines count as cash, and
+// each $0 card-swiped ride is valued at a per-ride figure the operator
+// edits directly in the query text.
+const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(CASE\n    WHEN AmtSold > 0 THEN AmtSold  /* walk-up cash: count the actual cash */\n    /* card-swiped rides post \$0 — value each ride here (EDIT 11.00 to your per-ride price) */\n    ELSE QtySold * 11.00\n  END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
 
 const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
 
