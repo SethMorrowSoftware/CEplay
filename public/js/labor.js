@@ -303,13 +303,30 @@
                 statusEl.textContent = 'Defaults restored — review, then Save settings.';
             } });
 
+        var diagEl = App.el('pre', { className: 'labor-diagnostics', style: { display: 'none' } });
+
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test connection',
             onClick: async function() {
                 statusEl.textContent = 'Testing…';
+                diagEl.style.display = 'none';
                 try {
                     var r = await API.post('labor/test', {});
                     if (r.success) {
                         statusEl.textContent = '✓ Connected via ' + r.driver + ' — today: ' + fmtMoney(r.sales) + ' sales, ' + fmtMoney(r.labor) + ' labor.';
+                        if (r.diagnostics) {
+                            var lines = [];
+                            Object.keys(r.diagnostics).forEach(function(k) {
+                                var v = r.diagnostics[k];
+                                if (Array.isArray(v)) {
+                                    lines.push(k + ':');
+                                    v.forEach(function(x) { lines.push('    ' + x); });
+                                } else {
+                                    lines.push(k + ': ' + v);
+                                }
+                            });
+                            diagEl.textContent = lines.join('\n');
+                            diagEl.style.display = '';
+                        }
                         App.toast('Connection works.', 'success');
                     } else {
                         statusEl.textContent = '✗ ' + r.error;
@@ -335,7 +352,8 @@
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :date. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
-                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, resetBtn, statusEl])
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, resetBtn, statusEl]),
+                diagEl
             ])
         ]));
 

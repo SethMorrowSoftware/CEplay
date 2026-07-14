@@ -187,6 +187,18 @@ class MssqlClient
         return $val === null || $val === false ? 0.0 : (float)$val;
     }
 
+    /**
+     * Run a guarded SELECT and return the first column of the first row as
+     * a trimmed string (diagnostics: server names, dates, counts).
+     */
+    public function scalarText(string $sql): string
+    {
+        self::assertReadOnly($sql);
+        $this->connect();
+        $val = $this->pdo->query($sql)->fetchColumn();
+        return $val === null || $val === false ? '' : trim((string)$val);
+    }
+
     /** Run a guarded SELECT returning up to $limit rows (for the test button). */
     public function rows(string $sql, int $limit = 5): array
     {
