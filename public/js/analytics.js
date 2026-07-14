@@ -536,10 +536,6 @@
             grid.appendChild(chartCard('Value mix — reader CC / points', 'analytics-chart-revenue', '', 240,
                 'Card dollars vs game-card points spent at the readers'));
         }
-        grid.appendChild(chartCard('Pause actions by source', 'analytics-chart-actions-source', '', 240,
-            'What triggered game pauses — schedule, override, or a person'));
-        grid.appendChild(chartCard('Pause action outcomes', 'analytics-chart-actions-outcome', '', 240,
-            'Did those pause/unpause actions succeed'));
         grid.appendChild(chartCard('Top groups by automation', 'analytics-chart-top-groups', 'analytics-card-wide', 240,
             'The pause groups the automation works hardest on'));
 
@@ -945,24 +941,6 @@
             var revenueColors = [theme.success, theme.accent, theme.tickets];
             registerChart('analytics-chart-revenue', donutConfig(revenueLabels, revenueData, revenueColors, theme, '$/pts'));
         }
-
-        // Pause actions by source
-        var sourceMap = charts.actions_by_source || {};
-        var sourceKeys = Object.keys(sourceMap).filter(function(k) { return sourceMap[k] > 0; });
-        if (sourceKeys.length === 0) sourceKeys = Object.keys(sourceMap);
-        var sourceLabels = sourceKeys.map(function(k) { return SOURCE_LABEL[k] || k; });
-        var sourceVals   = sourceKeys.map(function(k) { return sourceMap[k] || 0; });
-        var sourcePalette = palette(sourceKeys.length, theme);
-        registerChart('analytics-chart-actions-source', donutConfig(sourceLabels, sourceVals, sourcePalette, theme));
-
-        // Pause action outcomes (success vs fail)
-        var outcome = charts.actions_success_fail || { success: 0, fail: 0 };
-        registerChart('analytics-chart-actions-outcome', donutConfig(
-            ['Successful', 'Failed'],
-            [outcome.success || 0, outcome.fail || 0],
-            [theme.success, theme.danger],
-            theme
-        ));
 
         // Top groups
         var tg = charts.top_groups_actions || [];
