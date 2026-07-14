@@ -221,6 +221,36 @@ class DB {
             error_log('view keys migration skipped: ' . $e->getMessage());
         }
 
+        // One-time: stamp the Go-Kart Labor queries with the venue's
+        // confirmed-working Grafana query (CatNo 108 sales, 'Go-Karts' job
+        // join for labor). While the filters were being pinned down, interim
+        // variants (facility-wide placeholder, wrong category) got SAVED
+        // through the UI — and the on-page "Reset to defaults" can only
+        // restore whatever the DEPLOYED code ships, so a stale install kept
+        // resurrecting bad queries. This overwrites the stored pair exactly
+        // once so a plain update.sh makes the page correct with no UI steps;
+        // admin edits AFTER this migration are respected forever.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v1'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                self::execute(
+                    "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                    [LABOR_DEFAULT_SALES_SQL]
+                );
+                self::execute(
+                    "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_labor_sql', :p0, 0)",
+                    [LABOR_DEFAULT_LABOR_SQL]
+                );
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can

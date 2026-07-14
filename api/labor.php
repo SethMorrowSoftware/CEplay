@@ -18,12 +18,12 @@
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
-// Defaults for THIS venue, per the operator: go-kart sales are category
-// 108; go-kart staff are JobCode 3 (filtering the code directly — no
-// TimeClock_JobCodes description join to depend on naming), costed to
-// the second from actual clock-in/out timestamps. $__timeFilter(col) in
-// the Grafana original maps to `col = :date` here (the page runs each
-// query once per selected day).
+// Defaults for THIS venue — the operator's confirmed-working Grafana
+// query, verbatim: go-kart sales are category 108; go-kart staff are the
+// punches whose TimeClock_JobCodes description is 'Go-Karts' (that's job
+// code 3 at this venue), costed to the second from actual clock-in/out
+// timestamps. $__timeFilter(col) in the Grafana original maps to
+// `col = :date` here (the page runs each query once per selected day).
 //
 // One deliberate departure from the Grafana original: an UNCLOSED punch
 // (ClockOutDate IS NULL) accrues to CURRENT_TIMESTAMP only when it was
@@ -35,7 +35,7 @@ require_once __DIR__ . '/../lib/validator.php';
 // fix is closing it in CenterEdge, not inventing hours.
 const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* go-kart sales category */\n  AND ShiftDate = :date";
 
-const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nWHERE JobCode = 3  /* go-kart staff */\n  AND ClockInDate = :date";
+const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
 
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
