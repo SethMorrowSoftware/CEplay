@@ -38,7 +38,7 @@ class Auth {
      */
     public const PERMISSIONS = [
         'analytics'        => 'View Analytics & Performance reporting (plays and tickets)',
-        'view_revenue'     => 'See cash / revenue figures in reporting',
+        'view_revenue'     => 'See reader CC payment (dollar) figures in reporting',
         'cards'            => 'Card lookup: balances, transaction history, PIN checks',
         'manual_control'   => 'Operate the floor: pause/unpause groups, kiosk & game actions, force syncs',
         'overrides_manage' => 'Create and delete schedule overrides',

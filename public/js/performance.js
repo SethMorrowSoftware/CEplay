@@ -44,7 +44,7 @@
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Performance' }),
                 App.el('p', { className: 'page-subtitle',
-                    textContent: 'Search a game and track plays, tickets, and revenue by day, week, month, or year.' })
+                    textContent: 'Search a game and track plays, tickets, and reader CC payments by day, week, month, or year.' })
             ])
         ]));
 
@@ -215,7 +215,7 @@
 
     function buildMetricToggle() {
         var metrics = [['tickets', 'Tickets'], ['plays', 'Plays']];
-        if (App.canSeeMoney()) metrics.push(['cash', 'Revenue']);
+        if (App.canSeeMoney()) metrics.push(['cash', 'Reader CC']);
         return App.el('div', { className: 'perf-metric-toggle', id: 'perf-metric-toggle' },
             metrics.map(function(m) {
                 return App.el('button', {
@@ -299,7 +299,7 @@
             kpiCard('Plays', formatInt(t.plays), delta(t.plays, p.plays)),
             kpiCard('Tickets', formatInt(Math.round(t.tickets)), delta(t.tickets, p.tickets)),
         ];
-        if (money) cards.push(kpiCard('Revenue', formatCurrency(t.cash), delta(t.cash, p.cash)));
+        if (money) cards.push(kpiCard('Reader CC payments', formatCurrency(t.cash), delta(t.cash, p.cash)));
         cards.push(kpiCard('Avg tickets / play', t.avg_tickets_per_play != null ? Number(t.avg_tickets_per_play).toFixed(1) : '—', null));
         cards.push(kpiCard('Games with plays', formatInt(t.active_games), null));
 
@@ -360,7 +360,7 @@
             data: {
                 labels: labels,
                 datasets: [{
-                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Revenue' : 'Tickets'),
+                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Reader CC' : 'Tickets'),
                     data: values,
                     backgroundColor: barColor,
                     borderRadius: 4,
@@ -450,7 +450,7 @@
             { key: 'points_share', label: '% of pts', sortable: true, right: true },
             { key: 'active_days', label: 'Active', sortable: true, right: true }
         ];
-        if (money) columns.push({ key: 'cash', label: 'Revenue', sortable: true, right: true });
+        if (money) columns.push({ key: 'cash', label: 'Reader CC', sortable: true, right: true });
         columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, right: true });
         columns.push({ key: '_delta', label: 'vs prev', sortable: false, right: true });
 
@@ -594,7 +594,7 @@
             ['Tickets', formatInt(Math.round(t.tickets)), delta(t.tickets, p.tickets)],
             ['Avg tickets / play', t.avg_tickets_per_play != null ? Number(t.avg_tickets_per_play).toFixed(1) : '—', null]
         ];
-        if (money) kpis.splice(2, 0, ['Revenue', formatCurrency(t.cash), delta(t.cash, p.cash)]);
+        if (money) kpis.splice(2, 0, ['Reader CC payments', formatCurrency(t.cash), delta(t.cash, p.cash)]);
 
         body.appendChild(App.el('div', { className: 'perf-kpi-grid perf-kpi-grid-compact' }, kpis.map(function(k) {
             var ch = [App.el('div', { className: 'perf-kpi-label', textContent: k[0] }), App.el('div', { className: 'perf-kpi-value', textContent: k[1] })];

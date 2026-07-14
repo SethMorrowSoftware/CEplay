@@ -86,10 +86,10 @@ class DB {
             ['admin', 'Administrator', 'Full access to every feature, including settings, user and role management.',
              '["*"]'],
             ['manager', 'Manager',
-             'Runs the floor and the automation: full analytics with revenue, card lookup, and group/schedule management. No system settings or user management.',
+             'Runs the floor and the automation: full analytics with reader CC payments, card lookup, and group/schedule management. No system settings or user management.',
              '["analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
-             'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No sales data, card lookup, or group/schedule editing.',
+             'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No payment figures, card lookup, or group/schedule editing.',
              '["analytics","manual_control","overrides_manage","settings","users"]'],
         ];
         foreach ($seedRoles as $r) {
@@ -104,6 +104,35 @@ class DB {
                 $stmt->close();
             } catch (Exception $e) {
                 error_log('Role seed failed for ' . $r[0] . ': ' . $e->getMessage());
+            }
+        }
+
+        // Relabel pass: earlier seeds called card-at-reader charges
+        // "revenue" / "sales data", which oversells what the play feed
+        // actually measures (reader CC payments only — POS sales never
+        // reach this app). The seed is INSERT OR IGNORE, so existing
+        // installs keep their stored copy; rewrite it only while it still
+        // matches the old text verbatim, so an operator's customized
+        // description is never touched and the update is naturally
+        // idempotent.
+        $roleRelabel = [
+            ['manager',
+             'Runs the floor and the automation: full analytics with revenue, card lookup, and group/schedule management. No system settings or user management.'],
+            ['tech',
+             'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No sales data, card lookup, or group/schedule editing.'],
+        ];
+        foreach ($seedRoles as $r) {
+            foreach ($roleRelabel as $old) {
+                if ($old[0] !== $r[0]) continue;
+                try {
+                    self::execute(
+                        "UPDATE roles SET description = :p0, updated_at = datetime('now')
+                         WHERE slug = :p1 AND description = :p2",
+                        [$r[2], $r[0], $old[1]]
+                    );
+                } catch (Exception $e) {
+                    error_log('Role description relabel skipped for ' . $r[0] . ': ' . $e->getMessage());
+                }
             }
         }
 

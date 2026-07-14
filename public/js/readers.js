@@ -273,7 +273,7 @@
             { label: 'Avg/day', cls: 'text-right' },
             { label: 'Avg/game/day', cls: 'text-right' }
         ];
-        if (money) headers.push({ label: 'Revenue', cls: 'text-right' });
+        if (money) headers.push({ label: 'Reader CC', cls: 'text-right' });
         headers.push({ label: 'Busiest time', cls: '' });
         headers.push({ label: 'vs prev', cls: 'text-right' });
         if (canManage()) headers.push({ label: '', cls: 'text-right' });
@@ -466,7 +466,7 @@
             ['Avg plays / game / day', formatNum(t.avg_plays_per_game_per_day), delta(t.avg_plays_per_game_per_day, p.avg_plays_per_game_per_day)],
             ['Tickets', formatInt(Math.round(t.tickets)), delta(t.tickets, p.tickets)]
         ];
-        if (money) cards.push(['Revenue', formatCurrency(t.cash), delta(t.cash, p.cash)]);
+        if (money) cards.push(['Reader CC payments', formatCurrency(t.cash), delta(t.cash, p.cash)]);
         cards.push(['Time-pass plays', formatInt(t.time_plays), null]);
         cards.push(['Games with plays', formatInt(t.active_games), null]);
 
@@ -641,7 +641,7 @@
     // ------------------------------------------------------------------
     function buildMetricToggle() {
         var metrics = [['plays', 'Plays'], ['tickets', 'Tickets']];
-        if (App.canSeeMoney()) metrics.push(['cash', 'Revenue']);
+        if (App.canSeeMoney()) metrics.push(['cash', 'Reader CC']);
         return App.el('div', { className: 'perf-metric-toggle', id: 'rg-metric-toggle' },
             metrics.map(function(m) {
                 return App.el('button', {
@@ -683,7 +683,7 @@
             data: {
                 labels: labels,
                 datasets: [{
-                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Revenue' : 'Tickets'),
+                    label: metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Reader CC' : 'Tickets'),
                     data: values,
                     backgroundColor: barColor,
                     borderRadius: 4,
@@ -741,7 +741,7 @@
                 { label: '% of area', cls: 'text-right' },
                 { label: 'Tickets', cls: 'text-right' }
             ];
-            if (money) headers.push({ label: 'Revenue', cls: 'text-right' });
+            if (money) headers.push({ label: 'Reader CC', cls: 'text-right' });
             headers.push({ label: 'vs prev', cls: 'text-right' });
 
             var thead = App.el('thead', {}, [
