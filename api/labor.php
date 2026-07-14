@@ -127,18 +127,51 @@ function laborPutSettings(array $input): void {
 function laborTest(): void {
     Auth::requireAccess('settings');
     $client = new MssqlClient();
-    $today = (new DateTime('now', new DateTimeZone(DB::getConfig('timezone') ?: DEFAULT_TIMEZONE)))->format('Y-m-d');
+    $tz = new DateTimeZone(DB::getConfig('timezone') ?: DEFAULT_TIMEZONE);
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+    $yesterday = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');
     $q = laborQueries();
     try {
         $client->connect();
         $sales = $client->scalar(MssqlClient::bindDate($q['sales_sql'], $today));
         $labor = $client->scalar(MssqlClient::bindDate($q['labor_sql'], $today));
+
+        // Fingerprint the connection so "works in Grafana, wrong here" can
+        // be settled with facts: WHICH server/instance/database is the app
+        // actually reading, how fresh is its Sales data, and where does the
+        // money live by category? Each probe is independent — one failing
+        // doesn't hide the rest.
+        $diag = [];
+        $probe = function (string $label, string $sql) use (&$diag, $client) {
+            try {
+                $diag[$label] = $client->scalarText($sql);
+            } catch (Exception $e) {
+                $diag[$label] = 'error: ' . $e->getMessage();
+            }
+        };
+        $probe('server',   'SELECT @@SERVERNAME');
+        $probe('database', 'SELECT DB_NAME()');
+        $probe('sales_latest_shiftdate', 'SELECT CONVERT(VARCHAR(19), MAX(ShiftDate), 120) FROM [CenterEdge].[dbo].[Sales]');
+        $probe('sales_rows_last_7_days', 'SELECT COUNT(*) FROM [CenterEdge].[dbo].[Sales] WHERE ShiftDate >= DATEADD(DAY, -7, GETDATE())');
+        $probe('sales_yesterday_cat108', MssqlClient::bindDate(
+            "SELECT CONVERT(VARCHAR(32), COALESCE(SUM(AmtSold), 0)) FROM [CenterEdge].[dbo].[Sales] WHERE CatNo = 108 AND ShiftDate >= :date AND ShiftDate < DATEADD(DAY, 1, :date)", $yesterday));
+        try {
+            $rows = $client->rows(MssqlClient::bindDate(
+                "SELECT TOP 5 CatNo, COUNT(*) AS lines, SUM(AmtSold) AS total FROM [CenterEdge].[dbo].[Sales] WHERE ShiftDate >= :date AND ShiftDate < DATEADD(DAY, 1, :date) GROUP BY CatNo ORDER BY total DESC", $yesterday), 5);
+            $diag['top_categories_yesterday'] = array_map(function ($r) {
+                return 'CatNo ' . $r['CatNo'] . ': $' . round((float)$r['total'], 2) . ' (' . $r['lines'] . ' lines)';
+            }, $rows);
+        } catch (Exception $e) {
+            $diag['top_categories_yesterday'] = 'error: ' . $e->getMessage();
+        }
+
         echo json_encode([
             'success' => true,
             'driver'  => $client->driver(),
             'today'   => $today,
             'sales'   => round($sales, 2),
             'labor'   => round($labor, 2),
+            'diagnostics' => $diag,
         ]);
     } catch (Exception $e) {
         // Config problems are the expected failure mode here — report them

@@ -76,3 +76,17 @@
 }
 
 .labor-driver-missing { color: var(--danger); font-weight: 500; }
+
+/* Connection fingerprint shown under Test connection. */
+.labor-diagnostics {
+    margin-top: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
