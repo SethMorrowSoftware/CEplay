@@ -237,7 +237,7 @@
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Labor rate = labor cost ÷ sales for the go-kart queries configured below. Today includes staff currently on the clock at their rate so far.' })
+                    'Labor rate = labor cost ÷ sales for the go-kart queries configured below. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
             ])
         ]));
     }
