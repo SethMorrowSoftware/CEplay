@@ -368,12 +368,19 @@
 
         var diagEl = App.el('pre', { className: 'labor-diagnostics', style: { display: 'none' } });
 
+        // The fingerprint can be aimed at any business day — used to chase a
+        // known figure through the category/division dumps.
+        var probeDateIn = App.el('input', { className: 'form-input', type: 'date',
+            title: 'Fingerprint this date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
+
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test connection',
             onClick: async function() {
                 statusEl.textContent = 'Testing…';
                 diagEl.style.display = 'none';
                 try {
-                    var r = await API.post('labor/test', {});
+                    var body = {};
+                    if (probeDateIn.value) body.probe_date = probeDateIn.value;
+                    var r = await API.post('labor/test', body);
                     if (r.success) {
                         statusEl.textContent = '✓ Connected via ' + r.driver + ' — today: ' + fmtMoney(r.sales) + ' sales, ' + fmtMoney(r.labor) + ' labor.';
                         if (r.diagnostics) {
@@ -420,7 +427,7 @@
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :date. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
-                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, resetBtn, statusEl]),
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
                 diagEl
             ])
         ]));
