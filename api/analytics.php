@@ -850,10 +850,14 @@ function analyticsFleet(): array {
     $activeGroups = (int)(DB::queryOne('SELECT COUNT(*) AS c FROM pause_groups WHERE is_active = 1')['c'] ?? 0);
     $manualOverrideGroups = (int)(DB::queryOne('SELECT COUNT(*) AS c FROM pause_groups WHERE manual_override_action IS NOT NULL')['c'] ?? 0);
 
-    $nowUtc = (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
+    // schedule_overrides stores venue-local 'Y-m-d H:i' strings (see
+    // api/overrides.php) — compare in the same format. A UTC ISO string here
+    // silently dropped every override still running the same UTC day.
+    $tzName = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
+    $nowLocal = (new DateTime('now', new DateTimeZone($tzName)))->format('Y-m-d H:i');
     $activeOverrides = (int)(DB::queryOne(
         'SELECT COUNT(*) AS c FROM schedule_overrides WHERE start_datetime <= :p0 AND end_datetime > :p0',
-        [$nowUtc]
+        [$nowLocal]
     )['c'] ?? 0);
 
     $pendingRetries = (int)(DB::queryOne(

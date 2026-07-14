@@ -60,6 +60,8 @@
             className: 'analytics-timeplay-note',
             style: { display: 'none' }
         }));
+        // Plain-language headlines land here on every load.
+        container.appendChild(App.el('div', { id: 'analytics-insights' }));
         container.appendChild(buildKpiSection());
         container.appendChild(buildGuestSection());
         container.appendChild(buildFleetSection());
@@ -213,7 +215,7 @@
         return App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Analytics' }),
-                App.el('p', { className: 'page-subtitle', textContent: 'Game plays, ticket flow, fleet posture and automation activity.' })
+                App.el('p', { className: 'page-subtitle', textContent: 'How the venue is doing — plays, tickets, guests and payments over the range you pick. The cards up top are the headlines; the charts below are the detail.' })
             ]),
             actions
         ]);
@@ -260,6 +262,81 @@
             + ' excluded — totals on this page reflect non-pass traffic only (an excluded play’s tickets, points, and payments drop out with it). '
             + 'Heads-up: per-play and per-visit averages often read HIGHER in this view, because free pass plays no longer dilute them.';
         note.style.display = '';
+    }
+
+    /**
+     * The headlines: four plain-language takeaways computed from data the
+     * payload already carries, so a non-technical reader gets the story
+     * before the first chart. Each card degrades away when its data is
+     * absent (short ranges, hidden money, uncovered guest history).
+     */
+    function renderInsights(data) {
+        var box = document.getElementById('analytics-insights');
+        if (!box) return;
+        box.innerHTML = '';
+        var cards = [];
+
+        var k = data.kpis || {};
+        var pk = data.previous_kpis || {};
+        if (k.plays != null) {
+            var sub = 'game plays this period';
+            var cls = 'insight-accent';
+            if (pk.plays) {
+                var chg = (k.plays - pk.plays) / pk.plays * 100;
+                // One decimal, matching the KPI tiles below ("+1.7% vs prior").
+                var chgTxt = Math.abs(chg).toFixed(1).replace(/\.0$/, '');
+                sub = (chg >= 0 ? 'up ' : 'down ') + chgTxt + '% vs the previous period';
+                cls = chg >= 0 ? 'insight-good' : 'insight-warn';
+            }
+            cards.push(insightCard('🎮', cls, 'Plays', Number(k.plays).toLocaleString(), sub));
+        }
+
+        var daily = (data.charts && data.charts.daily) || [];
+        if (daily.length > 1) {
+            var best = daily.reduce(function(a, b) { return (b.plays || 0) > (a.plays || 0) ? b : a; });
+            if (best && best.date) {
+                var d = new Date(best.date + 'T12:00:00');
+                cards.push(insightCard('📅', 'insight-heat', 'Busiest day',
+                    d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+                    Number(best.plays || 0).toLocaleString() + ' plays that day'));
+            }
+        }
+
+        var top = (data.charts && data.charts.top_games_plays && data.charts.top_games_plays[0]) || null;
+        if (top && top.game_name) {
+            cards.push(insightCard('🏆', 'insight-accent', 'Most played game',
+                top.game_name, Number(top.plays || 0).toLocaleString() + ' plays'));
+        }
+
+        var g = data.guests || {};
+        if (g.classification_covered && g.returning_guests != null && (g.new_guests || g.returning_guests)) {
+            var totalG = (g.new_guests || 0) + (g.returning_guests || 0);
+            var retPct = totalG > 0 ? Math.round(g.returning_guests / totalG * 100) : 0;
+            cards.push(insightCard('👥', 'insight-quiet', 'Returning guests',
+                retPct + '%', 'of ' + totalG.toLocaleString() + ' carded guests had visited before'));
+        } else {
+            var hours = (data.charts && data.charts.plays_by_hour) || [];
+            var maxH = -1, maxV = 0;
+            hours.forEach(function(v, i) { if (v > maxV) { maxV = v; maxH = i; } });
+            if (maxH >= 0 && maxV > 0) {
+                var lbl = (maxH % 12 === 0 ? 12 : maxH % 12) + (maxH < 12 ? ' AM' : ' PM');
+                cards.push(insightCard('⏰', 'insight-quiet', 'Busiest hour', lbl,
+                    Number(maxV).toLocaleString() + ' plays in that hour across the period'));
+            }
+        }
+
+        if (cards.length) box.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
+    function insightCard(emoji, cls, label, value, sub) {
+        return App.el('div', { className: 'insight-card ' + cls }, [
+            App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'insight-body' }, [
+                App.el('div', { className: 'insight-label', textContent: label }),
+                App.el('div', { className: 'insight-value', textContent: value }),
+                App.el('div', { className: 'insight-sub', textContent: sub })
+            ])
+        ]);
     }
 
     function kpiCardSkeleton(key, label, tip) {
@@ -433,27 +510,38 @@
         var grid = App.el('div', { className: 'analytics-grid' });
         var canSeeMoney = App.canSeeMoney();
 
-        grid.appendChild(chartCard('Daily activity', 'analytics-chart-daily', 'analytics-card-wide', 260));
-        grid.appendChild(chartCard('Plays by hour of day', 'analytics-chart-hour', '', 220));
-        grid.appendChild(chartCard('Plays by day of week', 'analytics-chart-dow', '', 220));
-        grid.appendChild(chartCard('Top games — plays', 'analytics-chart-top-plays', '', 280));
-        grid.appendChild(chartCard('Top games — tickets', 'analytics-chart-top-tickets', '', 280));
+        grid.appendChild(chartCard('Daily activity', 'analytics-chart-daily', 'analytics-card-wide', 260,
+            'Each bar is one day — taller means a busier day'));
+        grid.appendChild(chartCard('Plays by hour of day', 'analytics-chart-hour', '', 220,
+            'When guests are actually playing — useful for staffing'));
+        grid.appendChild(chartCard('Plays by day of week', 'analytics-chart-dow', '', 220,
+            'Which days of the week do best over this range'));
+        grid.appendChild(chartCard('Top games — plays', 'analytics-chart-top-plays', '', 280,
+            'The games guests choose most'));
+        grid.appendChild(chartCard('Top games — tickets', 'analytics-chart-top-tickets', '', 280,
+            'The games paying out the most tickets'));
         grid.appendChild(chartCard('Category share — plays', 'analytics-chart-cat-share', '', 240,
-            'Games in multiple categories count in each'));
-        grid.appendChild(chartCard('Tickets by category', 'analytics-chart-cat-tickets', '', 240));
+            'Where play happens by game type — games in multiple categories count in each'));
+        grid.appendChild(chartCard('Tickets by category', 'analytics-chart-cat-tickets', '', 240,
+            'Which game types hand out the tickets'));
         grid.appendChild(chartCard('Payment mix — plays', 'analytics-chart-payment-mix', '', 240,
-            'Mixed-payment plays count in each method'));
+            'How guests pay at the reader — mixed-payment plays count in each method'));
         // Brand data is payment info — server sends it only with view_revenue.
         if (canSeeMoney) {
-            grid.appendChild(chartCard('Credit-card brands', 'analytics-chart-cc-brands', '', 240));
+            grid.appendChild(chartCard('Credit-card brands', 'analytics-chart-cc-brands', '', 240,
+                'Which cards guests tap at the readers'));
         }
         // The value-mix donut surfaces reader CC totals — hidden from tech.
         if (canSeeMoney) {
-            grid.appendChild(chartCard('Value mix — reader CC / points', 'analytics-chart-revenue', '', 240));
+            grid.appendChild(chartCard('Value mix — reader CC / points', 'analytics-chart-revenue', '', 240,
+                'Card dollars vs game-card points spent at the readers'));
         }
-        grid.appendChild(chartCard('Pause actions by source', 'analytics-chart-actions-source', '', 240));
-        grid.appendChild(chartCard('Pause action outcomes', 'analytics-chart-actions-outcome', '', 240));
-        grid.appendChild(chartCard('Top groups by automation', 'analytics-chart-top-groups', 'analytics-card-wide', 240));
+        grid.appendChild(chartCard('Pause actions by source', 'analytics-chart-actions-source', '', 240,
+            'What triggered game pauses — schedule, override, or a person'));
+        grid.appendChild(chartCard('Pause action outcomes', 'analytics-chart-actions-outcome', '', 240,
+            'Did those pause/unpause actions succeed'));
+        grid.appendChild(chartCard('Top groups by automation', 'analytics-chart-top-groups', 'analytics-card-wide', 240,
+            'The pause groups the automation works hardest on'));
 
         return grid;
     }
@@ -579,6 +667,7 @@
             if (App.navGeneration() !== gen) return; // user navigated away
             state.overview = data;
             renderTimePlayNote(data);
+            renderInsights(data);
             renderKpis(data);
             renderGuests(data);
             renderFleet(data);
