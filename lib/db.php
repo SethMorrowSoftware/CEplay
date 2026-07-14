@@ -251,6 +251,32 @@ class DB {
             error_log('labor query migration skipped: ' . $e->getMessage());
         }
 
+        // Follow-up to the migration above: v1 stamped the sales query with
+        // an equality date filter, which reads ZERO when ShiftDate carries a
+        // time-of-day (observed live). Replace it with the half-open range
+        // form — but ONLY if the stored query is still exactly the v1 text,
+        // so a hand-tuned query is never clobbered.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v2'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                $v1Sales = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* go-kart sales category */\n  AND ShiftDate = :date";
+                $stored = self::queryOne("SELECT value FROM api_config WHERE key = 'labor_sales_sql'");
+                if ($stored && trim((string)$stored['value']) === trim($v1Sales)) {
+                    self::execute(
+                        "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                        [LABOR_DEFAULT_SALES_SQL]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v2', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v2 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
