@@ -179,6 +179,7 @@ const App = {
 
         this.createThemeToggle();
         this.initGlobalKeyboardUX();
+        this.startAccessRefresh();
 
         // Remove initial loading overlay
         var appLoading = document.getElementById('app-loading');
@@ -888,6 +889,44 @@ const App = {
      * Runs callback on an interval only while the page is visible.
      * Reduces unnecessary polling load during long-running browser sessions.
      */
+    /**
+     * Live access refresh. Roles and per-user overrides can change while
+     * someone is logged in, but the resolved permission list was otherwise
+     * only read at login / full page load — so a freshly granted page kept
+     * saying "no permission" until the person thought to hit F5. Poll the
+     * session status (visibility-aware, immediate on tab focus — exactly
+     * the "okay, try it now" moment) and rebuild the shell only when the
+     * effective access actually changed. If the page they're on just
+     * became forbidden, the route guard bounces them to their first
+     * visible section; if their session ended, reload lands on login.
+     */
+    startAccessRefresh() {
+        const signature = (u) => JSON.stringify([
+            u ? u.role : null,
+            (u && Array.isArray(u.permissions)) ? u.permissions.slice().sort() : null
+        ]);
+        this.createVisibilityAwareInterval(async () => {
+            if (!this.currentUser) return;
+            let res;
+            try {
+                res = await API.get('auth/status');
+            } catch (e) {
+                return; // transient network/server hiccup — next tick retries
+            }
+            if (!res || !res.authenticated || !res.user) {
+                window.location.reload();
+                return;
+            }
+            if (signature(res.user) === signature(this.currentUser)) return;
+            this.currentUser = res.user;
+            if (window.APP_CONFIG) window.APP_CONFIG.user = res.user;
+            const layout = document.querySelector('.layout');
+            if (layout) layout.remove();
+            this.toast('Your access has been updated.', 'info');
+            this.route();
+        }, 60000, { runImmediately: true, runOnVisible: true });
+    },
+
     createVisibilityAwareInterval(callback, intervalMs, options) {
         const config = Object.assign({ runImmediately: false, runOnVisible: true }, options || {});
         let timer = null;
