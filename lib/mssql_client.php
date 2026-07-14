@@ -116,8 +116,10 @@ class MssqlClient
         $drivers = self::availableDrivers();
         if (!$drivers) {
             throw new RuntimeException(
-                'No MSSQL PDO driver is installed on this server. Install one of: '
-                . 'pdo_sqlsrv (Microsoft, Windows/Linux), pdo_dblib (FreeTDS, Linux), or pdo_odbc.'
+                'No MSSQL PDO driver is installed in this PHP runtime. On a container host '
+                . '(Fedora CoreOS etc.) the driver must be added to the app\'s container image — '
+                . 'see docs/MSSQL_DRIVER.md in the repo for a ready-made Containerfile. '
+                . 'Bare installs: pdo_sqlsrv (Microsoft), pdo_dblib (FreeTDS), or pdo_odbc.'
             );
         }
         $password = Crypto::decrypt((string)DB::getConfig('mssql_password'));
@@ -125,21 +127,34 @@ class MssqlClient
         $port = (string)((int)$s['port'] ?: 1433);
         $db   = $s['database'];
 
-        $lastError = '';
+        // Every DSN we're willing to try, in preference order. FreeTDS gets
+        // an explicit TDS 7.4 protocol version — without it some builds
+        // default to a pre-2008 dialect where DATE/TIME types and
+        // CAST(GETDATE() AS DATE) misbehave. ODBC tries msodbcsql 18 then 17.
+        $candidates = [];
         foreach ($drivers as $driver) {
+            switch ($driver) {
+                case 'sqlsrv':
+                    $candidates[] = ['sqlsrv',
+                        "sqlsrv:Server={$host},{$port};Database={$db};LoginTimeout=" . self::TIMEOUT
+                        . ';TrustServerCertificate=1'];
+                    break;
+                case 'dblib':
+                    $candidates[] = ['dblib', "dblib:host={$host}:{$port};dbname={$db};version=7.4;charset=UTF-8"];
+                    $candidates[] = ['dblib', "dblib:host={$host}:{$port};dbname={$db}"];
+                    break;
+                default: // odbc
+                    foreach (['18', '17'] as $v) {
+                        $candidates[] = ['odbc',
+                            'odbc:Driver={ODBC Driver ' . $v . ' for SQL Server};Server=' . $host . ',' . $port
+                            . ';Database=' . $db . ';TrustServerCertificate=yes'];
+                    }
+            }
+        }
+
+        $lastError = '';
+        foreach ($candidates as [$driver, $dsn]) {
             try {
-                switch ($driver) {
-                    case 'sqlsrv':
-                        $dsn = "sqlsrv:Server={$host},{$port};Database={$db};LoginTimeout=" . self::TIMEOUT
-                             . ';TrustServerCertificate=1';
-                        break;
-                    case 'dblib':
-                        $dsn = "dblib:host={$host}:{$port};dbname={$db}";
-                        break;
-                    default: // odbc
-                        $dsn = 'odbc:Driver={ODBC Driver 17 for SQL Server};Server=' . $host . ',' . $port
-                             . ';Database=' . $db . ';TrustServerCertificate=yes';
-                }
                 $pdo = new PDO($dsn, $s['username'], $password, [
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_TIMEOUT => self::TIMEOUT,

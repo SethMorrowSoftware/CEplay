@@ -376,6 +376,43 @@ else
     ok "All required PHP extensions present in image."
 fi
 
+# ── MSSQL driver overlay (Go-Kart Labor report) ──────────────────────────────
+# The Go-Kart Labor page queries the CenterEdge MSSQL database, which needs
+# the pdo_dblib PHP extension the stock image doesn't ship. Build a thin
+# overlay image on top of ${PHP_IMAGE} and — because podman's image cache
+# does NOT survive FCOS OS rebuilds — save it as a tar under /var/persist.
+# The systemd unit reloads it from there after a rebuild (no network needed).
+# If the build fails, the app still runs on the stock image; only the
+# Go-Kart Labor report is affected. Re-run this script to retry.
+MSSQL_IMAGE="localhost/pause-groups-fpm-mssql:latest"
+MSSQL_TAR="${INSTALL_DIR}/php-fpm-mssql.tar"
+RUNTIME_IMAGE="${PHP_IMAGE}"
+IMAGE_LOAD_PRE=""
+if [[ -f "${SOURCE_DIR}/deploy/Containerfile.mssql" ]]; then
+    echo ""
+    info "Building the MSSQL driver overlay (pdo_dblib, for the Go-Kart Labor report)..."
+    if podman build -f "${SOURCE_DIR}/deploy/Containerfile.mssql" \
+            --build-arg BASE_IMAGE="${PHP_IMAGE}" \
+            -t "${MSSQL_IMAGE}" "${SOURCE_DIR}"; then
+        RUNTIME_IMAGE="${MSSQL_IMAGE}"
+        IMAGE_LOAD_PRE="ExecStartPre=-/usr/bin/bash -c '/usr/bin/podman image exists ${MSSQL_IMAGE} || /usr/bin/podman load -i ${MSSQL_TAR}'"
+        info "Saving the built image to ${MSSQL_TAR} (survives OS rebuilds)..."
+        if podman save -o "${MSSQL_TAR}.tmp" "${MSSQL_IMAGE}" && mv -f "${MSSQL_TAR}.tmp" "${MSSQL_TAR}"; then
+            ok "MSSQL-enabled PHP image built and persisted."
+        else
+            rm -f "${MSSQL_TAR}.tmp"
+            warn "Image built but could not be saved to ${MSSQL_TAR}."
+            warn "After an FCOS OS rebuild the driver will be missing until this"
+            warn "script is re-run. Check free space on /var/persist."
+        fi
+    else
+        warn "MSSQL overlay build failed — continuing with the stock image."
+        warn "Everything except the Go-Kart Labor report works normally."
+        warn "Fix the build issue (usually network access to the distro package"
+        warn "mirrors) and re-run this script."
+    fi
+fi
+
 # =============================================================================
 #  STEP 5 — RUN THE INTERACTIVE INSTALLER
 # =============================================================================
@@ -487,6 +524,9 @@ RestartSec=10s
 
 # Remove any stale container from a previous run before starting
 ExecStartPre=-/usr/bin/podman rm -f pause-groups-fpm
+# Podman's image cache is wiped by FCOS OS rebuilds; reload the MSSQL-enabled
+# image from /var/persist when it's gone (no-op while it's cached).
+${IMAGE_LOAD_PRE}
 
 # Start PHP-FPM in the foreground (-F) inside the official php:fpm container.
 # --network host   shares the host network namespace so Nginx can reach port ${PHP_PORT}
@@ -499,7 +539,7 @@ ExecStart=/usr/bin/podman run --rm \\
     --env-file ${ENV_FILE} \\
     -v ${INSTALL_DIR}:${INSTALL_DIR}:z \\
     -w ${INSTALL_DIR} \\
-    ${PHP_IMAGE}
+    ${RUNTIME_IMAGE}
 
 ExecStop=/usr/bin/podman stop --time 10 pause-groups-fpm
 

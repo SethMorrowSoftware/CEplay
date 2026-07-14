@@ -1,0 +1,40 @@
+# Layer the MSSQL PDO driver onto the app's PHP-FPM container image.
+#
+# On THIS repo's Fedora CoreOS install you never run this by hand:
+# setup-fcos.sh builds it automatically during step 4 (on top of the same
+# PHP_IMAGE it just pulled), saves the result to
+# /var/persist/pause-groups/php-fpm-mssql.tar so it survives FCOS OS
+# rebuilds, and points the pause-groups-fpm unit at it. Updating the app
+# the documented way (git pull + re-run setup-fcos.sh) refreshes it.
+#
+# Manual build (other setups):
+#   podman build -f deploy/Containerfile.mssql \
+#       --build-arg BASE_IMAGE=<your current app image> \
+#       -t ceplay-app:mssql .
+#
+# Verify: podman run --rm ceplay-app:mssql php -m | grep -i dblib
+#
+# This route uses FreeTDS (pdo_dblib): small, no external repos, and
+# entirely sufficient for the Go-Kart Labor report's read-only aggregate
+# SELECTs. If you prefer Microsoft's official driver (pdo_sqlsrv), see
+# docs/MSSQL_DRIVER.md — it needs the Microsoft package repo and a PECL
+# build, so the image is bigger and slower to build.
+
+ARG BASE_IMAGE=docker.io/library/php:8.3-fpm
+FROM ${BASE_IMAGE}
+
+# Works on both Debian-based (php:*-apache) and Alpine-based (php:*-alpine)
+# official PHP images: try apt first, fall back to apk.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends freetds-dev freetds-bin; \
+        rm -rf /var/lib/apt/lists/*; \
+        # Debian multiarch puts libsybdb where PHP's configure doesn't look
+        ln -s /usr/lib/x86_64-linux-gnu/libsybdb.so /usr/lib/libsybdb.so 2>/dev/null || true; \
+        ln -s /usr/lib/x86_64-linux-gnu/libsybdb.a /usr/lib/libsybdb.a 2>/dev/null || true; \
+    else \
+        apk add --no-cache freetds freetds-dev; \
+    fi; \
+    docker-php-ext-install pdo_dblib; \
+    php -m | grep -i pdo_dblib

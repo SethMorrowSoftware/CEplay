@@ -179,7 +179,10 @@ to fix it. Fix the issue and re-run — the script is safe to re-run.
 - Copies app files to `/var/persist/pause-groups/`
 - Creates the data directory
 - Generates a random encryption key (saved to `/var/persist/pause-groups/.env`)
-- Pulls the PHP-FPM container image from Docker Hub
+- Pulls the PHP-FPM container image from Docker Hub, then builds the
+  MSSQL-enabled overlay on top of it (adds the `pdo_dblib` driver the
+  Go-Kart Labor report needs) and saves it under `/var/persist` so it
+  survives OS rebuilds
 
 > **The image pull (step 4) takes 2–5 minutes** on first run — the image is
 > about 450 MB. You'll see download progress bars. This is normal.
@@ -456,7 +459,7 @@ Here's what happens and what (if anything) you need to do:
 | Nginx config (`/var/persist/nginx.conf`) | ✅ Yes | On the persist VHDX |
 | PHP-FPM systemd service | ✅ Yes | In `/etc/systemd/system/` which is overlaid, not replaced |
 | Systemd timers | ✅ Yes | Same — in `/etc/systemd/system/` |
-| PHP-FPM container image | ⚠️ May need re-pull | Podman image cache is in `/var/lib/containers` which is NOT persisted. The service will auto-pull on next start. |
+| PHP-FPM container image | ✅ Effectively yes | The image cache in `/var/lib/containers` is NOT persisted, but the MSSQL-enabled image is saved to `/var/persist/pause-groups/php-fpm-mssql.tar` and the service reloads it from there automatically (no internet needed). The stock-image fallback auto-pulls from Docker Hub. |
 
 **In practice:** After an automatic rebuild, all services should come back up on
 their own within a minute or two. The PHP-FPM container image will be re-pulled

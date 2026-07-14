@@ -18,9 +18,14 @@
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
-const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE ShiftDate = :date\n  /* Go-kart filter — adjust to your schema, e.g.: AND Dept = 'Go Karts' */";
+// Defaults mirror the venue's proven Grafana query verbatim, with the
+// $__timeFilter(col) macro translated to `col = :date`. Go-kart sales are
+// category 106; go-kart labor is every punch whose job code description is
+// 'Karting', costed to the second from actual clock-in/out timestamps
+// (still-open punches accrue to now, matching the Grafana behavior).
+const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 106  /* go-kart sales category */\n  AND ShiftDate = :date";
 
-const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(CASE\n    WHEN WorkHours > 0 THEN WorkHours * PayRate\n    WHEN WorkHours = 0 AND :date = CAST(GETDATE() AS DATE)\n         THEN (DATEDIFF(MINUTE, CONVERT(TIME, ClockInTime), CONVERT(TIME, CURRENT_TIMESTAMP)) / 60.0) * PayRate\n    ELSE 0\n  END), 0)\nFROM [CenterEdge].[dbo].[TimeClock_Weekly]\nWHERE ClockInDate = :date\n  /* Go-kart staff filter — adjust to your schema, e.g.: AND Department = 'Go Karts' */";
+const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE WHEN ClockOutDate IS NULL\n      THEN CURRENT_TIMESTAMP\n      ELSE ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Karting'\n  AND ClockInDate = :date";
 
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
