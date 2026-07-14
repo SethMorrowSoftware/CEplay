@@ -548,11 +548,38 @@ class DB {
             regular_points REAL NOT NULL DEFAULT 0,
             bonus_points REAL NOT NULL DEFAULT 0,
             unique_cards INTEGER NOT NULL DEFAULT 0,
+            time_plays INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             PRIMARY KEY (stat_date, game_id)
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_date ON game_daily_stats(stat_date)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gds_game ON game_daily_stats(game_id)');
+
+        // Migration: per-day time-pass play counts, powering the analytics
+        // "include/exclude time-pass plays" toggle at day grain. Rows rolled
+        // up before this column existed keep 0 (the raw rows are long
+        // purged, so the split is unknowable for them); the recompute window
+        // fills the recent ~28 days on the next nightly run and everything
+        // after. time_plays_daily_since records where trustworthy day-grain
+        // splits begin, so the UI can say so instead of implying the toggle
+        // rewrites deep history.
+        try {
+            $db->exec('ALTER TABLE game_daily_stats ADD COLUMN time_plays INTEGER NOT NULL DEFAULT 0');
+        } catch (Exception $e) {
+            // Column already exists — ignore
+        }
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'time_plays_daily_since'");
+            if (!$flag) {
+                // The recompute window reaches ~28 days back from first run.
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('time_plays_daily_since', :p0, 0)",
+                    [gmdate('Y-m-d', strtotime('-28 days'))]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('time_plays_daily_since stamp skipped: ' . $e->getMessage());
+        }
 
         // Permanent per-game, per-hour rollup — same lifecycle as
         // game_daily_stats (recomputed nightly from the raw feed by

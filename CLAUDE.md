@@ -55,6 +55,13 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   (Day/Week/Month/Year/Custom, searchable, with prior-period comparison).
 - The same nightly pass also writes `game_hourly_stats` (per-game, per-local-
   hour; ~400-day retention) so hour-of-day history outlives the raw feed.
+- The Analytics overview and both reader-group endpoints accept
+  `exclude_time_plays=1` (a UI toggle on those pages). The overview filters
+  whole transactions (exact — excluded plays' tickets/points/payments drop
+  too); the reader endpoints subtract play COUNTS only, keeping value fields
+  whole so the raw/rollup stitch never disagrees with itself. Day-grain
+  splits rely on `game_daily_stats.time_plays`, tracked since the
+  `time_plays_daily_since` config stamp (older rollup rows can't be split).
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.

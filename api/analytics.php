@@ -123,7 +123,19 @@ function analyticsScrubMoney(array &$payload): void {
     }
 }
 
+/**
+ * True when the request asks to exclude time-pass plays. On the overview
+ * page the exclusion is exact and total (each transaction row carries the
+ * flag, so plays AND their tickets/cash/points drop out together).
+ */
+function analyticsExcludeTimePlays(): bool {
+    return isset($_GET['exclude_time_plays'])
+        && in_array((string)$_GET['exclude_time_plays'], ['1', 'true', 'yes'], true);
+}
+
 function analyticsOverview(bool $hideMoney = false): void {
+    $noTime = analyticsExcludeTimePlays();
+    $noTimeSql = $noTime ? ' AND used_time_play = 0' : '';
     $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
     try {
         $tz = new DateTimeZone($tzName);
@@ -164,8 +176,8 @@ function analyticsOverview(bool $hideMoney = false): void {
     $prevEndIso   = $isoUtc($prevEndUtc);
 
     // ---- KPI: plays / tickets / cash / unique cards (current + prior) ----
-    $kpis = analyticsKpis($startIsoUtc, $endIsoUtc);
-    $previousKpis = analyticsKpis($prevStartIso, $prevEndIso);
+    $kpis = analyticsKpis($startIsoUtc, $endIsoUtc, $noTime);
+    $previousKpis = analyticsKpis($prevStartIso, $prevEndIso, $noTime);
 
     // ---- Breakage: value expired off cards + card merges (system feed) ----
     // Points/tickets, not dollars — no view_revenue scrub needed.
@@ -173,18 +185,18 @@ function analyticsOverview(bool $hideMoney = false): void {
     $previousKpis = array_merge($previousKpis, analyticsSystemTx($prevStartIso, $prevEndIso));
 
     // ---- Guest Insights (new vs returning, frequency, spend/visit) ----
-    $guests = analyticsGuests($startIsoUtc, $endIsoUtc, $tz, $startLocal);
+    $guests = analyticsGuests($startIsoUtc, $endIsoUtc, $tz, $startLocal, $noTime);
 
     // ---- Fleet posture (current state, not range-scoped) ----
     $fleet = analyticsFleet();
 
     // ---- Top games — three leaderboards, capped at 10 each ----
-    $topGamesPlays   = analyticsTopGames($startIsoUtc, $endIsoUtc, 'plays', 10);
-    $topGamesTickets = analyticsTopGames($startIsoUtc, $endIsoUtc, 'tickets', 10);
-    $topGamesCash    = analyticsTopGames($startIsoUtc, $endIsoUtc, 'cash', 10);
+    $topGamesPlays   = analyticsTopGames($startIsoUtc, $endIsoUtc, 'plays', 10, $noTime);
+    $topGamesTickets = analyticsTopGames($startIsoUtc, $endIsoUtc, 'tickets', 10, $noTime);
+    $topGamesCash    = analyticsTopGames($startIsoUtc, $endIsoUtc, 'cash', 10, $noTime);
 
     // ---- Category breakdown (arcade vs rides vs batting cages, etc.) ----
-    $byCategory = analyticsByCategory($startIsoUtc, $endIsoUtc);
+    $byCategory = analyticsByCategory($startIsoUtc, $endIsoUtc, $noTime);
 
     // ---- Payment mix (plays by method) + credit-card brand mix ----
     // Method COUNTS are visible to all analytics roles (kpis already expose
@@ -200,7 +212,7 @@ function analyticsOverview(bool $hideMoney = false): void {
              SUM(CASE WHEN used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays,
              SUM(CASE WHEN used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays
          FROM game_play_transactions
-         WHERE transaction_time >= :p0 AND transaction_time < :p1',
+         WHERE transaction_time >= :p0 AND transaction_time < :p1' . $noTimeSql,
         [$startIsoUtc, $endIsoUtc]
     ) ?: [];
     $paymentMix = [
@@ -221,7 +233,7 @@ function analyticsOverview(bool $hideMoney = false): void {
         'SELECT cc_card_type AS brand, COUNT(*) AS plays, COALESCE(SUM(credit_card_amount), 0) AS amount
          FROM game_play_transactions
          WHERE cc_card_type != \'\'
-           AND transaction_time >= :p0 AND transaction_time < :p1
+           AND transaction_time >= :p0 AND transaction_time < :p1' . $noTimeSql . '
          GROUP BY cc_card_type
          ORDER BY plays DESC',
         [$startIsoUtc, $endIsoUtc]
@@ -234,7 +246,7 @@ function analyticsOverview(bool $hideMoney = false): void {
         'SELECT transaction_time, redemption_tickets,
                 (cash_amount + credit_card_amount) AS cash_amount
          FROM game_play_transactions
-         WHERE transaction_time >= :p0 AND transaction_time < :p1',
+         WHERE transaction_time >= :p0 AND transaction_time < :p1' . $noTimeSql,
         [$startIsoUtc, $endIsoUtc]
     );
 
@@ -388,6 +400,7 @@ function analyticsOverview(bool $hideMoney = false): void {
         ],
         'system_tx_supported' => $sysTxSupported,
         'hide_money' => $hideMoney,
+        'exclude_time_plays' => $noTime,
         'generated_at' => (new DateTime('now', $utc))->format('Y-m-d\TH:i:s\Z'),
     ];
 
@@ -463,7 +476,7 @@ function analyticsResolveRange(string $key, DateTimeZone $tz): array {
  * KPI totals for the [startIso, endIso) window. Uses lexical ISO comparison
  * which works for all valid ISO 8601 timestamps with timezone designators.
  */
-function analyticsKpis(string $startIso, string $endIso): array {
+function analyticsKpis(string $startIso, string $endIso, bool $excludeTimePlays = false): array {
     $row = DB::queryOne(
         'SELECT
              COUNT(*) AS plays,
@@ -477,7 +490,8 @@ function analyticsKpis(string $startIso, string $endIso): array {
              SUM(CASE WHEN used_time_play = 1 THEN 1 ELSE 0 END) AS time_plays,
              SUM(CASE WHEN used_play_privilege = 1 THEN 1 ELSE 0 END) AS privilege_plays
          FROM game_play_transactions
-         WHERE transaction_time >= :p0 AND transaction_time < :p1',
+         WHERE transaction_time >= :p0 AND transaction_time < :p1'
+            . ($excludeTimePlays ? ' AND used_time_play = 0' : ''),
         [$startIso, $endIso]
     );
 
@@ -550,7 +564,7 @@ function analyticsSystemTx(string $startIso, string $endIso): array {
  *
  * @param DateTime $fromLocal window start in venue tz (for the new/returning cutoff date)
  */
-function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, DateTime $fromLocal): array {
+function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, DateTime $fromLocal, bool $excludeTimePlays = false): array {
     $fromDate = $fromLocal->format('Y-m-d');
 
     // Per-card facts within the window: distinct active days (visits),
@@ -560,7 +574,8 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
                 (cash_amount + credit_card_amount) AS spend
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1
-           AND card_number != \'\' AND card_number != \'000000\'',
+           AND card_number != \'\' AND card_number != \'000000\''
+            . ($excludeTimePlays ? ' AND used_time_play = 0' : ''),
         [$startIso, $endIso]
     );
 
@@ -710,7 +725,7 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
  * silently disappears. Cash here is money and is zeroed for non-view_revenue
  * roles by analyticsScrubMoney.
  */
-function analyticsByCategory(string $startIso, string $endIso): array {
+function analyticsByCategory(string $startIso, string $endIso, bool $excludeTimePlays = false): array {
     $perGame = DB::query(
         'SELECT game_id,
                 COUNT(*) AS plays,
@@ -718,7 +733,8 @@ function analyticsByCategory(string $startIso, string $endIso): array {
                 COALESCE(SUM(cash_amount + credit_card_amount), 0) AS cash
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1
-           AND game_id != \'\'
+           AND game_id != \'\''
+            . ($excludeTimePlays ? ' AND used_time_play = 0' : '') . '
          GROUP BY game_id',
         [$startIso, $endIso]
     );
@@ -852,7 +868,7 @@ function analyticsFleet(): array {
  * Top-N games leaderboard for the given metric.
  * metric: 'plays' | 'tickets' | 'cash'
  */
-function analyticsTopGames(string $startIso, string $endIso, string $metric, int $limit = 10): array {
+function analyticsTopGames(string $startIso, string $endIso, string $metric, int $limit = 10, bool $excludeTimePlays = false): array {
     $orderExpr = 'plays';
     if ($metric === 'tickets') $orderExpr = 'tickets';
     elseif ($metric === 'cash') $orderExpr = 'cash';
@@ -866,7 +882,8 @@ function analyticsTopGames(string $startIso, string $endIso, string $metric, int
          FROM game_play_transactions t
          LEFT JOIN game_state_cache c ON c.game_id = t.game_id
          WHERE t.transaction_time >= :p0 AND t.transaction_time < :p1
-           AND t.game_id != \'\'
+           AND t.game_id != \'\''
+            . ($excludeTimePlays ? ' AND t.used_time_play = 0' : '') . '
          GROUP BY t.game_id
          ORDER BY ' . $orderExpr . ' DESC
          LIMIT ' . max(1, (int)$limit),
@@ -1140,7 +1157,7 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
     $rows = DB::query(
         'SELECT transaction_time, game_id, game_description, card_number,
                 redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
-                regular_points, bonus_points
+                regular_points, bonus_points, used_time_play
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1',
         [$lo, $hi]
@@ -1163,13 +1180,14 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
         if ($gid === '') continue;
 
         if (!isset($byDate[$date][$gid])) {
-            $byDate[$date][$gid] = ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'regular_points' => 0.0, 'bonus_points' => 0.0];
+            $byDate[$date][$gid] = ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'regular_points' => 0.0, 'bonus_points' => 0.0, 'time_plays' => 0];
         }
         $byDate[$date][$gid]['plays']          += 1;
         $byDate[$date][$gid]['tickets']        += (float)($r['redemption_tickets'] ?? 0);
         $byDate[$date][$gid]['cash']           += (float)($r['cash_amount'] ?? 0);
         $byDate[$date][$gid]['regular_points'] += (float)($r['regular_points'] ?? 0);
         $byDate[$date][$gid]['bonus_points']   += (float)($r['bonus_points'] ?? 0);
+        $byDate[$date][$gid]['time_plays']     += ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
 
         $desc = trim((string)($r['game_description'] ?? ''));
         if ($desc !== '') $names[$gid] = $desc;
@@ -1181,7 +1199,7 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
 function perfRollupDailyPerGame(string $fromDate, string $toDate): array {
     if ($fromDate > $toDate) return ['byDate' => [], 'names' => []];
     $rows = DB::query(
-        'SELECT stat_date, game_id, game_name, plays, tickets, cash, regular_points, bonus_points
+        'SELECT stat_date, game_id, game_name, plays, tickets, cash, regular_points, bonus_points, time_plays
          FROM game_daily_stats
          WHERE stat_date >= :p0 AND stat_date <= :p1',
         [$fromDate, $toDate]
@@ -1197,6 +1215,7 @@ function perfRollupDailyPerGame(string $fromDate, string $toDate): array {
             'cash'           => (float)$r['cash'],
             'regular_points' => (float)$r['regular_points'],
             'bonus_points'   => (float)$r['bonus_points'],
+            'time_plays'     => (int)($r['time_plays'] ?? 0),
         ];
         $nm = trim((string)$r['game_name']);
         if ($nm !== '') $names[$gid] = $nm;
@@ -1743,10 +1762,16 @@ function readerHourlyCoverage(string $fromDate, string $toDate, DateTimeZone $tz
  * feed, older days from the game_hourly_stats rollup — the same disjoint
  * stitch perfDailyPerGame() uses, so nothing is double-counted.
  *
+ * When $excludeTimePlays is set, each row's play count drops its time-pass
+ * plays (raw rows filter exactly; rollup rows subtract the stored counter).
+ * Tickets/cash stay whole — the hourly rollup can't attribute value to the
+ * excluded plays, and the raw side matches so the stitch never disagrees
+ * with itself. time_plays keeps reporting the excluded count either way.
+ *
  * @param array<string,bool> $memberSet game_id => true
  * @return array<int,array{date:string,hour:int,game_id:string,plays:int,tickets:float,cash:float,time_plays:int}>
  */
-function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, array $memberSet): array {
+function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, array $memberSet, bool $excludeTimePlays = false): array {
     $today = (new DateTime('now', $tz))->format('Y-m-d');
     if ($toDate > $today) $toDate = $today;
     if ($fromDate > $toDate || empty($memberSet)) return [];
@@ -1766,14 +1791,16 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
         ) as $r) {
             $gid = (string)$r['game_id'];
             if (!isset($memberSet[$gid])) continue;
+            $plays = (int)$r['plays'];
+            $timePlays = (int)$r['time_plays'];
             $rows[] = [
                 'date'       => (string)$r['stat_date'],
                 'hour'       => (int)$r['hour'],
                 'game_id'    => $gid,
-                'plays'      => (int)$r['plays'],
+                'plays'      => $excludeTimePlays ? max(0, $plays - $timePlays) : $plays,
                 'tickets'    => (float)$r['tickets'],
                 'cash'       => (float)$r['cash'],
-                'time_plays' => (int)$r['time_plays'],
+                'time_plays' => $timePlays,
             ];
         }
     }
@@ -1814,15 +1841,42 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
                 $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
                             'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
             }
-            $agg[$k]['plays']      += 1;
+            $isTimePlay = ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+            if (!($excludeTimePlays && $isTimePlay)) {
+                $agg[$k]['plays'] += 1;
+            }
             $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
             $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
-            $agg[$k]['time_plays'] += ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+            $agg[$k]['time_plays'] += $isTimePlay;
         }
         foreach ($agg as $a) $rows[] = $a;
     }
 
     return $rows;
+}
+
+/**
+ * Apply the time-pass exclusion to a per-game byDate structure: each day
+ * bucket's play count drops its recorded time-pass plays. Value fields
+ * (tickets/cash/points) stay whole — day buckets rolled up before the
+ * time_plays column existed carry 0 and are left unchanged, which the
+ * endpoints disclose via time_split_since.
+ */
+function readerApplyTimeExclusion(array $byDate): array {
+    foreach ($byDate as &$games) {
+        foreach ($games as &$b) {
+            $b['plays'] = max(0, (int)$b['plays'] - (int)($b['time_plays'] ?? 0));
+        }
+        unset($b);
+    }
+    unset($games);
+    return $byDate;
+}
+
+/** Local date where trustworthy day-grain time-pass splits begin (or null). */
+function readerTimeSplitSince(): ?string {
+    $v = DB::getConfig('time_plays_daily_since');
+    return ($v !== null && $v !== '') ? (string)$v : null;
 }
 
 /**
@@ -1955,6 +2009,7 @@ function readerScrubMoney(array &$payload): void {
  * resolved window. Powers the comparison table on the Reader Groups page.
  */
 function analyticsReaderGroupsList(bool $hideMoney): void {
+    $noTime = analyticsExcludeTimePlays();
     list($tz, $tzName) = perfTimezone();
     $win = perfResolveWindow($tz);
 
@@ -1984,6 +2039,8 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
         'dow_counts'   => $coverage['dow_counts'],
         'hourly_covered_from' => $coverage['from'],
         'hourly_full_coverage'=> (bool)$coverage['full'],
+        'exclude_time_plays'  => $noTime,
+        'time_split_since'    => readerTimeSplitSince(),
         'hide_money'   => $hideMoney,
         'generated_at' => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
     ];
@@ -1995,6 +2052,10 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
 
     $dailyCur  = perfDailyPerGame($win['from'], $win['to'], $tz);
     $dailyPrev = perfDailyPerGame($win['prev_from'], $win['prev_to'], $tz);
+    if ($noTime) {
+        $dailyCur['byDate']  = readerApplyTimeExclusion($dailyCur['byDate']);
+        $dailyPrev['byDate'] = readerApplyTimeExclusion($dailyPrev['byDate']);
+    }
     $curTot  = perfSumPerGame($dailyCur);
     $prevTot = perfSumPerGame($dailyPrev);
 
@@ -2003,7 +2064,7 @@ function analyticsReaderGroupsList(bool $hideMoney): void {
 
     // One hourly pass over the union of all member games, aggregated into a
     // per-group 7×24 plays matrix (plus time-pass plays) via the reverse index.
-    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $union);
+    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $union, $noTime);
     $cellsByGroup = [];
     $dowPlaysByGroup = [];
     $timeByGroup = [];
@@ -2115,6 +2176,7 @@ function analyticsReaderGroupDetail(bool $hideMoney): void {
         return;
     }
 
+    $noTime = analyticsExcludeTimePlays();
     list($tz, $tzName) = perfTimezone();
     $win = perfResolveWindow($tz);
 
@@ -2148,6 +2210,10 @@ function analyticsReaderGroupDetail(bool $hideMoney): void {
     };
     $curByDate  = $filterByDate($dailyCur['byDate']);
     $prevByDate = $filterByDate($dailyPrev['byDate']);
+    if ($noTime) {
+        $curByDate  = readerApplyTimeExclusion($curByDate);
+        $prevByDate = readerApplyTimeExclusion($prevByDate);
+    }
     $curTot  = perfSumPerGame(['byDate' => $curByDate]);
     $prevTot = perfSumPerGame(['byDate' => $prevByDate]);
 
@@ -2156,7 +2222,7 @@ function analyticsReaderGroupDetail(bool $hideMoney): void {
 
     // Hour-grain: heatmap + busiest cells + time-pass plays (coverage-bound).
     $coverage = readerHourlyCoverage($win['from'], $win['to'], $tz);
-    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $memberSet);
+    $hourlyRows = readerHourlyRows($win['from'], $win['to'], $tz, $memberSet, $noTime);
     $heat = readerHeatmap($hourlyRows, $coverage, $tz);
 
     $kpis = function (array $sum, int $days, int $nGames): array {
@@ -2254,6 +2320,8 @@ function analyticsReaderGroupDetail(bool $hideMoney): void {
         'busiest'         => $heat['busiest'],
         'games'           => $gamesOut,
         'days_in_range'   => $daysElapsed,
+        'exclude_time_plays' => $noTime,
+        'time_split_since'   => readerTimeSplitSince(),
         'hide_money'      => $hideMoney,
         'generated_at'    => (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
     ];
