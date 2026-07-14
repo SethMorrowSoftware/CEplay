@@ -17,6 +17,9 @@
 
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
+// Reuses the Performance/Reader-Groups daily stitch (perfDailyPerGame etc.)
+// to count kart swipes and time-pass swipes per day from the app's own feed.
+require_once __DIR__ . '/analytics.php';
 
 // Defaults for THIS venue — the operator's confirmed-working Grafana
 // query, verbatim: go-kart sales are category 108; go-kart staff are the
@@ -44,11 +47,11 @@ require_once __DIR__ . '/../lib/validator.php';
 // (106 = "Beverages" — an earlier wrong turn). Rides paid at the card
 // reader post to 108 with AmtSold = 0 (the money books under 123 =
 // "Reader Sales" at card-load time), and no Sales column carries the ride
-// value (Discounts probe ruled it out). What Sales DOES track precisely
-// is QtySold — ~3,486 rides/week live. So: cash lines count as cash, and
-// each $0 card-swiped ride is valued at a per-ride figure the operator
-// edits directly in the query text.
-const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(CASE\n    WHEN AmtSold > 0 THEN AmtSold  /* walk-up cash: count the actual cash */\n    /* card-swiped rides post \$0 — value each ride here (EDIT 11.00 to your per-ride price) */\n    ELSE QtySold * 11.00\n  END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+// value. So the MSSQL query contributes only the WALK-UP CASH; the ride
+// component (paid swipes × per-ride price, with time-pass swipes omitted)
+// is computed from the app's own reader feed, which knows used_time_play
+// per swipe — see laborRideStats(). Group + price are Labor page settings.
+const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(CASE WHEN AmtSold > 0 THEN AmtSold ELSE 0 END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts: walk-up cash only; rides are valued from the reader feed */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
 
 const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
 
@@ -78,12 +81,58 @@ function laborQueries(): array {
     ];
 }
 
+function laborRideConfig(): array {
+    $gid = DB::getConfig('labor_reader_group_id');
+    $price = DB::getConfig('labor_price_per_ride');
+    return [
+        'reader_group_id' => ($gid !== null && $gid !== '') ? (int)$gid : null,
+        'price_per_ride'  => ($price !== null && $price !== '') ? (float)$price : 11.0,
+    ];
+}
+
+/**
+ * Per-day swipe counts for the configured go-kart reader group, from the
+ * app's OWN feed (game_daily_stats + raw transactions via the same stitch
+ * the Reader Groups page uses). Knows used_time_play per swipe, so the
+ * paid-ride count can omit time-pass swipes — which the MSSQL Sales lines
+ * cannot distinguish.
+ *
+ * @param string[] $dates ISO dates
+ * @return array<string,array{rides:int,pass:int}> keyed by date
+ */
+function laborRideStats(array $dates, int $groupId): array {
+    $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
+        'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$groupId]));
+    $out = [];
+    if (!$members || !$dates) {
+        return $out;
+    }
+    $memberSet = array_flip($members);
+    sort($dates);
+    list($tz) = perfTimezone();
+    $daily = perfDailyPerGame($dates[0], $dates[count($dates) - 1], $tz);
+    foreach ($dates as $d) {
+        $rides = 0; $pass = 0;
+        foreach (($daily['byDate'][$d] ?? []) as $gid => $b) {
+            if (!isset($memberSet[$gid])) continue;
+            $rides += (int)($b['plays'] ?? 0);
+            $pass  += (int)($b['time_plays'] ?? 0);
+        }
+        $out[$d] = ['rides' => $rides, 'pass' => $pass];
+    }
+    return $out;
+}
+
 function laborGetSettings(): void {
     Auth::requireAccess('settings');
     $out = MssqlClient::settings();
     $out += laborQueries();
+    $out += laborRideConfig();
     $out['configured'] = MssqlClient::isConfigured();
     $out['defaults'] = ['sales_sql' => LABOR_DEFAULT_SALES_SQL, 'labor_sql' => LABOR_DEFAULT_LABOR_SQL];
+    // For the "value rides from this area" dropdown — read directly so the
+    // settings gate alone suffices.
+    $out['reader_groups'] = DB::query('SELECT id, name FROM reader_groups ORDER BY name');
     echo json_encode($out);
 }
 
@@ -119,6 +168,29 @@ function laborPutSettings(array $input): void {
     }
     DB::setConfig('labor_sales_sql', $salesSql);
     DB::setConfig('labor_labor_sql', $laborSql);
+
+    // Ride valuation: which reader group counts as "the karts", and what a
+    // paid (non-time-pass) swipe is worth.
+    if (array_key_exists('reader_group_id', $input)) {
+        $gid = $input['reader_group_id'];
+        if ($gid === null || $gid === '' || (int)$gid === 0) {
+            DB::setConfig('labor_reader_group_id', '');
+        } else {
+            $gid = (int)$gid;
+            $exists = DB::queryOne('SELECT id FROM reader_groups WHERE id = :p0', [$gid]);
+            if (!$exists) {
+                throw new RuntimeException('Unknown reader group for ride valuation.');
+            }
+            DB::setConfig('labor_reader_group_id', (string)$gid);
+        }
+    }
+    if (array_key_exists('price_per_ride', $input)) {
+        $p = (float)$input['price_per_ride'];
+        if ($p < 0 || $p > 10000) {
+            throw new RuntimeException('Price per ride must be between 0 and 10000.');
+        }
+        DB::setConfig('labor_price_per_ride', (string)$p);
+    }
 
     try {
         DB::execute(
@@ -306,18 +378,42 @@ function laborRate(): void {
     }
 
     $q = laborQueries();
+    $ride = laborRideConfig();
+    // Swipe counts come from the app's own reader feed and exclude
+    // time-pass swipes from the paid-ride valuation.
+    $rideStats = [];
+    if ($ride['reader_group_id']) {
+        try {
+            $rideStats = laborRideStats($dates, $ride['reader_group_id']);
+        } catch (Exception $e) {
+            error_log('labor ride stats failed: ' . $e->getMessage());
+        }
+    }
+
     $client = new MssqlClient();
     $days = [];
     foreach ($dates as $d) {
         try {
-            $sales = $client->scalar(MssqlClient::bindDate($q['sales_sql'], $d));
+            $cash  = $client->scalar(MssqlClient::bindDate($q['sales_sql'], $d));
             $labor = $client->scalar(MssqlClient::bindDate($q['labor_sql'], $d));
-            $days[] = [
+            $day = [
                 'date'  => $d,
-                'sales' => round($sales, 2),
+                'cash'  => round($cash, 2),
                 'labor' => round($labor, 2),
-                'rate'  => $sales > 0 ? round($labor / $sales, 4) : null,
             ];
+            $sales = $cash;
+            if (isset($rideStats[$d])) {
+                $rides = $rideStats[$d]['rides'];
+                $pass  = $rideStats[$d]['pass'];
+                $paid  = max(0, $rides - $pass);
+                $sales += $paid * $ride['price_per_ride'];
+                $day['rides'] = $rides;
+                $day['pass_rides'] = $pass;
+                $day['paid_rides'] = $paid;
+            }
+            $day['sales'] = round($sales, 2);
+            $day['rate']  = $sales > 0 ? round($labor / $sales, 4) : null;
+            $days[] = $day;
         } catch (Exception $e) {
             $days[] = ['date' => $d, 'error' => $e->getMessage()];
             // A connection-level failure will fail every date the same way;
@@ -332,6 +428,11 @@ function laborRate(): void {
     echo json_encode([
         'days' => $days,
         'configured' => MssqlClient::isConfigured(),
+        'ride_valuation' => [
+            'reader_group_id' => $ride['reader_group_id'],
+            'price_per_ride'  => $ride['price_per_ride'],
+            'active'          => (bool)$ride['reader_group_id'],
+        ],
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
     ]);
 }

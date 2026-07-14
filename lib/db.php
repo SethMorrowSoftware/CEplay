@@ -335,6 +335,33 @@ class DB {
             error_log('labor query v4 migration skipped: ' . $e->getMessage());
         }
 
+        // v5: ride valuation moved out of SQL — the MSSQL query now carries
+        // walk-up cash only, and paid rides (kart swipes MINUS time-pass
+        // swipes, which the Sales table cannot distinguish but the app's own
+        // reader feed can) are valued at a configurable per-ride price.
+        // Upgrade the stored sales query only if it is exactly the shipped
+        // v4 (rides-in-SQL) text; hand-tuned queries are never touched.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v5'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                $v4Sales = "SELECT COALESCE(SUM(CASE\n    WHEN AmtSold > 0 THEN AmtSold  /* walk-up cash: count the actual cash */\n    /* card-swiped rides post \$0 — value each ride here (EDIT 11.00 to your per-ride price) */\n    ELSE QtySold * 11.00\n  END), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 108  /* Go Karts */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+                $stored = self::queryOne("SELECT value FROM api_config WHERE key = 'labor_sales_sql'");
+                if ($stored && trim((string)$stored['value']) === trim($v4Sales)) {
+                    self::execute(
+                        "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                        [LABOR_DEFAULT_SALES_SQL]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v5', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v5 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
