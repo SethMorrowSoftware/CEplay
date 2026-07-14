@@ -64,7 +64,7 @@ function handleLabor(string $method, array $parts, ?array $input): void {
             if ($method === 'PUT') { laborPutSettings($input ?? []); return; }
             break;
         case 'test':
-            if ($method === 'POST') { laborTest(); return; }
+            if ($method === 'POST') { laborTest($input); return; }
             break;
         case 'rate':
             if ($method === 'GET') { laborRate(); return; }
@@ -246,12 +246,19 @@ function laborPutSettings(array $input): void {
     echo json_encode(['success' => true, 'configured' => MssqlClient::isConfigured()]);
 }
 
-function laborTest(): void {
+function laborTest(?array $input = null): void {
     Auth::requireAccess('settings');
     $client = new MssqlClient();
     $tz = new DateTimeZone(DB::getConfig('timezone') ?: DEFAULT_TIMEZONE);
     $today = (new DateTime('now', $tz))->format('Y-m-d');
-    $yesterday = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');
+    // The fingerprint can be aimed at any date — essential when chasing a
+    // known figure ("7/11 total was $5,797.24") through categories and
+    // divisions. Defaults to yesterday (a complete business day).
+    $probeDate = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');
+    if ($input && isset($input['probe_date']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$input['probe_date'])) {
+        $probeDate = (string)$input['probe_date'];
+    }
+    $yesterday = $probeDate;
     $q = laborQueries();
     try {
         $client->connect();
@@ -281,12 +288,12 @@ function laborTest(): void {
         try {
             $rows = $client->rows(MssqlClient::bindDate(
                 "SELECT TOP 5 CatNo, COUNT(*) AS lines, SUM(AmtSold) AS total FROM [CenterEdge].[dbo].[Sales] WHERE ShiftDate >= :date AND ShiftDate < DATEADD(DAY, 1, :date) GROUP BY CatNo ORDER BY total DESC", $yesterday), 5);
-            $diag['top_categories_yesterday'] = array_map(function ($r) use (&$topCatNos) {
+            $diag['top_categories_' . $probeDate] = array_map(function ($r) use (&$topCatNos) {
                 $topCatNos[] = (int)$r['CatNo'];
                 return 'CatNo ' . $r['CatNo'] . ': $' . round((float)$r['total'], 2) . ' (' . $r['lines'] . ' lines)';
             }, $rows);
         } catch (Exception $e) {
-            $diag['top_categories_yesterday'] = 'error: ' . $e->getMessage();
+            $diag['top_categories_' . $probeDate] = 'error: ' . $e->getMessage();
         }
 
         // --- Schema-aware name discovery: resolve category NUMBERS to their
@@ -343,6 +350,60 @@ function laborTest(): void {
                 }
             }
             $diag['category_names'] = $catNames ?: 'no matching category lookup found (candidates tried: ' . implode(', ', $tried) . ')';
+
+            // --- Where does a known figure live? Dump EVERY category and
+            // EVERY division total for the probe date, names joined where a
+            // lookup exists, so a target number (e.g. "7/11 karts were
+            // $5,797.24") identifies its own bucket on sight. The Sales
+            // table's DivNo has never been examined before this probe.
+            $nameLookup = function (string $tablePattern, string $noColRegex) use ($client, $ident): ?array {
+                $tables = $client->rows(
+                    "SELECT TABLE_NAME FROM [CenterEdge].INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE '" . $tablePattern . "' ORDER BY TABLE_NAME", 16);
+                foreach ($tables as $t) {
+                    $tbl = (string)$t['TABLE_NAME'];
+                    try {
+                        $tcols = $client->rows(
+                            "SELECT COLUMN_NAME, DATA_TYPE FROM [CenterEdge].INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" . str_replace("'", "''", $tbl) . "'", 64);
+                        $noCol = null; $nameCol = null;
+                        foreach ($tcols as $c) {
+                            $cn = (string)$c['COLUMN_NAME'];
+                            $ct = strtolower((string)$c['DATA_TYPE']);
+                            $isInt = in_array($ct, ['int', 'smallint', 'tinyint', 'bigint', 'numeric', 'decimal'], true);
+                            if ($noCol === null && $isInt && preg_match($noColRegex, $cn)) $noCol = $cn;
+                            if ($nameCol === null && in_array($ct, ['varchar', 'nvarchar', 'char', 'nchar'], true) && preg_match('/(Desc|Name|Title)/i', $cn)) $nameCol = $cn;
+                        }
+                        if ($noCol && $nameCol) {
+                            $names = [];
+                            foreach ($client->rows('SELECT ' . $ident($noCol) . ' AS no, ' . $ident($nameCol) . ' AS name FROM [CenterEdge].[dbo].' . $ident($tbl), 64) as $r) {
+                                $names[(string)(int)$r['no']] = trim((string)$r['name']);
+                            }
+                            if ($names) return $names;
+                        }
+                    } catch (Exception $e) {
+                        continue;
+                    }
+                }
+                return null;
+            };
+            $catNameMap = $nameLookup('%Cat%', '/^(CatNo|CategoryNo|CatID|CategoryID|No|ID)$/i') ?: [];
+            $divNameMap = $nameLookup('%Div%', '/^(DivNo|DivisionNo|DivID|DivisionID|No|ID)$/i') ?: [];
+
+            foreach ([
+                ['all_categories_' . $probeDate, 'CatNo', $catNameMap],
+                ['all_divisions_' . $probeDate, 'DivNo', $divNameMap],
+            ] as [$key, $col, $nameMap]) {
+                try {
+                    $rows = $client->rows(MssqlClient::bindDate(
+                        "SELECT {$col} AS no, COUNT(*) AS lines, SUM(AmtSold) AS total FROM [CenterEdge].[dbo].[Sales] WHERE ShiftDate >= :date AND ShiftDate < DATEADD(DAY, 1, :date) GROUP BY {$col} ORDER BY total DESC", $probeDate), 30);
+                    $diag[$key] = $rows ? array_map(function ($r) use ($col, $nameMap) {
+                        $no = (string)(int)$r['no'];
+                        $nm = isset($nameMap[$no]) ? ' "' . $nameMap[$no] . '"' : '';
+                        return $col . ' ' . $no . $nm . ': $' . round((float)$r['total'], 2) . ' (' . $r['lines'] . ' lines)';
+                    }, $rows) : 'no sales rows on ' . $probeDate;
+                } catch (Exception $e) {
+                    $diag[$key] = 'error: ' . $e->getMessage();
+                }
+            }
 
             // Category 108 ("Go Karts") posts rides at AmtSold = 0 because
             // payment happens at the card reader. Some POS configurations
