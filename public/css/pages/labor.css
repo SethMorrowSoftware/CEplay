@@ -1,0 +1,78 @@
+/* ============================================================
+   Go-Kart Labor page — day picker chips, rate bars, admin form
+   ============================================================ */
+
+.labor-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.labor-chiprow { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+
+.labor-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.4rem 0.3rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.labor-chip-x {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    border-radius: 50%;
+}
+.labor-chip-x:hover { color: var(--danger); background: var(--bg-hover); }
+
+.labor-presets { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.6rem; }
+
+/* Rate coloring: green ≤25%, amber ≤40%, red beyond */
+.labor-rate { font-weight: 600; }
+.labor-rate-good { color: var(--success); }
+.labor-rate-warn { color: var(--warning); }
+.labor-rate-bad  { color: var(--danger); }
+
+.labor-bar-track {
+    height: 10px;
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    overflow: hidden;
+    min-width: 6rem;
+}
+.labor-bar {
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--viz-heat, #f59e0b), var(--danger));
+    transition: width 0.3s ease;
+}
+
+/* Admin form */
+.labor-conn-grid {
+    display: grid;
+    grid-template-columns: 2fr 0.8fr 1.2fr 1.2fr 1.2fr;
+    gap: 0.75rem;
+    margin: 0.75rem 0 0.25rem;
+}
+@media (max-width: 900px) { .labor-conn-grid { grid-template-columns: 1fr 1fr; } }
+
+.labor-sql {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.8rem;
+    line-height: 1.45;
+    width: 100%;
+    resize: vertical;
+    white-space: pre;
+}
+
+.labor-driver-missing { color: var(--danger); font-weight: 500; }

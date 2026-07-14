@@ -62,6 +62,17 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   whole so the raw/rollup stitch never disagrees with itself. Day-grain
   splits rely on `game_daily_stats.time_plays`, tracked since the
   `time_plays_daily_since` config stamp (older rollup rows can't be split).
+- Go-Kart Labor (`#/labor`, `/api/labor/*`, `lib/mssql_client.php`) compares
+  sales vs labor cost per selected day by querying the venue's CenterEdge
+  MSSQL database directly (Sales + TimeClock_Weekly). Connection settings
+  live encrypted in api_config; the two per-day queries are admin-editable
+  SQL with a required `:date` placeholder, guarded to a single SELECT
+  (comment-stripping keyword blacklist — see MssqlClient::assertReadOnly).
+  Driver detection tries PDO sqlsrv → dblib → odbc; the page reports what's
+  installed. View gate: analytics + view_revenue (nav key view_revenue);
+  config gate: settings. The sandbox/test env has no MSSQL driver — the
+  live connection test happens on the venue server via the page's Test
+  connection button.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.
