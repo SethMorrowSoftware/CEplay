@@ -250,7 +250,7 @@
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     (state.data && state.data.ride_valuation && state.data.ride_valuation.active
-                        ? 'Sales = walk-up cash + paid rides × ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '. Time-pass swipes are counted in Rides but omitted from the sales value. '
+                        ? 'Sales = walk-up cash + paid rides × each track’s price (default ' + fmtMoney(state.data.ride_valuation.price_per_ride) + '). Time-pass swipes are counted in Rides but omitted from the sales value. '
                         : 'Sales come from the MSSQL query below (walk-up cash only until a reader group is selected for ride valuation). ')
                     + 'Labor rate = labor cost ÷ sales. Today includes staff currently on the clock at their rate so far. A punch that was never clocked out counts zero on past days — fix missed punch-outs in CenterEdge and the day recalculates on refresh.' })
             ])
@@ -282,7 +282,8 @@
         var passIn = App.el('input', { className: 'form-input', type: 'password',
             placeholder: s.has_password ? '•••••• (leave blank to keep current)' : 'Password' });
         // Ride valuation: which reader-group area counts as "the karts",
-        // and what one paid (non-time-pass) swipe is worth.
+        // the default per-ride price, and per-track overrides (the venue
+        // runs multiple kart tracks at different price points).
         var groupSel = App.el('select', { className: 'form-input' },
             [App.el('option', { value: '', textContent: '— none (walk-up cash only) —' })].concat(
                 (s.reader_groups || []).map(function(g) {
@@ -292,6 +293,31 @@
                 })));
         var priceIn = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
             value: s.price_per_ride != null ? String(s.price_per_ride) : '11', style: { maxWidth: '8rem' } });
+
+        // Per-track price rows, rebuilt whenever the group selection changes.
+        var trackPriceInputs = {};
+        var trackPricesBox = App.el('div', { className: 'labor-track-prices' });
+        function rebuildTrackPrices() {
+            trackPricesBox.innerHTML = '';
+            trackPriceInputs = {};
+            var members = (s.reader_group_members || {})[groupSel.value] || [];
+            if (!groupSel.value || !members.length) return;
+            trackPricesBox.appendChild(App.el('label', { className: 'form-label', textContent:
+                'Per-track prices — blank uses the default price' }));
+            members.forEach(function(m) {
+                var inp = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
+                    placeholder: 'default', style: { maxWidth: '7rem' } });
+                var saved = (s.ride_prices || {})[m.game_id];
+                if (saved != null && saved !== '') inp.value = String(saved);
+                trackPriceInputs[m.game_id] = inp;
+                trackPricesBox.appendChild(App.el('div', { className: 'labor-track-row' }, [
+                    App.el('span', { className: 'labor-track-name', textContent: m.game_name || m.game_id }),
+                    inp
+                ]));
+            });
+        }
+        groupSel.addEventListener('change', rebuildTrackPrices);
+        rebuildTrackPrices();
 
         var salesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 6 });
         salesTa.value = s.sales_sql || '';
@@ -309,7 +335,15 @@
                         database: dbIn.value.trim(), username: userIn.value.trim(),
                         sales_sql: salesTa.value, labor_sql: laborTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
-                        price_per_ride: parseFloat(priceIn.value) || 0
+                        price_per_ride: parseFloat(priceIn.value) || 0,
+                        ride_prices: (function() {
+                            var map = {};
+                            Object.keys(trackPriceInputs).forEach(function(gid) {
+                                var v = trackPriceInputs[gid].value;
+                                if (v !== '') map[gid] = parseFloat(v);
+                            });
+                            return map;
+                        })()
                     };
                     if (passIn.value !== '') payload.password = passIn.value;
                     await API.put('labor/settings', payload);
@@ -379,8 +413,9 @@
                 ]),
                 App.el('div', { className: 'labor-conn-grid', style: { gridTemplateColumns: '2fr 1fr' } }, [
                     field('Value rides from this area (time-pass swipes omitted)', groupSel),
-                    field('Price per paid ride ($)', priceIn)
+                    field('Default price per paid ride ($)', priceIn)
                 ]),
+                trackPricesBox,
                 field('Walk-up cash for a day (:date)', salesTa),
                 field('Labor cost for a day (:date) — add your go-kart staff filter', laborTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
