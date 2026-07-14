@@ -51,6 +51,10 @@
         // Controls: range presets + period navigator (+ custom date inputs).
         container.appendChild(buildControls());
 
+        // Plain-language headline cards (most played, top tickets, busiest
+        // day, payout health) — filled by renderInsights() on each load.
+        container.appendChild(App.el('div', { id: 'perf-insights' }));
+
         // KPI summary + trend chart + leaderboard table shells.
         container.appendChild(App.el('div', { id: 'perf-kpis', className: 'perf-kpi-grid' }, [App.loading()]));
 
@@ -259,6 +263,7 @@
             if (gen !== state.gen) return; // superseded by a newer request
             state.data = data;
             updateNav();
+            renderInsights();
             renderKpis();
             renderTrendChart();
             renderTable();
@@ -286,6 +291,99 @@
         if (g === 'hour') return 'by hour';
         if (g === 'month') return 'by month';
         return 'by day';
+    }
+
+    /**
+     * Plain-language headline cards for non-technical readers: the venue's
+     * standout game, top ticket payer, busiest day of the period, and
+     * payout health — each one a sentence, before any table or chart.
+     */
+    function renderInsights() {
+        var holder = document.getElementById('perf-insights');
+        if (!holder || !state.data) return;
+        holder.innerHTML = '';
+
+        var cards = [];
+        var head = state.data.headliners || {};
+
+        if (head.most_played && head.most_played.plays > 0) {
+            cards.push(insightCard('🏆', 'insight-accent', 'Most played game',
+                head.most_played.game_name,
+                formatInt(head.most_played.plays) + ' plays this period'));
+        }
+        if (head.top_tickets && head.top_tickets.tickets > 0) {
+            cards.push(insightCard('🎟️', 'insight-heat', 'Top ticket payer',
+                head.top_tickets.game_name,
+                formatInt(Math.round(head.top_tickets.tickets)) + ' tickets dispensed'));
+        }
+
+        // Busiest bucket of the trend series, phrased per granularity.
+        var series = state.data.series || {};
+        var points = series.points || [];
+        var best = null, bestIdx = -1;
+        for (var i = 0; i < points.length; i++) {
+            var p = Number(points[i].plays) || 0;
+            if (p > 0 && (best === null || p > best)) { best = p; bestIdx = i; }
+        }
+        if (bestIdx >= 0) {
+            var pt = points[bestIdx];
+            var label, kind;
+            if (series.granularity === 'hour') {
+                kind = 'Busiest hour';
+                label = hourRangeFromIndex(bestIdx);
+            } else if (series.granularity === 'month') {
+                kind = 'Busiest month';
+                label = pt.label;
+            } else {
+                kind = 'Busiest day';
+                label = dayLabelFromDate(pt.date) || pt.label;
+            }
+            cards.push(insightCard('📈', 'insight-accent', kind, label, formatInt(best) + ' plays'));
+        }
+
+        // Payout health — tickets paid out vs points charged on redemption
+        // games. Not money, so every analytics role sees it.
+        var vp = state.data.venue_payout_pct;
+        var target = state.data.payout_target_pct || 33;
+        if (vp !== null && vp !== undefined) {
+            var over = Number(vp) > Number(target);
+            cards.push(insightCard('🎯', over ? 'insight-warn' : 'insight-good', 'Payout health',
+                vp + '%' + (over ? ' — above target' : ' — on target'),
+                'tickets paid out vs points charged · target ≤ ' + target + '%'));
+        }
+
+        if (cards.length === 0) return;
+        holder.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
+    function insightCard(emoji, cls, label, value, sub) {
+        return App.el('div', { className: 'insight-card ' + cls }, [
+            App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'insight-body' }, [
+                App.el('div', { className: 'insight-label', textContent: label }),
+                App.el('div', { className: 'insight-value', textContent: value }),
+                App.el('div', { className: 'insight-sub', textContent: sub })
+            ])
+        ]);
+    }
+
+    /** "2–3 PM" style window from an hourly-series index (0–23). */
+    function hourRangeFromIndex(h) {
+        var hr12 = function(x) { var v = x % 12; return v === 0 ? 12 : v; };
+        var mer = function(x) { return x < 12 ? 'AM' : 'PM'; };
+        var e = (h + 1) % 24;
+        if (mer(h) === mer(e)) return hr12(h) + '–' + hr12(e) + ' ' + mer(h);
+        return hr12(h) + ' ' + mer(h) + '–' + hr12(e) + ' ' + mer(e);
+    }
+
+    /** "Saturday, Jul 11" from a YYYY-MM-DD series date. */
+    function dayLabelFromDate(dateStr) {
+        if (!dateStr) return null;
+        var d = new Date(dateStr + 'T12:00:00');
+        if (isNaN(d.getTime())) return null;
+        var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate();
     }
 
     function renderKpis() {
@@ -444,15 +542,15 @@
             { key: '_rank', label: '#', sortable: false },
             { key: 'name', label: 'Game', sortable: true },
             { key: 'status', label: 'Status', sortable: false },
-            { key: 'plays', label: 'Plays', sortable: true, right: true },
-            { key: 'tickets', label: 'Tickets', sortable: true, right: true },
-            { key: 'payout', label: 'Payout %', sortable: true, right: true },
-            { key: 'points_share', label: '% of pts', sortable: true, right: true },
-            { key: 'active_days', label: 'Active', sortable: true, right: true }
+            { key: 'plays', label: 'Plays', sortable: true, right: true, tip: 'Times the game was played in this period' },
+            { key: 'tickets', label: 'Tickets', sortable: true, right: true, tip: 'Tickets the game dispensed in this period' },
+            { key: 'payout', label: 'Payout %', sortable: true, right: true, tip: 'Tickets paid out per 100 points charged on this game — above the venue target shows red' },
+            { key: 'points_share', label: '% of pts', sortable: true, right: true, tip: 'This game’s share of all points spent on redemption games — big shares move the venue payout most' },
+            { key: 'active_days', label: 'Active', sortable: true, right: true, tip: 'Days this game recorded at least one play, out of the days in this period' }
         ];
-        if (money) columns.push({ key: 'cash', label: 'Reader CC', sortable: true, right: true });
-        columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, right: true });
-        columns.push({ key: '_delta', label: 'vs prev', sortable: false, right: true });
+        if (money) columns.push({ key: 'cash', label: 'Reader CC', sortable: true, right: true, tip: 'Credit-card payments taken at this game’s reader' });
+        columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, right: true, tip: 'Average tickets dispensed per play' });
+        columns.push({ key: '_delta', label: 'vs prev', sortable: false, right: true, tip: 'Tickets compared with the previous period' });
 
         var thead = App.el('thead', {}, [
             App.el('tr', {}, columns.map(function(col) {
@@ -461,7 +559,9 @@
                 if (col.key === state.sort) classes.push('sorted');
                 if (col.right) classes.push('text-right');
                 var arrow = col.key === state.sort ? (col.key === 'name' ? ' ▲' : ' ▼') : '';
-                var th = App.el('th', { className: classes.join(' '), textContent: col.label + arrow });
+                var thAttrs = { className: classes.join(' '), textContent: col.label + arrow };
+                if (col.tip) thAttrs.title = col.tip;
+                var th = App.el('th', thAttrs);
                 if (col.sortable) {
                     th.addEventListener('click', function() {
                         state.sort = col.key;

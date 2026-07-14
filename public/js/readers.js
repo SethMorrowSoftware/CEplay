@@ -557,31 +557,31 @@
         var cards = [];
         var top = (d.busiest && d.busiest[0]) || null;
         if (top) {
-            cards.push(insightCard('🔥', 'rg-insight-hot', 'Busiest time',
+            cards.push(insightCard('🔥', 'insight-heat', 'Busiest time',
                 DOW_FULL[top.dow] + 's, ' + hourRangeLabel(top.hour),
                 'usually around ' + formatNum(top.avg_plays) + ' plays in that hour'));
         }
         if (busiestDay >= 0) {
-            cards.push(insightCard('📅', 'rg-insight-day', 'Busiest day',
+            cards.push(insightCard('📅', 'insight-accent', 'Busiest day',
                 DOW_FULL[busiestDay] + 's',
                 'usually around ' + formatInt(Math.round(typical[busiestDay])) + ' plays over the day'));
         }
         if (quietDay >= 0 && quietDay !== busiestDay) {
-            cards.push(insightCard('🌙', 'rg-insight-quiet', 'Quietest day',
+            cards.push(insightCard('🌙', 'insight-quiet', 'Quietest day',
                 DOW_FULL[quietDay] + 's',
                 'usually around ' + formatInt(Math.round(typical[quietDay])) + ' plays over the day'));
         }
         if (cards.length === 0) return null;
-        return App.el('div', { className: 'rg-insights' }, cards);
+        return App.el('div', { className: 'insight-row' }, cards);
     }
 
     function insightCard(emoji, cls, label, value, sub) {
-        return App.el('div', { className: 'rg-insight ' + cls }, [
-            App.el('div', { className: 'rg-insight-icon', 'aria-hidden': 'true', textContent: emoji }),
-            App.el('div', { className: 'rg-insight-body' }, [
-                App.el('div', { className: 'rg-insight-label', textContent: label }),
-                App.el('div', { className: 'rg-insight-value', textContent: value }),
-                App.el('div', { className: 'rg-insight-sub', textContent: sub })
+        return App.el('div', { className: 'insight-card ' + cls }, [
+            App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
+            App.el('div', { className: 'insight-body' }, [
+                App.el('div', { className: 'insight-label', textContent: label }),
+                App.el('div', { className: 'insight-value', textContent: value }),
+                App.el('div', { className: 'insight-sub', textContent: sub })
             ])
         ]);
     }
@@ -1207,8 +1207,8 @@
             accentRgb:     hexToRgb(accent) || '91,141,239',
             // Warm single-hue ramp for the heatmap / busiest bars — deeper
             // orange in light mode, brighter in dark, both ≥5:1 at peak.
-            heatRgb:       get('--rg-heat-rgb', isLight ? '194,65,12' : '249,115,22'),
-            heatSolid:     'rgb(' + (get('--rg-heat-rgb', isLight ? '194,65,12' : '249,115,22')) + ')',
+            heatRgb:       get('--viz-heat-rgb', isLight ? '194,65,12' : '249,115,22'),
+            heatSolid:     'rgb(' + (get('--viz-heat-rgb', isLight ? '194,65,12' : '249,115,22')) + ')',
             success:       get('--success', '#3dd68c'),
             tickets:       get('--tickets', '#f5b942'),
             text:          get('--text-primary', '#e1e4ed'),

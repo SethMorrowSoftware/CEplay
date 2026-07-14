@@ -197,23 +197,23 @@
         // oversells what it measures.
         var canSeeMoney = App.canSeeMoney();
         var cards = [
-            kpiCardSkeleton('plays', 'Plays'),
-            kpiCardSkeleton('tickets', 'Tickets dispensed')
+            kpiCardSkeleton('plays', 'Plays', 'Total game plays recorded in this period'),
+            kpiCardSkeleton('tickets', 'Tickets dispensed', 'Redemption tickets games paid out in this period')
         ];
-        if (canSeeMoney) cards.push(kpiCardSkeleton('cash', 'Reader CC payments'));
-        cards.push(kpiCardSkeleton('points', 'Points charged'));
-        cards.push(kpiCardSkeleton('avg_tickets', 'Avg tickets / play'));
-        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg reader CC / play'));
-        cards.push(kpiCardSkeleton('unique_cards', 'Unique cards'));
-        cards.push(kpiCardSkeleton('credit_card_share', 'Credit-card plays'));
+        if (canSeeMoney) cards.push(kpiCardSkeleton('cash', 'Reader CC payments', 'Credit-card dollars paid at the game readers — sales at the front counter are not included'));
+        cards.push(kpiCardSkeleton('points', 'Points charged', 'Card points games charged for plays in this period'));
+        cards.push(kpiCardSkeleton('avg_tickets', 'Avg tickets / play', 'Average tickets dispensed per play'));
+        if (canSeeMoney) cards.push(kpiCardSkeleton('avg_cash', 'Avg reader CC / play', 'Average card-at-reader payment per play'));
+        cards.push(kpiCardSkeleton('unique_cards', 'Unique cards', 'Distinct play cards used in this period — a rough guest count'));
+        cards.push(kpiCardSkeleton('credit_card_share', 'Credit-card plays', 'Plays paid by tapping a bank card at the reader instead of a play card'));
         // Breakage — value expired off cards by the card system itself.
         // Points/tickets, not dollars, so visible to every analytics role.
-        cards.push(kpiCardSkeleton('expired', 'Expired value'));
+        cards.push(kpiCardSkeleton('expired', 'Expired value', 'Points and tickets that expired off guest cards (breakage)'));
         return App.el('div', { className: 'stats-grid', id: 'analytics-kpis' }, cards);
     }
 
-    function kpiCardSkeleton(key, label) {
-        return App.el('div', { className: 'stat-card analytics-kpi', 'data-kpi': key }, [
+    function kpiCardSkeleton(key, label, tip) {
+        return App.el('div', { className: 'stat-card analytics-kpi', 'data-kpi': key, title: tip || '' }, [
             App.el('div', { className: 'stat-label', textContent: label }),
             App.el('div', { className: 'stat-value', 'data-role': 'value', textContent: '—' }),
             App.el('div', { className: 'stat-trend', 'data-role': 'trend' })

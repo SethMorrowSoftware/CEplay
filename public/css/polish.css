@@ -20,6 +20,18 @@
     background-clip: content-box;
 }
 
+/* ---------------------------------------------------------------
+   Global vertical rhythm. Cards and sections used to rely on each
+   page adding (or forgetting) its own margins, so stacked cards on
+   Performance / Reader Groups / etc. sat border-to-border. The owl
+   selector gives every page one consistent breathing space between
+   top-level sections; sibling margins collapse, so anything that
+   already declares a LARGER gap (page-header's 1.5rem) still wins.
+   --------------------------------------------------------------- */
+#main-content > * + * {
+    margin-top: 1.15rem;
+}
+
 /* Keep header controls available during long-scroll data pages. */
 .page-header {
     position: sticky;
