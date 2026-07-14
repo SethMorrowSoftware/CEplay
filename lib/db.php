@@ -390,6 +390,34 @@ class DB {
             error_log('labor query v6 migration skipped: ' . $e->getMessage());
         }
 
+        // v7: FORCE-stamp the sales query with the DivNo 808 default. The
+        // exact-text-match migrations (v1–v6) kept "respecting" queries the
+        // operator pasted from chat during the debugging marathon — those
+        // differ from shipped defaults only by comment lines, but looked
+        // hand-tuned, so the stale Beverages (CatNo 106) query survived
+        // every upgrade and the page kept showing drink money. Every saved
+        // query on this install originated from chat instructions, never a
+        // deliberate customization, so one unconditional stamp is correct —
+        // and edits made AFTER this migration are respected again (the flag
+        // makes it run exactly once). Labor SQL is untouched: it is verified
+        // correct and live.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v7'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                self::execute(
+                    "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                    [LABOR_DEFAULT_SALES_SQL]
+                );
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v7', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v7 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
