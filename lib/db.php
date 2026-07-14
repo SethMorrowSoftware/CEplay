@@ -307,6 +307,34 @@ class DB {
             error_log('labor query v3 migration skipped: ' . $e->getMessage());
         }
 
+        // v4: the category-name fingerprint proved 106 = Beverages and
+        // 108 = Go Karts with rides posting at AmtSold = 0 (paid at the
+        // card reader; no value column exists — Discounts probe ruled it
+        // out). The default now counts cash lines as cash and values $0
+        // ride lines at QtySold × per-ride price (editable in the query).
+        // Upgrade the stored sales query only if it is exactly the shipped
+        // v3 (CatNo 106) text; hand-tuned queries are never touched.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v4'");
+            if (!$flag) {
+                require_once __DIR__ . '/../api/labor.php';
+                $v3Sales = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE CatNo = 106  /* go-kart sales category */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
+                $stored = self::queryOne("SELECT value FROM api_config WHERE key = 'labor_sales_sql'");
+                if ($stored && trim((string)$stored['value']) === trim($v3Sales)) {
+                    self::execute(
+                        "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
+                        [LABOR_DEFAULT_SALES_SQL]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v4', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('labor query v4 migration skipped: ' . $e->getMessage());
+        }
+
         // One-time seed of a "Viewer" role: read-only access to everything
         // that can be read (analytics incl. reader CC figures, card lookup,
         // action log) with no operate/manage/settings keys, so the venue can
