@@ -19,10 +19,10 @@ require_once __DIR__ . '/../lib/scheduler.php';
 function handleKiosks(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
-    // Kiosk reads serve the Kiosks page and the Pause Groups editor
-    // (kiosk member picker).
+    // Kiosk reads serve the Kiosks page, the Pause Groups editor (kiosk
+    // member picker), AND the Dashboard's kiosk status snapshot.
     if ($method === 'GET') {
-        Auth::requireAnyAccess(['view_kiosks', 'view_groups', 'groups_manage']);
+        Auth::requireAnyAccess(['view_kiosks', 'view_groups', 'groups_manage', 'view_dashboard']);
     }
 
     $kioskId = $parts[0] ?? null;

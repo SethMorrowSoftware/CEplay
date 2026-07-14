@@ -636,7 +636,9 @@
             var canSeeSales = App.canAccess('analytics');
             var requests = [
                 API.get('games'),
-                API.get('overrides'),
+                // Never let one denied side-feed take down the whole
+                // dashboard — badges just don't render without it.
+                API.get('overrides').catch(function() { return {}; }),
                 API.get('groups'),
                 API.get('health').catch(function() { return {}; })
             ];
