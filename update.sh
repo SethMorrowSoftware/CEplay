@@ -162,6 +162,24 @@ else
     ok "Updated ${FROM_SHA:0:12} → ${TO_SHA:0:12}"
 fi
 
+# --- Hand off to a newer update.sh if this pull delivered one ---------------
+# We run from a temp copy of the script (see the re-exec at the top), so a
+# pull that changes update.sh itself would otherwise only take effect on the
+# NEXT run — new update steps would silently not happen this time. Detect
+# that and exec the freshly pulled version from the top. It re-runs the
+# backup and pull (both idempotent) and then continues with the new logic.
+# The chain guard allows exactly one hand-off, so two script versions can
+# never ping-pong.
+if [[ "${_PG_UPDATE_CHAIN:-0}" -lt 1 ]] && [[ -f "${SRC_DIR}/update.sh" ]] \
+        && ! cmp -s "$0" "${SRC_DIR}/update.sh"; then
+    info "This update delivered a newer update.sh — handing off to it now..."
+    _next_copy="$(mktemp /tmp/pg-update.XXXXXX.sh)"
+    cp -- "${SRC_DIR}/update.sh" "$_next_copy"
+    export _PG_UPDATE_CHAIN=$(( ${_PG_UPDATE_CHAIN:-0} + 1 ))
+    export _PG_UPDATE_REEXEC=1
+    exec bash "$_next_copy" "$@"
+fi
+
 # =============================================================================
 #  3. Sync code into the live app dir (preserving data/ and .env)
 # =============================================================================
