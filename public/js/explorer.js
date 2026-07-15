@@ -20,10 +20,26 @@
     var state = {
         tables: [],
         filter: '',
+        showEmpty: false, // zero-row tables are noise while metric hunting
         selected: null,   // table name
         detail: null,     // /explorer/table payload
         lastQuery: null   // {columns, rows} for CSV download
     };
+
+    /**
+     * Tables worth showing: anything with rows, plus anything whose count
+     * is UNKNOWN (sys.partitions unreadable) — only provably-empty tables
+     * hide, and the toggle brings them back.
+     */
+    function visibleTables() {
+        return state.tables.filter(function(t) {
+            return state.showEmpty || t.rows === null || t.rows > 0;
+        });
+    }
+
+    function emptyCount() {
+        return state.tables.filter(function(t) { return t.rows === 0; }).length;
+    }
 
     function isoDaysAgo(n) {
         var d = new Date();
@@ -99,14 +115,30 @@
             renderTableList();
         });
         var listEl = App.el('div', { className: 'explorer-table-list', id: 'explorer-table-list' });
+        var countEl = App.el('div', { className: 'text-muted text-sm', id: 'explorer-table-count' });
+        var listChildren = [searchIn];
+        // Only offer the toggle when there are provably-empty tables to hide.
+        if (emptyCount() > 0) {
+            var emptyCb = App.el('input', { type: 'checkbox', checked: state.showEmpty });
+            emptyCb.addEventListener('change', function() {
+                state.showEmpty = emptyCb.checked;
+                renderTableList();
+                rebuildHunterTables();
+            });
+            listChildren.push(App.el('label', { className: 'text-sm text-secondary explorer-empty-toggle' }, [
+                emptyCb,
+                App.el('span', { textContent: ' Show empty tables' })
+            ]));
+        }
+        listChildren.push(listEl);
         grid.appendChild(App.el('div', { className: 'card explorer-list-card' }, [
             App.el('div', { className: 'card-header' }, [
                 App.el('div', {}, [
                     App.el('h3', { textContent: 'Tables' }),
-                    App.el('div', { className: 'text-muted text-sm', textContent: state.tables.length + ' in the database' })
+                    countEl
                 ])
             ]),
-            App.el('div', { className: 'card-body' }, [searchIn, listEl])
+            App.el('div', { className: 'card-body' }, listChildren)
         ]));
 
         // ---- Detail panel ----
@@ -134,7 +166,14 @@
         var listEl = document.getElementById('explorer-table-list');
         if (!listEl) return;
         listEl.innerHTML = '';
-        var shown = state.tables.filter(function(t) {
+        var pool = visibleTables();
+        var countEl = document.getElementById('explorer-table-count');
+        if (countEl) {
+            var hidden = state.showEmpty ? 0 : emptyCount();
+            countEl.textContent = pool.length + ' with data'
+                + (hidden > 0 ? ' · ' + hidden + ' empty hidden' : '');
+        }
+        var shown = pool.filter(function(t) {
             return !state.filter || t.name.toLowerCase().indexOf(state.filter) !== -1;
         });
         if (!shown.length) {
@@ -233,10 +272,7 @@
         hunter.status   = App.el('span', { className: 'text-sm text-secondary' });
         hunter.results  = App.el('div', {});
 
-        hunter.tableSel.appendChild(App.el('option', { value: '', textContent: '— pick a table —' }));
-        state.tables.forEach(function(t) {
-            hunter.tableSel.appendChild(App.el('option', { value: t.name, textContent: t.name }));
-        });
+        rebuildHunterTables();
         hunter.tableSel.addEventListener('change', function() {
             if (hunter.tableSel.value && hunter.tableSel.value !== state.selected) {
                 selectTable(hunter.tableSel.value);
@@ -267,6 +303,18 @@
                 hunter.results
             ])
         ]);
+    }
+
+    /** (Re)populate the hunter's table dropdown from the visible pool. */
+    function rebuildHunterTables() {
+        if (!hunter.tableSel) return;
+        var current = hunter.tableSel.value;
+        hunter.tableSel.innerHTML = '';
+        hunter.tableSel.appendChild(App.el('option', { value: '', textContent: '— pick a table —' }));
+        visibleTables().forEach(function(t) {
+            hunter.tableSel.appendChild(App.el('option', { value: t.name, textContent: t.name }));
+        });
+        if (current) hunter.tableSel.value = current; // keep selection if still listed
     }
 
     function syncHunterToDetail() {
