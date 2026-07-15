@@ -185,3 +185,26 @@ try {
 } finally {
     Scheduler::releaseLock();
 }
+
+// One-time historical guest-history backfill from the MSSQL card ledger
+// (PlayerCardTrans). Runs AFTER the scheduler lock is released — it only widens
+// the analytics card_activity table and races nothing — and only on a night the
+// main plan above succeeded (the catch exits first on failure). The flag makes
+// it a no-op after the first success; a skipped (no MSSQL) or failed attempt
+// leaves the flag unset so it simply retries on a later run. Idempotent, so a
+// retry that redoes earlier years is harmless.
+if (DB::getConfig('card_activity_backfill_done') !== '1') {
+    echo "[" . date('c') . "] One-time guest-history backfill from MSSQL PlayerCardTrans...\n";
+    try {
+        $bf = Scheduler::backfillCardActivityFromMssql(2005, function ($m) { echo $m . "\n"; });
+        if (!empty($bf['skipped'])) {
+            echo "  Skipped: {$bf['reason']} — will retry once MSSQL is reachable.\n";
+        } else {
+            DB::setConfig('card_activity_backfill_done', '1');
+            echo "  Done: {$bf['cards']} cards in the ledger, earliest first-seen "
+                . ($bf['earliest'] ?? '?') . " ({$bf['merged']} rows merged).\n";
+        }
+    } catch (Exception $e) {
+        echo "  Backfill failed (will retry next run): " . $e->getMessage() . "\n";
+    }
+}

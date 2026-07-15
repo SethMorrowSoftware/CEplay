@@ -36,6 +36,14 @@ class MssqlClient
     private $driver = '';
 
     /**
+     * Per-instance query timeout (seconds). Defaults to the tight TIMEOUT that
+     * suits interactive report/probe queries; a long-running maintenance job
+     * (e.g. the one-time card_activity backfill's per-year GROUP BY over
+     * PlayerCardTrans) can raise it via setTimeout() BEFORE the first query.
+     */
+    private $timeout = self::TIMEOUT;
+
+    /**
      * Which usable PDO MSSQL drivers this PHP build offers, in preference
      * order. Empty array = host needs an extension installed.
      */
@@ -174,7 +182,7 @@ class MssqlClient
             try {
                 $pdo = new PDO($dsn, $s['username'], $password, [
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_TIMEOUT => self::TIMEOUT,
+                    PDO::ATTR_TIMEOUT => $this->timeout,
                 ]);
                 $this->pdo = $pdo;
                 $this->driver = $driver;
@@ -189,6 +197,17 @@ class MssqlClient
     public function driver(): string
     {
         return $this->driver;
+    }
+
+    /**
+     * Raise (or lower) the query timeout for this instance. Must be called
+     * before the first query, since the value is applied when the PDO
+     * connection is opened. Intended for one-time maintenance jobs; leave the
+     * default for interactive report queries.
+     */
+    public function setTimeout(int $seconds): void
+    {
+        $this->timeout = max(1, $seconds);
     }
 
     /**

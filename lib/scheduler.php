@@ -1810,6 +1810,106 @@ class Scheduler {
     }
 
     /**
+     * One-time (idempotent) historical seed of the card_activity guest ledger
+     * from the CenterEdge MSSQL PlayerCardTrans table.
+     *
+     * rollupCardActivity() above can only see the ~30-day raw feed, so a guest
+     * whose first-ever visit predates that window looks brand-new and returning
+     * counts collapse near the window start. PlayerCardTrans holds every card
+     * transaction back ~two decades, so MIN(TransDateTime) per card is the
+     * guest's TRUE first visit. This reads that (batched by year so each GROUP
+     * BY stays small) and widens the ledger through the SAME monotonic UPSERT
+     * the nightly rollup uses — first-seen only moves earlier, last-seen only
+     * later — so it can never narrow a range and is safe to re-run or to overlap
+     * with the nightly rollup.
+     *
+     * Runs where MSSQL is reachable (the venue server). Returns
+     * ['skipped' => true, 'reason' => ...] when the connection isn't configured
+     * so the caller can leave its "done" flag unset and retry on a later run. A
+     * per-year query/write failure propagates (rolled back), so a partial run
+     * never sets the caller's flag — the next run simply redoes the (idempotent)
+     * scan.
+     *
+     * @param int $fromYear earliest calendar year to scan
+     * @param callable|null $log optional fn(string) for per-year progress
+     * @return array{skipped?:bool,reason?:string,cards?:int,earliest?:?string,merged?:int}
+     */
+    public static function backfillCardActivityFromMssql(int $fromYear = 2005, ?callable $log = null): array {
+        require_once __DIR__ . '/mssql_client.php';
+        if (!MssqlClient::isConfigured()) {
+            return ['skipped' => true, 'reason' => 'MSSQL not configured'];
+        }
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+
+        if ($fromYear < 1990) $fromYear = 1990;
+        $toYear = (int)date('Y');
+
+        $client = new MssqlClient();
+        $client->setTimeout(180); // one heavy GROUP BY per year over PlayerCardTrans
+
+        // Verbatim the monotonic UPSERT rollupCardActivity() uses: on YYYY-MM-DD
+        // strings SQLite's min()/max() are chronological, so first-seen only
+        // moves earlier and last-seen only later — never inward.
+        $upsertSql =
+            'INSERT INTO card_activity (card_number, first_seen_date, last_seen_date, updated_at)
+             VALUES (:p0, :p1, :p2, datetime(\'now\'))
+             ON CONFLICT(card_number) DO UPDATE SET
+                first_seen_date = min(first_seen_date, excluded.first_seen_date),
+                last_seen_date  = max(last_seen_date, excluded.last_seen_date),
+                updated_at = datetime(\'now\')';
+
+        $merged = 0;
+        for ($year = $fromYear; $year <= $toYear; $year++) {
+            $from = sprintf('%04d-01-01', $year);
+            $to   = sprintf('%04d-01-01', $year + 1);
+            // TransDateTime is the POS's own venue-local clock — the same wall
+            // time the app bins guest dates by — so the date part is taken
+            // directly, with no timezone conversion. Card "000000" is the
+            // credit-card/cardless sentinel and blank cards are junk; both are
+            // excluded, matching rollupCardActivity(). Year bounds come from an
+            // integer, so the inlined literals are injection-proof (and rows()
+            // re-checks via MssqlClient::assertReadOnly).
+            $sql = "SELECT CardNumber,"
+                 . " CONVERT(VARCHAR(10), MIN(TransDateTime), 120) AS first_date,"
+                 . " CONVERT(VARCHAR(10), MAX(TransDateTime), 120) AS last_date"
+                 . " FROM dbo.PlayerCardTrans"
+                 . " WHERE CardNumber <> '' AND CardNumber <> '000000'"
+                 . "   AND TransDateTime >= '{$from}' AND TransDateTime < '{$to}'"
+                 . " GROUP BY CardNumber";
+            $rows = $client->rows($sql, 5000000);
+            if (!$rows) { $note("  {$year}: no card transactions."); continue; }
+
+            $db = DB::getInstance();
+            $db->exec('BEGIN');
+            try {
+                $n = 0;
+                foreach ($rows as $r) {
+                    $card  = trim((string)($r['CardNumber'] ?? ''));
+                    $first = substr((string)($r['first_date'] ?? ''), 0, 10);
+                    $last  = substr((string)($r['last_date'] ?? ''), 0, 10);
+                    if ($card === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $first)) continue;
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $last)) $last = $first;
+                    DB::execute($upsertSql, [$card, $first, $last]);
+                    $n++;
+                }
+                $db->exec('COMMIT');
+            } catch (Exception $e) {
+                $db->exec('ROLLBACK');
+                throw $e;
+            }
+            $merged += $n;
+            $note("  {$year}: " . count($rows) . " distinct cards → {$n} merged.");
+        }
+
+        $summary = DB::queryOne('SELECT COUNT(*) AS c, MIN(first_seen_date) AS earliest FROM card_activity') ?: [];
+        return [
+            'cards'    => (int)($summary['c'] ?? 0),
+            'earliest' => $summary['earliest'] ?? null,
+            'merged'   => $merged,
+        ];
+    }
+
+    /**
      * Purge old data to prevent unbounded database growth.
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides

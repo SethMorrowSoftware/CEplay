@@ -11,9 +11,10 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Key Files
 - `index.php` — Main router: SPA shell, API dispatch, safety nets (Tier 1/2 enforcement)
 - `config.php` — Constants: encryption key, DB path, session lifetime, API timeouts
-- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data
+- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data, one-time MSSQL guest-history backfill
 - `cron_watchdog.php` — Per-minute watchdog: missed actions, state enforcement, re-queue
 - `run_action.php` — Single-action executor invoked by `at` jobs
+- `backfill_card_activity.php` — OPTIONAL manual runner (thin wrapper over `Scheduler::backfillCardActivityFromMssql()`). The nightly `cron.php` runs this backfill **automatically, once** (guarded by config flag `card_activity_backfill_done`, lock-free after the main plan) as soon as it runs with MSSQL configured — no CLI needed. It seeds the guest ledger (`card_activity`) from MSSQL `PlayerCardTrans` (MIN/MAX `TransDateTime` per card) so "new vs returning" reaches back ~2 decades instead of only the 30-day feed. Batched by year; idempotent (reuses the nightly rollup's monotonic UPSERT — only widens); venue server only
 - `lib/scheduler.php` — Core scheduling engine (plan, execute, enforce, resolve conflicts)
 - `lib/centeredge_client.php` — CenterEdge API client (auth, games, kiosks, capabilities, pagination, retry)
 - `lib/db.php` — SQLite singleton, schema init, query helpers (`:p0` positional params)
