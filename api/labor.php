@@ -71,12 +71,12 @@ const LABOR_DEFAULT_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ShiftDate, 12
 // One (day, total) row per day with wages.
 const LABOR_DEFAULT_LABOR_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day, COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0) AS total\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ClockInDate, 120)";
 
-// Punches: OPTIONAL — powers only the hour-of-day wage split. The dollars
-// always come from the labor range query above; each day's punch-derived
-// hourly shape is rescaled so its hours sum exactly to that day's live
-// SQL total. If this query is blank or returns nothing usable, the page
-// simply shows no hourly wage bars — daily totals are unaffected.
-const LABOR_DEFAULT_PUNCHES_SQL = "SELECT\n  CONVERT(VARCHAR(19), ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME), 120) AS clock_in,\n  CASE WHEN ClockOutDate IS NOT NULL\n    THEN CONVERT(VARCHAR(19), ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME), 120)\n    ELSE NULL END AS clock_out,\n  PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
+// NOTE: an hour-of-day wages/sales panel shipped briefly, driven by raw
+// punch rows and per-day estimates. It was removed on request — the POS
+// books kart money once per day and the punch-derived split wasn't
+// trustworthy, so the page shows only LIVE database dollars (daily) and
+// real feed swipes (hourly) until a genuine hourly source is found in
+// the CenterEdge schema.
 
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
@@ -106,136 +106,7 @@ function laborQueries(): array {
         // both come straight from the database.
         'sales_range_sql' => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
         'labor_range_sql' => DB::getConfig('labor_labor_range_sql') ?: LABOR_DEFAULT_LABOR_RANGE_SQL,
-        // Optional: hourly-shape only. Stored empty string = disabled.
-        'punches_sql'     => DB::getConfig('labor_punches_sql') ?? LABOR_DEFAULT_PUNCHES_SQL,
     ];
-}
-
-/**
- * Turn raw time-clock punch rows into daily wage totals and hour-of-day
- * splits. Pure function — used by the live endpoint and directly testable.
- *
- * Rules (mirroring the proven per-day SQL):
- *  - a punch's WAGES belong to its clock-IN date (the old query filtered
- *    `ClockInDate = :date`), even if the shift crosses midnight;
- *  - an unclosed punch accrues to "now" only when opened today (staff
- *    currently on the clock); on a past day it counts zero — the data is
- *    broken and the fix is closing it in CenterEdge, not inventing hours;
- *  - the hourly split walks the punch's real clock time, so a 6 PM–1 AM
- *    shift feeds hours 18–23 and 0 (staff_seconds counts bodies-on-clock
- *    the same way).
- *
- * @param array<int,array> $punchRows rows with clock_in / clock_out /
- *        pay_rate keys (case-insensitive; positional fallback)
- * @return array{daily: array<string,float>, hourly_wages: float[],
- *               by_date_hour: array<string,array<int,float>>,
- *               hourly_staff_seconds: int[], punches: int, open_now: int}
- */
-function laborWagesFromPunches(array $punchRows, DateTimeZone $tz): array {
-    $daily = [];
-    $hourlyWages = array_fill(0, 24, 0.0);
-    $byDateHour = [];
-    $hourlyStaff = array_fill(0, 24, 0);
-    $now = new DateTime('now', $tz);
-    $today = $now->format('Y-m-d');
-    $used = 0;
-    $openNow = 0;
-
-    foreach ($punchRows as $row) {
-        // Tolerant field lookup: named (any case), then positional.
-        $vals = array_values($row);
-        $get = function (string $name, int $pos) use ($row, $vals) {
-            foreach ($row as $k => $v) {
-                if (strcasecmp((string)$k, $name) === 0) return $v;
-            }
-            return $vals[$pos] ?? null;
-        };
-        $inRaw  = trim((string)($get('clock_in', 0) ?? ''));
-        $outRaw = $get('clock_out', 1);
-        $rate   = (float)($get('pay_rate', 2) ?? 0);
-        if ($inRaw === '' || $rate <= 0) continue;
-
-        $in = DateTime::createFromFormat('Y-m-d H:i:s', $inRaw, $tz)
-            ?: DateTime::createFromFormat('Y-m-d H:i', $inRaw, $tz);
-        if (!$in) continue;
-        $inDate = $in->format('Y-m-d');
-
-        $out = null;
-        $outStr = $outRaw === null ? '' : trim((string)$outRaw);
-        if ($outStr !== '') {
-            $out = DateTime::createFromFormat('Y-m-d H:i:s', $outStr, $tz)
-                ?: DateTime::createFromFormat('Y-m-d H:i', $outStr, $tz);
-        } elseif ($inDate === $today) {
-            $out = clone $now;   // on the clock right now
-            $openNow++;
-        }
-        // Unclosed on a past day, or out before in: zero hours.
-        if (!$out || $out <= $in) continue;
-
-        $seconds = $out->getTimestamp() - $in->getTimestamp();
-        $daily[$inDate] = ($daily[$inDate] ?? 0.0) + $rate * $seconds / 3600.0;
-        $used++;
-
-        // Hour-of-day split: walk hour boundaries in venue-local time.
-        // The per-(clock-in-date, hour) matrix lets the caller rescale each
-        // day's shape to that day's authoritative SQL wage total.
-        $cursor = clone $in;
-        $guard = 24 * 8; // a punch should never span more than a week
-        while ($cursor < $out && $guard-- > 0) {
-            $hour = (int)$cursor->format('G');
-            $hourEnd = (clone $cursor)->setTime($hour, 59, 59)->modify('+1 second');
-            $segEnd = ($hourEnd < $out) ? $hourEnd : $out;
-            $segSec = $segEnd->getTimestamp() - $cursor->getTimestamp();
-            if ($segSec > 0) {
-                $hourlyWages[$hour] += $rate * $segSec / 3600.0;
-                $byDateHour[$inDate][$hour] = ($byDateHour[$inDate][$hour] ?? 0.0) + $rate * $segSec / 3600.0;
-                $hourlyStaff[$hour] += $segSec;
-            }
-            $cursor = $segEnd;
-        }
-    }
-
-    return [
-        'daily' => $daily,
-        'hourly_wages' => $hourlyWages,
-        'by_date_hour' => $byDateHour,
-        'hourly_staff_seconds' => $hourlyStaff,
-        'punches' => $used,
-        'open_now' => $openNow,
-    ];
-}
-
-/**
- * Hour-of-day wage bars, recalibrated to the database's daily totals: for
- * each day, the punch-derived hourly SHAPE is scaled so its hours sum to
- * that day's live SQL wage total ($laborMap). Punch parsing can therefore
- * never change a dollar figure — only where inside the day it lands. Days
- * whose wages can't be placed (no usable punches) are reported so the UI
- * can say how much of the period's wages the hourly view covers.
- *
- * @param array<string,array<int,float>> $byDateHour punch wage matrix
- * @param array<string,float> $laborMap day => authoritative wage dollars
- * @return array{hourly: float[], placed: float, unplaced: float}
- */
-function laborScaledHourly(array $byDateHour, array $laborMap): array {
-    $hourly = array_fill(0, 24, 0.0);
-    $placed = 0.0;
-    $unplaced = 0.0;
-    foreach ($laborMap as $date => $total) {
-        if ($total <= 0) continue;
-        $shape = $byDateHour[$date] ?? [];
-        $shapeSum = array_sum($shape);
-        if ($shapeSum > 0) {
-            $scale = $total / $shapeSum;
-            foreach ($shape as $h => $w) {
-                $hourly[(int)$h] += $w * $scale;
-            }
-            $placed += $total;
-        } else {
-            $unplaced += $total;
-        }
-    }
-    return ['hourly' => $hourly, 'placed' => $placed, 'unplaced' => $unplaced];
 }
 
 /**
@@ -340,7 +211,6 @@ function laborGetSettings(): void {
         'labor_sql' => LABOR_DEFAULT_LABOR_SQL,
         'sales_range_sql' => LABOR_DEFAULT_SALES_RANGE_SQL,
         'labor_range_sql' => LABOR_DEFAULT_LABOR_RANGE_SQL,
-        'punches_sql'     => LABOR_DEFAULT_PUNCHES_SQL,
     ];
     // For the "value rides from this area" dropdown — read directly so the
     // settings gate alone suffices. Members ship per group so the per-track
@@ -377,16 +247,6 @@ function laborPutSettings(array $input): void {
     MssqlClient::bindRange($salesRangeSql, '2000-01-01', '2000-01-02');
     MssqlClient::bindRange($laborRangeSql, '2000-01-01', '2000-01-02');
 
-    // Punches are optional (hourly wage split only) — blank disables the
-    // split without touching the dollar figures.
-    $punchesSql = isset($input['punches_sql']) ? trim((string)$input['punches_sql']) : '';
-    if ($punchesSql !== '') {
-        if (strlen($punchesSql) > 4000) {
-            throw new RuntimeException('punches_sql is too long (max 4000 chars).');
-        }
-        MssqlClient::assertReadOnly($punchesSql);
-        MssqlClient::bindRange($punchesSql, '2000-01-01', '2000-01-02');
-    }
 
     // Legacy per-day pair: optional (older clients / the dates= compat path).
     $salesSql = isset($input['sales_sql']) ? (string)$input['sales_sql'] : '';
@@ -409,7 +269,6 @@ function laborPutSettings(array $input): void {
     }
     DB::setConfig('labor_sales_range_sql', $salesRangeSql);
     DB::setConfig('labor_labor_range_sql', $laborRangeSql);
-    DB::setConfig('labor_punches_sql', $punchesSql);
     if ($salesSql !== '') DB::setConfig('labor_sales_sql', $salesSql);
     if ($laborSql !== '') DB::setConfig('labor_labor_sql', $laborSql);
 
@@ -491,19 +350,6 @@ function laborTest(?array $input = null): void {
         $laborMap = laborSalesMapFromRows(
             $client->rows(MssqlClient::bindRange($q['labor_range_sql'], $today, $today), 10));
         $labor = $laborMap[$today] ?? 0.0;
-        // Punches: optional, hourly-shape only — its failure is reported
-        // but never fails the test.
-        $punchRows = [];
-        $punchNote = 'disabled';
-        if (trim((string)$q['punches_sql']) !== '') {
-            try {
-                $punchRows = $client->rows(MssqlClient::bindRange($q['punches_sql'], $today, $today), 500);
-                $punchNote = (string)count($punchRows);
-            } catch (Exception $e) {
-                $punchNote = 'error: ' . $e->getMessage();
-            }
-        }
-        $wages = laborWagesFromPunches($punchRows, $tz);
 
         // Fingerprint the connection so "works in Grafana, wrong here" can
         // be settled with facts: WHICH server/instance/database is the app
@@ -691,8 +537,6 @@ function laborTest(?array $input = null): void {
             'today'   => $today,
             'sales'   => round($sales, 2),
             'labor'   => round($labor, 2),
-            'punches_today'  => $punchNote,
-            'staff_on_clock' => $wages['open_now'],
             'diagnostics' => $diag,
         ]);
     } catch (Exception $e) {
@@ -805,19 +649,7 @@ function laborRate(): void {
         echo json_encode($base + ['error' => $e->getMessage(), 'days' => []]);
         return;
     }
-    // Punches are optional and shape-only (hourly wage split). A failure
-    // here must never take down the report — the dollars are already in
-    // hand from the two queries above.
-    $punchWages = null;
-    if (trim((string)$q['punches_sql']) !== '') {
-        try {
-            $punchWages = laborWagesFromPunches(
-                $client->rows(MssqlClient::bindRange($q['punches_sql'], $from, $to), 20000), $tz);
-        } catch (Exception $e) {
-            error_log('labor punches query failed (hourly wage split hidden): ' . $e->getMessage());
-        }
-    }
-    $result = laborComposeResults($dates, $salesMap, $laborMap, $punchWages, $rideStats, $hourRows, $coverage, $ride);
+    $result = laborComposeResults($dates, $salesMap, $laborMap, $rideStats, $hourRows, $coverage, $ride);
     $days = $result['days'];
 
     // Legacy `dates=` callers get exactly the days they asked for.
@@ -836,25 +668,19 @@ function laborRate(): void {
  * Pure function — directly testable without an MSSQL connection.
  *
  * Dollar figures (daily sales AND daily wages) come straight from the
- * database maps — nothing recomputes them. Swipes per hour are real (the
- * app's own feed). Wages per hour are the punch-derived SHAPE rescaled to
- * each day's SQL total (laborScaledHourly), so hourly always sums to the
- * table. SALES per hour are an estimate: the POS books kart-reader money
- * once per day, so each day's real dollars are spread across its hours by
- * paid-swipe share; unplaced money is reported via sales_spread_pct.
+ * database maps — nothing recomputes them. The hour-of-day panel carries
+ * only REAL swipe counts from the app's own feed.
  *
  * @param string[] $dates every ISO date in the window, ascending
  * @param array<string,float> $salesMap day => dollars (live SQL)
  * @param array<string,float> $laborMap day => wage dollars (live SQL)
- * @param ?array $punchWages laborWagesFromPunches() output, or null when
- *        the punches query is disabled/failed (hourly wage split hides)
  * @param array $rideStats laborRideStats() output (day => rides/pass/value)
  * @param array $hourRows readerHourlyRows() output
  * @param ?array $coverage readerHourlyCoverage() output
  * @param array $ride laborRideConfig() output
  * @return array{days: array, hourly: ?array}
  */
-function laborComposeResults(array $dates, array $salesMap, array $laborMap, ?array $punchWages, array $rideStats, array $hourRows, ?array $coverage, array $ride): array {
+function laborComposeResults(array $dates, array $salesMap, array $laborMap, array $rideStats, array $hourRows, ?array $coverage, array $ride): array {
     $from = $dates ? $dates[0] : '';
     $to   = $dates ? $dates[count($dates) - 1] : '';
 
@@ -881,72 +707,32 @@ function laborComposeResults(array $dates, array $salesMap, array $laborMap, ?ar
         $days[] = $day;
     }
 
-    // ---- Hour-of-day panel ----
+    // ---- Hour-of-day panel: real swipe counts only ----
+    // (An hourly wages/sales panel shipped briefly here; removed — see the
+    // note above the range-query constants.)
     $hourly = null;
-    $haveWageShape = $punchWages !== null && !empty($punchWages['by_date_hour']);
-    if ($hourRows || $haveWageShape) {
+    if ($hourRows) {
         $ridesByHour = array_fill(0, 24, 0);
         $passByHour  = array_fill(0, 24, 0);
-        $paidByDateHour = [];
         foreach ($hourRows as $r) {
             $h = (int)$r['hour'];
             $ridesByHour[$h] += (int)$r['plays'];
             $passByHour[$h]  += (int)$r['time_plays'];
-            $paid = max(0, (int)$r['plays'] - (int)$r['time_plays']);
-            if ($paid > 0) {
-                $paidByDateHour[$r['date']][$h] = ($paidByDateHour[$r['date']][$h] ?? 0) + $paid;
-            }
         }
-        $estByHour = array_fill(0, 24, 0.0);
-        $distributed = 0.0;
-        $undistributed = 0.0;
-        foreach ($salesMap as $d => $amount) {
-            if ($amount <= 0 || $d < $from || $d > $to) continue;
-            $dayPaid = isset($paidByDateHour[$d]) ? array_sum($paidByDateHour[$d]) : 0;
-            if ($dayPaid > 0) {
-                foreach ($paidByDateHour[$d] as $h => $n) {
-                    $estByHour[$h] += $amount * $n / $dayPaid;
-                }
-                $distributed += $amount;
-            } else {
-                $undistributed += $amount;
-            }
-        }
-
-        // Wage bars: punch shape × SQL truth, per day.
-        $laborInRange = [];
-        foreach ($laborMap as $d => $amount) {
-            if ($d >= $from && $d <= $to) $laborInRange[$d] = $amount;
-        }
-        $scaled = laborScaledHourly($haveWageShape ? $punchWages['by_date_hour'] : [], $laborInRange);
-        $wageTotal = $scaled['placed'] + $scaled['unplaced'];
-
         $hours = [];
         for ($h = 0; $h < 24; $h++) {
             $hours[] = [
-                'hour'        => $h,
-                'rides'       => $ridesByHour[$h],
-                'pass_rides'  => $passByHour[$h],
-                'wages'       => round($scaled['hourly'][$h], 2),
-                'staff_hours' => $punchWages !== null
-                    ? round($punchWages['hourly_staff_seconds'][$h] / 3600.0, 2)
-                    : null,
-                'est_sales'   => round($estByHour[$h], 2),
+                'hour'       => $h,
+                'rides'      => $ridesByHour[$h],
+                'pass_rides' => $passByHour[$h],
             ];
         }
-        $totalSales = $distributed + $undistributed;
         $hourly = [
             'hours' => $hours,
             // Hour-grain swipe history only accumulates from the day the
             // hourly rollup shipped — say what's actually covered.
-            'swipes_from'     => $coverage['from'] ?? null,
-            'swipes_full'     => (bool)($coverage['full'] ?? false),
-            'sales_spread_pct' => $totalSales > 0 ? round($distributed / $totalSales * 100) : null,
-            // How much of the period's wage money the hourly bars carry —
-            // null when the punches query is off/unusable (bars hidden).
-            'wages_spread_pct' => ($haveWageShape && $wageTotal > 0)
-                ? round($scaled['placed'] / $wageTotal * 100) : null,
-            'staff_open_now'  => $punchWages['open_now'] ?? 0,
+            'swipes_from' => $coverage['from'] ?? null,
+            'swipes_full' => (bool)($coverage['full'] ?? false),
         ];
     }
 

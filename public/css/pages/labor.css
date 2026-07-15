@@ -89,22 +89,6 @@
     text-align: right;
     white-space: nowrap;
 }
-/* Money pair: two thin bars per hour — green sales above red wages. */
-.labor-hour-pair {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    height: auto;
-    background: transparent;
-    border-radius: 0;
-    overflow: visible;
-}
-.labor-hour-pair .labor-hour-fill { height: 6px; }
-.labor-hour-sales { background: var(--success); }
-.labor-hour-wages { background: var(--danger); }
-.labor-money-sales { color: var(--success); font-weight: 600; }
-.labor-money-wages { color: var(--danger); font-weight: 600; }
-
 /* Admin form */
 .labor-conn-grid {
     display: grid;

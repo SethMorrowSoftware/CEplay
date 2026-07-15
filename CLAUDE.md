@@ -72,20 +72,17 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   today — GROUP BY clock-in day). ALL dollar figures come live from these
   two admin-editable range queries (required `:from`/`:to` placeholders,
   single-SELECT guarded via MssqlClient::assertReadOnly; the legacy
-  per-day `:date` pair remains for the `dates=` compat path). A third
-  OPTIONAL punches query powers only the hour-of-day wage split: each
-  day's punch-derived hourly SHAPE is rescaled to that day's SQL total
-  (`laborScaledHourly`), so punch parsing can never change a dollar —
-  blank/failed punches just hide the hourly wage bars
-  (`wages_spread_pct` null). Hour-of-day panels: swipes/hour come from
-  the app's own reader feed (readerHourlyRows stitch, coverage-aware);
-  hourly SALES are an estimate — each day's real dollars spread across
-  its hours by paid-swipe share (`sales_spread_pct` reports how much
-  could be placed). Optional
+  per-day `:date` pair remains for the `dates=` compat path). The only
+  hour-of-day panel is Swipes by the hour — REAL counts from the app's
+  own reader feed (readerHourlyRows stitch, coverage-aware). An hourly
+  wages/sales panel (punch-split wages + per-day sales estimates)
+  shipped briefly and was REMOVED on request: the POS books kart money
+  once per day and the estimates weren't trustworthy — revisit only if
+  a genuine hourly source turns up in the CenterEdge schema. Optional
   estimate mode (`labor_add_ride_value`, default OFF) adds paid rides ×
   per-track price to sales instead. Test connection runs both live queries
-  and prints a fingerprint (server, DB, freshness, category/division dumps,
-  punch count) for diagnosing data questions. Connection settings live
+  and prints a fingerprint (server, DB, freshness, category/division dumps)
+  for diagnosing data questions. Connection settings live
   encrypted in api_config. Driver detection tries PDO sqlsrv → dblib →
   odbc; the page reports what's installed. View gate: analytics +
   view_revenue (nav key view_revenue); config gate: settings. The
