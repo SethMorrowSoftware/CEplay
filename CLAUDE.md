@@ -72,7 +72,8 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   today — GROUP BY clock-in day). ALL dollar figures come live from these
   two admin-editable range queries (required `:from`/`:to` placeholders,
   single-SELECT guarded via MssqlClient::assertReadOnly; the legacy
-  per-day `:date` pair remains for the `dates=` compat path). The only
+  `dates=` param still works — each requested day is fetched alone, so
+  year-over-year date lists never scan the span between them). The only
   hour-of-day panel is Swipes by the hour — REAL counts from the app's
   own reader feed (readerHourlyRows stitch, coverage-aware). An hourly
   wages/sales panel (punch-split wages + per-day sales estimates)

@@ -8,11 +8,11 @@
  *   POST /api/labor/test      — connect and run both queries for today (settings perm)
  *   GET  /api/labor/rate?dates=YYYY-MM-DD,... — per-day sales/labor/rate (analytics + view_revenue)
  *
- * The two queries are admin-editable SQL with a required :date placeholder,
- * guarded to a single SELECT (see MssqlClient::assertReadOnly). Defaults
- * mirror the venue's existing hand-run SQL; the go-kart department filter
- * is a placeholder comment the admin completes on-site, since column
- * naming varies by CenterEdge install.
+ * The two queries are admin-editable SQL with required :from/:to
+ * placeholders (inclusive day range), guarded to a single SELECT (see
+ * MssqlClient::assertReadOnly). Defaults are this venue's proven buckets:
+ * DivNo 808 "Go Kart Readers" for sales; the 'Go-Karts' time-clock join
+ * for wages.
  */
 
 require_once __DIR__ . '/../lib/mssql_client.php';
@@ -21,44 +21,21 @@ require_once __DIR__ . '/../lib/validator.php';
 // to count kart swipes and time-pass swipes per day from the app's own feed.
 require_once __DIR__ . '/analytics.php';
 
-// Defaults for THIS venue — the operator's confirmed-working Grafana
-// query, verbatim: go-kart sales are category 108; go-kart staff are the
-// punches whose TimeClock_JobCodes description is 'Go-Karts' (that's job
-// code 3 at this venue), costed to the second from actual clock-in/out
-// timestamps. $__timeFilter(col) in the Grafana original maps to
-// `col = :date` here (the page runs each query once per selected day).
+// The venue's proven buckets, settled live in July 2026:
+//  - SALES: the POS books the REAL dollars spent at the kart readers under
+//    DivNo 808 "Go Kart Readers" (one aggregated posting per day; verified
+//    against the operator's own figures, e.g. $5,797.24 on 2026-07-11).
+//    Time-pass swipes never post money there, so passes are excluded by
+//    the accounting itself. The Go Karts sales CATEGORY (108) posts rides
+//    at $0 — it is NOT the money bucket.
+//  - WAGES: TimeClock_Weekly joined to TimeClock_JobCodes on Description
+//    'Go-Karts' (job code 3 at this venue).
+// ShiftDate/ClockInDate are filtered as half-open day ranges — correct for
+// DATE, midnight-DATETIME, and timestamped columns alike (equality matched
+// only midnight rows on this install and read zero).
 //
-// One deliberate departure from the Grafana original: an UNCLOSED punch
-// (ClockOutDate IS NULL) accrues to CURRENT_TIMESTAMP only when it was
-// opened TODAY — staff currently on the clock. On a historical day a
-// missed punch-out would otherwise count days or weeks of phantom labor
-// (in Grafana you mostly look at today, so it hides there; a day-picker
-// makes it explode). Old unclosed punches contribute zero here — the
-// number reads low, which is honest: the punch data is broken, and the
-// fix is closing it in CenterEdge, not inventing hours.
-// ShiftDate is filtered as a half-open day range rather than equality:
-// Grafana's $__timeFilter does the same, and if the column is a DATETIME
-// carrying a time-of-day, `ShiftDate = 'YYYY-MM-DD'` matches only
-// midnight rows (observed live: zero sales while Grafana showed money).
-// The range form is correct for DATE, midnight-DATETIME, and timestamped
-// columns alike.
-// The sales source was settled by the division dump in the live
-// fingerprint (2026-07-14): the POS books the REAL dollars spent at the
-// kart readers under DivNo 808 "Go Kart Readers" — one aggregated posting
-// per day ($2,832.11 on Sun 7/13). This is the venue's own attribution,
-// and time-pass swipes never post money there, so the "omit timed plays"
-// requirement is satisfied by the accounting itself. (The Go Karts sales
-// CATEGORY (108) posts rides at $0 and holds only rare walk-up cash; the
-// per-ride-price estimate remains available as an optional add-on — see
-// labor_add_ride_value — but defaults OFF to avoid double counting.)
-const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterEdge].[dbo].[Sales]\nWHERE DivNo = 808  /* \"Go Kart Readers\" division: real dollars spent at the kart readers */\n  AND ShiftDate >= :date\n  AND ShiftDate < DATEADD(DAY, 1, :date)";
-
-const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
-
-// ---- Range-era queries (v2) ------------------------------------------
-// One round-trip per range instead of two per day, so Month and Year views
-// are as cheap as a single day. Same proven buckets as the per-day pair
-// above (DivNo 808 reader dollars; the 'Go-Karts' time-clock join).
+// One round-trip per range: a Year view costs the same two queries as a
+// single day.
 //
 // Sales: one (day, total) row per day with money. CONVERT(...,120) yields
 // 'YYYY-MM-DD' strings, uniform across dblib/odbc/sqlsrv drivers.
@@ -99,11 +76,6 @@ function handleLabor(string $method, array $parts, ?array $input): void {
 
 function laborQueries(): array {
     return [
-        // Legacy per-day pair — kept for the `dates=` compatibility path.
-        'sales_sql' => DB::getConfig('labor_sales_sql') ?: LABOR_DEFAULT_SALES_SQL,
-        'labor_sql' => DB::getConfig('labor_labor_sql') ?: LABOR_DEFAULT_LABOR_SQL,
-        // Range queries — what the page uses now. Sales and labor dollars
-        // both come straight from the database.
         'sales_range_sql' => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
         'labor_range_sql' => DB::getConfig('labor_labor_range_sql') ?: LABOR_DEFAULT_LABOR_RANGE_SQL,
     ];
@@ -126,8 +98,17 @@ function laborSalesMapFromRows(array $rows): array {
         }
         if ($day === null)   $day = $vals[0] ?? null;
         if ($total === null) $total = $vals[1] ?? null;
-        $day = substr(trim((string)$day), 0, 10);
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) continue;
+        $raw = trim((string)$day);
+        $day = substr($raw, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) {
+            // Hand-edited queries sometimes return the day as a raw
+            // DATETIME, which dblib renders like "Jul 14 2026 12:00AM" —
+            // parse it rather than silently dropping the row (which would
+            // read as a day of zero sales).
+            $ts = strtotime($raw);
+            if ($ts === false) continue;
+            $day = date('Y-m-d', $ts);
+        }
         $map[$day] = ($map[$day] ?? 0.0) + (float)$total;
     }
     return $map;
@@ -207,8 +188,6 @@ function laborGetSettings(): void {
     $out += laborRideConfig();
     $out['configured'] = MssqlClient::isConfigured();
     $out['defaults'] = [
-        'sales_sql' => LABOR_DEFAULT_SALES_SQL,
-        'labor_sql' => LABOR_DEFAULT_LABOR_SQL,
         'sales_range_sql' => LABOR_DEFAULT_SALES_RANGE_SQL,
         'labor_range_sql' => LABOR_DEFAULT_LABOR_RANGE_SQL,
     ];
@@ -248,57 +227,35 @@ function laborPutSettings(array $input): void {
     MssqlClient::bindRange($laborRangeSql, '2000-01-01', '2000-01-02');
 
 
-    // Legacy per-day pair: optional (older clients / the dates= compat path).
-    $salesSql = isset($input['sales_sql']) ? (string)$input['sales_sql'] : '';
-    $laborSql = isset($input['labor_sql']) ? (string)$input['labor_sql'] : '';
-    if ($salesSql !== '') {
-        MssqlClient::assertReadOnly($salesSql);
-        MssqlClient::bindDate($salesSql, '2000-01-01');
-    }
-    if ($laborSql !== '') {
-        MssqlClient::assertReadOnly($laborSql);
-        MssqlClient::bindDate($laborSql, '2000-01-01');
-    }
 
-    DB::setConfig('mssql_host', $host);
-    DB::setConfig('mssql_port', (string)$port);
-    DB::setConfig('mssql_database', $database);
-    DB::setConfig('mssql_username', $username);
-    if ($password !== '') {
-        DB::setConfig('mssql_password', Crypto::encrypt($password));
-    }
-    DB::setConfig('labor_sales_range_sql', $salesRangeSql);
-    DB::setConfig('labor_labor_range_sql', $laborRangeSql);
-    if ($salesSql !== '') DB::setConfig('labor_sales_sql', $salesSql);
-    if ($laborSql !== '') DB::setConfig('labor_labor_sql', $laborSql);
-
-    // Ride valuation: which reader group counts as "the karts", and what a
-    // paid (non-time-pass) swipe is worth.
+    // Ride valuation: validate BEFORE the first write so a rejected field
+    // can never leave a half-saved config (observed: a bad reader_group_id
+    // used to 422 after the connection settings had already committed).
+    $groupIdToStore = null; // null = don't touch, '' = clear, else id string
     if (array_key_exists('reader_group_id', $input)) {
         $gid = $input['reader_group_id'];
         if ($gid === null || $gid === '' || (int)$gid === 0) {
-            DB::setConfig('labor_reader_group_id', '');
+            $groupIdToStore = '';
         } else {
             $gid = (int)$gid;
             $exists = DB::queryOne('SELECT id FROM reader_groups WHERE id = :p0', [$gid]);
             if (!$exists) {
                 throw new RuntimeException('Unknown reader group for ride valuation.');
             }
-            DB::setConfig('labor_reader_group_id', (string)$gid);
+            $groupIdToStore = (string)$gid;
         }
     }
+    $priceToStore = null;
     if (array_key_exists('price_per_ride', $input)) {
         $p = (float)$input['price_per_ride'];
         if ($p < 0 || $p > 10000) {
             throw new RuntimeException('Price per ride must be between 0 and 10000.');
         }
-        DB::setConfig('labor_price_per_ride', (string)$p);
-    }
-    if (array_key_exists('add_ride_value', $input)) {
-        DB::setConfig('labor_add_ride_value', $input['add_ride_value'] ? '1' : '0');
+        $priceToStore = (string)$p;
     }
     // Per-track prices: {game_id: price}. Blank/absent entries fall back to
     // the flat price; unknown keys are dropped rather than stored.
+    $ridePricesToStore = null;
     if (array_key_exists('ride_prices', $input)) {
         $in = is_array($input['ride_prices']) ? $input['ride_prices'] : [];
         $clean = [];
@@ -310,8 +267,25 @@ function laborPutSettings(array $input): void {
             }
             $clean[(string)$gameId] = $p;
         }
-        DB::setConfig('labor_ride_prices', json_encode($clean));
+        $ridePricesToStore = json_encode($clean);
     }
+
+    // ---- Everything validated; write it all ----
+    DB::setConfig('mssql_host', $host);
+    DB::setConfig('mssql_port', (string)$port);
+    DB::setConfig('mssql_database', $database);
+    DB::setConfig('mssql_username', $username);
+    if ($password !== '') {
+        DB::setConfig('mssql_password', Crypto::encrypt($password));
+    }
+    DB::setConfig('labor_sales_range_sql', $salesRangeSql);
+    DB::setConfig('labor_labor_range_sql', $laborRangeSql);
+    if ($groupIdToStore !== null) DB::setConfig('labor_reader_group_id', $groupIdToStore);
+    if ($priceToStore !== null) DB::setConfig('labor_price_per_ride', $priceToStore);
+    if (array_key_exists('add_ride_value', $input)) {
+        DB::setConfig('labor_add_ride_value', $input['add_ride_value'] ? '1' : '0');
+    }
+    if ($ridePricesToStore !== null) DB::setConfig('labor_ride_prices', $ridePricesToStore);
 
     try {
         DB::execute(
@@ -555,12 +529,17 @@ function laborRate(): void {
     $today = (new DateTime('now', $tz))->format('Y-m-d');
 
     // Window: same range/offset/anchor/from/to params (and semantics) as
-    // the Performance page. The legacy `dates=` list is still accepted and
-    // maps onto its min..max range.
+    // the Performance page. The legacy `dates=` list is still accepted:
+    // exactly the requested days (any distance apart — year-over-year
+    // comparisons were valid under the old contract), fetched one day at a
+    // time so a wide spread never scans the whole span.
     $legacyDates = null;
     $rawDates = trim((string)($_GET['dates'] ?? ''));
     if ($rawDates !== '' && !isset($_GET['range'])) {
         $legacyDates = array_values(array_unique(array_filter(array_map('trim', explode(',', $rawDates)))));
+        if (!$legacyDates) {
+            throw new RuntimeException('dates parameter is required (comma-separated YYYY-MM-DD).');
+        }
         if (count($legacyDates) > 31) {
             throw new RuntimeException('At most 31 dates per request.');
         }
@@ -577,28 +556,29 @@ function laborRate(): void {
             'label' => $from . ' – ' . $to, 'from' => $from, 'to' => $to,
             'prev_from' => $from, 'prev_to' => $to,
         ];
+        $dates = $legacyDates;
     } else {
         $win = perfResolveWindow($tz);
         $from = $win['from'];
         $to   = $win['to'];
-    }
 
-    // Clamp the future away (a Year view in July would otherwise ask MSSQL
-    // about days that haven't happened), and bound the span: one Year is
-    // the biggest period the page offers.
-    if ($to > $today) $to = $today;
-    $spanDays = laborDateSpan($from, $to);
-    if ($spanDays < 1) {
-        throw new RuntimeException('The selected period is entirely in the future.');
-    }
-    if ($spanDays > 380) {
-        throw new RuntimeException('Ranges longer than a year aren\'t supported here — pick a year or less.');
-    }
-    $dates = [];
-    $cursor = DateTime::createFromFormat('!Y-m-d', $from, $tz);
-    for ($i = 0; $i < $spanDays; $i++) {
-        $dates[] = $cursor->format('Y-m-d');
-        $cursor->modify('+1 day');
+        // Clamp the future away (a Year view in July would otherwise ask
+        // MSSQL about days that haven't happened), and bound the span: one
+        // Year is the biggest period the page offers.
+        if ($to > $today) $to = $today;
+        $spanDays = laborDateSpan($from, $to);
+        if ($spanDays < 1) {
+            throw new RuntimeException('The selected period is entirely in the future.');
+        }
+        if ($spanDays > 380) {
+            throw new RuntimeException('Ranges longer than a year aren\'t supported here — pick a year or less.');
+        }
+        $dates = [];
+        $cursor = DateTime::createFromFormat('!Y-m-d', $from, $tz);
+        for ($i = 0; $i < $spanDays; $i++) {
+            $dates[] = $cursor->format('Y-m-d');
+            $cursor->modify('+1 day');
+        }
     }
 
     $meta = perfRangeMeta($win, $tzName);
@@ -617,20 +597,31 @@ function laborRate(): void {
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
     ];
 
+    // Nothing to report until the connection exists — skip the feed work
+    // too; the page shows its "Not connected yet" card either way.
+    if (!MssqlClient::isConfigured()) {
+        echo json_encode($base + ['days' => [], 'hourly' => null]);
+        return;
+    }
+
     // Swipe counts from the app's own reader feed: daily columns for every
-    // day in range, plus per-(date,hour) rows for the hourly panels.
+    // day in range, plus per-(date,hour) rows for the hourly panel. The
+    // legacy path skips the hourly panel — it didn't exist under the old
+    // contract, and its callers may spread dates years apart.
     $rideStats = [];
     $hourRows = [];
     $coverage = null;
     if ($ride['reader_group_id']) {
         try {
             $rideStats = laborRideStats($dates, $ride['reader_group_id'], $ride);
-            $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
-                'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$ride['reader_group_id']]));
-            if ($members) {
-                $memberSet = array_flip($members);
-                $hourRows = readerHourlyRows($from, $to, $tz, $memberSet);
-                $coverage = readerHourlyCoverage($from, $to, $tz);
+            if ($legacyDates === null) {
+                $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
+                    'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$ride['reader_group_id']]));
+                if ($members) {
+                    $memberSet = array_flip($members);
+                    $hourRows = readerHourlyRows($from, $to, $tz, $memberSet);
+                    $coverage = readerHourlyCoverage($from, $to, $tz);
+                }
             }
         } catch (Exception $e) {
             error_log('labor ride stats failed: ' . $e->getMessage());
@@ -638,29 +629,30 @@ function laborRate(): void {
     }
 
     // ---- MSSQL: sales + labor dollars, both computed LIVE by the DB ----
+    // Contiguous windows fetch the whole span in one round-trip per query;
+    // legacy date lists fetch each requested day alone, so two dates years
+    // apart never scan the span between them.
     $q = laborQueries();
     try {
         $client = new MssqlClient();
-        $salesMap = laborSalesMapFromRows(
-            $client->rows(MssqlClient::bindRange($q['sales_range_sql'], $from, $to), 500));
-        $laborMap = laborSalesMapFromRows(
-            $client->rows(MssqlClient::bindRange($q['labor_range_sql'], $from, $to), 500));
+        $salesMap = [];
+        $laborMap = [];
+        $spans = $legacyDates !== null
+            ? array_map(function ($d) { return [$d, $d]; }, $dates)
+            : [[$from, $to]];
+        foreach ($spans as [$a, $b]) {
+            $salesMap += laborSalesMapFromRows(
+                $client->rows(MssqlClient::bindRange($q['sales_range_sql'], $a, $b), 500));
+            $laborMap += laborSalesMapFromRows(
+                $client->rows(MssqlClient::bindRange($q['labor_range_sql'], $a, $b), 500));
+        }
     } catch (Exception $e) {
         echo json_encode($base + ['error' => $e->getMessage(), 'days' => []]);
         return;
     }
     $result = laborComposeResults($dates, $salesMap, $laborMap, $rideStats, $hourRows, $coverage, $ride);
-    $days = $result['days'];
 
-    // Legacy `dates=` callers get exactly the days they asked for.
-    if ($legacyDates !== null) {
-        $set = array_flip($legacyDates);
-        $days = array_values(array_filter($days, function ($d) use ($set) {
-            return isset($set[$d['date']]);
-        }));
-    }
-
-    echo json_encode($base + ['days' => $days, 'hourly' => $result['hourly']]);
+    echo json_encode($base + ['days' => $result['days'], 'hourly' => $result['hourly']]);
 }
 
 /**
@@ -681,9 +673,6 @@ function laborRate(): void {
  * @return array{days: array, hourly: ?array}
  */
 function laborComposeResults(array $dates, array $salesMap, array $laborMap, array $rideStats, array $hourRows, ?array $coverage, array $ride): array {
-    $from = $dates ? $dates[0] : '';
-    $to   = $dates ? $dates[count($dates) - 1] : '';
-
     // ---- Daily rows (every day in range, zeros included) ----
     $days = [];
     foreach ($dates as $d) {
