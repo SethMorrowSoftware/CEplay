@@ -3,9 +3,9 @@
  * MSSQL database, browsable by Day / Week / Month / Year / Custom range
  * (same period model as the Performance page).
  *
- * The page leads with plain-language insight cards, then two hour-of-day
- * panels (swipes; wages vs sales), then the per-day (or per-month, on a
- * Year view) table with the red/green split bars. Admins (settings
+ * The page leads with plain-language insight cards, then the swipes-by-
+ * hour panel (real reader-feed counts), then the per-day (or per-month,
+ * on a Year view) table with the red/green split bars. Admins (settings
  * permission) also see the connection / query editor here — kept on this
  * page rather than Settings so the report and its plumbing live together.
  */
@@ -25,13 +25,6 @@
     function fmtMoney(v) {
         if (v == null) return '—';
         return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    function fmtMoneyShort(v) {
-        if (v == null) return '—';
-        if (Math.abs(v) >= 10000) return '$' + Math.round(v / 1000) + 'k';
-        if (Math.abs(v) >= 1000) return '$' + (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-        return '$' + Math.round(v).toLocaleString();
     }
 
     function fmtPct(v) {
@@ -401,7 +394,7 @@
         // swipes, wages, or money.
         var lo = -1, hi = -1;
         hours.forEach(function(h, i) {
-            var active = (h.rides || 0) > 0 || (h.wages || 0) > 0 || (h.est_sales || 0) > 0;
+            var active = (h.rides || 0) > 0;
             if (active) { if (lo === -1) lo = i; hi = i; }
         });
         if (lo === -1) return;
@@ -435,58 +428,6 @@
             ]));
         }
 
-        // ---- Wages vs sales by the hour ----
-        // Wage bars carry real dollars only when the punch data could be
-        // matched to the database's daily totals; otherwise they hide and
-        // the note says so (the table above is never affected).
-        var haveWages = hourly.wages_spread_pct != null
-            && slice.some(function(h) { return (h.wages || 0) > 0; });
-        var maxMoney = slice.reduce(function(m, h) {
-            return Math.max(m, h.est_sales || 0, haveWages ? (h.wages || 0) : 0);
-        }, 0);
-        if (maxMoney > 0) {
-            var moneyRows = slice.map(function(h) {
-                var sw = Math.round((h.est_sales || 0) / maxMoney * 100);
-                if ((h.est_sales || 0) > 0 && sw < 1) sw = 1;
-                var tipParts = ['≈' + fmtMoney(h.est_sales) + ' sales'];
-                var bars = [App.el('span', { className: 'labor-hour-fill labor-hour-sales', style: { width: sw + '%' } })];
-                var vals = [App.el('span', { className: 'labor-money-sales', textContent: '≈' + fmtMoneyShort(h.est_sales) })];
-                if (haveWages) {
-                    var ww = Math.round((h.wages || 0) / maxMoney * 100);
-                    if ((h.wages || 0) > 0 && ww < 1) ww = 1;
-                    tipParts.push(fmtMoney(h.wages) + ' wages');
-                    if (h.staff_hours != null && h.staff_hours > 0) tipParts.push(h.staff_hours.toFixed(1) + ' staff-hours');
-                    var hourRate = (h.est_sales || 0) > 0 ? (h.wages || 0) / h.est_sales : null;
-                    if (hourRate != null) tipParts.push(Math.round(hourRate * 100) + '% rate');
-                    bars.push(App.el('span', { className: 'labor-hour-fill labor-hour-wages', style: { width: ww + '%' } }));
-                    vals.push(App.el('span', { className: 'text-muted', textContent: ' · ' }));
-                    vals.push(App.el('span', { className: 'labor-money-wages', textContent: fmtMoneyShort(h.wages) }));
-                }
-                return App.el('div', { className: 'labor-hour-row labor-hour-money', title: tipParts.join(' · ') }, [
-                    App.el('span', { className: 'labor-hour-label', textContent: hourLabel(h.hour) }),
-                    App.el('span', { className: 'labor-hour-track labor-hour-pair' }, bars),
-                    App.el('span', { className: 'labor-hour-val' }, vals)
-                ]);
-            });
-            var notes = ['The register books kart money once per day, so hourly sales (≈) are the day’s real dollars spread across its hours by when the paid swipes happened.'];
-            if (hourly.sales_spread_pct != null && hourly.sales_spread_pct < 100) {
-                notes.push(hourly.sales_spread_pct + '% of the period’s sales could be placed into hours; the rest came from days with no recorded swipes.');
-            }
-            if (!haveWages) {
-                notes.push('The hourly wage split is unavailable for this period — the totals in the table are unaffected.');
-            } else if (hourly.wages_spread_pct != null && hourly.wages_spread_pct < 100) {
-                notes.push(hourly.wages_spread_pct + '% of the period’s wages could be placed into hours.');
-            }
-            box.appendChild(App.el('div', { className: 'card' }, [
-                App.el('div', { className: 'card-header' }, [
-                    App.el('h3', { textContent: haveWages ? 'Wages vs sales by the hour' : 'Sales by the hour' })
-                ]),
-                App.el('div', { className: 'card-body' }, [
-                    App.el('div', { className: 'labor-hour-list' }, moneyRows),
-                    App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent: notes.join(' ') })
-                ])
-            ]));
-        }
     }
 
     // ------------------------------------------------------------------
@@ -566,8 +507,6 @@
         salesTa.value = s.sales_range_sql || '';
         var laborTa = App.el('textarea', { className: 'form-input labor-sql', rows: 10 });
         laborTa.value = s.labor_range_sql || '';
-        var punchesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 8 });
-        punchesTa.value = s.punches_sql || '';
 
         var statusEl = App.el('span', { className: 'text-sm text-secondary' });
 
@@ -579,7 +518,6 @@
                         host: hostIn.value.trim(), port: parseInt(portIn.value, 10) || 1433,
                         database: dbIn.value.trim(), username: userIn.value.trim(),
                         sales_range_sql: salesTa.value, labor_range_sql: laborTa.value,
-                        punches_sql: punchesTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
                         price_per_ride: parseFloat(priceIn.value) || 0,
                         add_ride_value: addValueCb.checked,
@@ -605,12 +543,11 @@
             } });
 
         var resetBtn = App.el('button', { className: 'btn btn-ghost', textContent: 'Reset queries to defaults',
-            title: 'Fill both query boxes with the shipped go-kart defaults (Go Kart Readers division sales; Go-Karts time-clock punches). Nothing is saved until you press Save settings.',
+            title: 'Fill both query boxes with the shipped go-kart defaults (Go Kart Readers division sales; Go-Karts wages). Nothing is saved until you press Save settings.',
             onClick: function() {
                 if (!s.defaults) return;
                 salesTa.value = s.defaults.sales_range_sql || salesTa.value;
                 laborTa.value = s.defaults.labor_range_sql || laborTa.value;
-                punchesTa.value = s.defaults.punches_sql || punchesTa.value;
                 statusEl.textContent = 'Defaults restored — review, then Save settings.';
             } });
 
@@ -630,9 +567,7 @@
                     if (probeDateIn.value) body.probe_date = probeDateIn.value;
                     var r = await API.post('labor/test', body);
                     if (r.success) {
-                        statusEl.textContent = '✓ Connected via ' + r.driver + ' — today: ' + fmtMoney(r.sales) + ' sales, '
-                            + fmtMoney(r.labor) + ' labor'
-                            + (r.punches_today != null ? ' (punches: ' + r.punches_today + ')' : '') + '.';
+                        statusEl.textContent = '✓ Connected via ' + r.driver + ' — today: ' + fmtMoney(r.sales) + ' sales, ' + fmtMoney(r.labor) + ' labor.';
                         if (r.diagnostics) {
                             var lines = [];
                             Object.keys(r.diagnostics).forEach(function(k) {
@@ -679,7 +614,6 @@
                 trackPricesBox,
                 field('Kart sales by day (:from … :to) — one (day, total) row per day', salesTa),
                 field('Kart wages by day (:from … :to) — one (day, total) row per day; the database computes the dollars', laborTa),
-                field('Time-clock punches (:from … :to) — OPTIONAL, powers only the hour-of-day wage split (rescaled to the daily totals above); blank disables it', punchesTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :from and :to. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
                 App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
