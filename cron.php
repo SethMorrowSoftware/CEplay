@@ -208,3 +208,26 @@ if (DB::getConfig('card_activity_backfill_done') !== '1') {
         echo "  Backfill failed (will retry next run): " . $e->getMessage() . "\n";
     }
 }
+
+// One-time per-game history backfill from the MSSQL play ledger
+// (PlayerCardTrans TransType 1) into the permanent game_daily_stats /
+// game_hourly_stats rollups — real multi-year Performance trends + Reader-Groups
+// heatmaps. Same rules as the guest backfill: lock-free, only after the nightly
+// rollup ran (so the cutoff reflects the feed's coverage) and the game cache is
+// fresh (so readers map to games), flag-guarded, retried until it succeeds.
+if (DB::getConfig('game_stats_backfill_done') !== '1') {
+    echo "[" . date('c') . "] One-time per-game history backfill from MSSQL PlayerCardTrans...\n";
+    try {
+        $gs = Scheduler::backfillGameStatsFromMssql(2005, function ($m) { echo $m . "\n"; });
+        if (!empty($gs['skipped'])) {
+            echo "  Skipped: {$gs['reason']} — will retry on a later run.\n";
+        } else {
+            DB::setConfig('game_stats_backfill_done', '1');
+            echo "  Done: {$gs['daily_rows']} game-day + {$gs['hourly_rows']} game-hour rows; "
+                . "{$gs['readers_mapped']} readers mapped, {$gs['readers_unmapped']} unmapped; "
+                . "days before {$gs['cutoff']}.\n";
+        }
+    } catch (Exception $e) {
+        echo "  Per-game backfill failed (will retry next run): " . $e->getMessage() . "\n";
+    }
+}

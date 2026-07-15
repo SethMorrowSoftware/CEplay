@@ -11,7 +11,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Key Files
 - `index.php` — Main router: SPA shell, API dispatch, safety nets (Tier 1/2 enforcement)
 - `config.php` — Constants: encryption key, DB path, session lifetime, API timeouts
-- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data, one-time MSSQL guest-history backfill
+- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data, one-time MSSQL backfills (guest history + per-game play history)
 - `cron_watchdog.php` — Per-minute watchdog: missed actions, state enforcement, re-queue
 - `run_action.php` — Single-action executor invoked by `at` jobs
 - `backfill_card_activity.php` — OPTIONAL manual runner (thin wrapper over `Scheduler::backfillCardActivityFromMssql()`). The nightly `cron.php` runs this backfill **automatically, once** (guarded by config flag `card_activity_backfill_done`, lock-free after the main plan) as soon as it runs with MSSQL configured — no CLI needed. It seeds the guest ledger (`card_activity`) from MSSQL `PlayerCardTrans` (MIN/MAX `TransDateTime` per card) so "new vs returning" reaches back ~2 decades instead of only the 30-day feed. Batched by year; idempotent (reuses the nightly rollup's monotonic UPSERT — only widens); venue server only
@@ -47,7 +47,14 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
   aggregates the raw feed into the permanent per-game, per-day `game_daily_stats`
   table, so month/year performance history survives indefinitely. CenterEdge has
-  no reporting API — all aggregation is done locally.
+  no reporting API — all aggregation is done locally. History from BEFORE the app
+  started is one-time backfilled from the MSSQL `PlayerCardTrans` ledger
+  (`Scheduler::backfillGameStatsFromMssql()`, run automatically by `cron.php`,
+  flag `game_stats_backfill_done`): plays/value/unique-cards per game/day/hour,
+  mapped `rdrkey`→`game_id` via `ReaderDevices`. Tickets/cash/time-plays stay 0
+  on backfilled rows (no per-game source — every ticket credit has `rdrkey` 0),
+  and only days BEFORE the live rollup's coverage are written, so nothing
+  double-counts (expect a small seam at that boundary between the two sources).
 - Reporting endpoints (`GET /api/analytics/games`, `GET /api/analytics/game`)
   stitch the rollup (older days) with the raw feed (recent days) at a split
   point safely inside raw retention, so totals are correct AND live. Same
