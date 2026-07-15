@@ -60,7 +60,7 @@
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Go-Kart Labor' }),
                 App.el('p', { className: 'page-subtitle', textContent:
-                    'How much of the go-kart money goes to staff wages, and when the track is actually busy. Lower is better.' })
+                    'Go-kart sales vs staff wages — by day, week, month, or year.' })
             ])
         ]));
 
@@ -330,9 +330,9 @@
                     App.el('td', { style: { width: '26%' } }, [
                         App.el('div', {
                             className: 'labor-bar-track',
-                            title: fmtMoney(rowLabor) + ' wages (red)'
+                            title: fmtMoney(rowLabor) + ' wages'
                                 + (rowSales >= rowLabor
-                                    ? ' · ' + fmtMoney(rowProfit) + ' left after wages (green)'
+                                    ? ' · ' + fmtMoney(rowProfit) + ' left after wages'
                                     : (rowSales > 0
                                         ? ' — wages exceeded sales by ' + fmtMoney(rowLabor - rowSales)
                                         : ' — no sales recorded'))
@@ -352,8 +352,7 @@
             ]),
             App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Each bar is that ' + rowLabel.toLowerCase() + '’s sales: the red share went to wages, the green share is what was left. A solid red bar means wages ate everything (or there were no sales). '
-                    + 'Labor rate = wages ÷ go-kart sales. '
+                    'Labor rate = wages ÷ go-kart sales. '
                     + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
                         ? 'Sales are estimated as paid rides × each track’s price plus the sales query; time-pass swipes are not counted as money. '
                         : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). Rides and Pass show how busy the track was. ')
@@ -428,10 +427,7 @@
                 : '';
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-header' }, [
-                    App.el('div', {}, [
-                        App.el('h3', { textContent: 'Swipes by the hour' }),
-                        App.el('div', { className: 'text-muted text-sm', textContent: 'When the karts actually run — every reader swipe in this period, by hour of day' })
-                    ])
+                    App.el('h3', { textContent: 'Swipes by the hour' })
                 ]),
                 App.el('div', { className: 'card-body' }, [
                     App.el('div', { className: 'labor-hour-list' }, swipeRows)
@@ -469,10 +465,7 @@
                 : '';
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-header' }, [
-                    App.el('div', {}, [
-                        App.el('h3', { textContent: 'Wages vs sales by the hour' }),
-                        App.el('div', { className: 'text-muted text-sm', textContent: 'Green is money coming in, red is wages going out — hours where red rivals green deserve a look' })
-                    ])
+                    App.el('h3', { textContent: 'Wages vs sales by the hour' })
                 ]),
                 App.el('div', { className: 'card-body' }, [
                     App.el('div', { className: 'labor-hour-list' }, moneyRows),
