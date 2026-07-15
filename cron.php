@@ -186,48 +186,11 @@ try {
     Scheduler::releaseLock();
 }
 
-// One-time historical guest-history backfill from the MSSQL card ledger
-// (PlayerCardTrans). Runs AFTER the scheduler lock is released — it only widens
-// the analytics card_activity table and races nothing — and only on a night the
-// main plan above succeeded (the catch exits first on failure). The flag makes
-// it a no-op after the first success; a skipped (no MSSQL) or failed attempt
-// leaves the flag unset so it simply retries on a later run. Idempotent, so a
-// retry that redoes earlier years is harmless.
-if (DB::getConfig('card_activity_backfill_done') !== '1') {
-    echo "[" . date('c') . "] One-time guest-history backfill from MSSQL PlayerCardTrans...\n";
-    try {
-        $bf = Scheduler::backfillCardActivityFromMssql(2005, function ($m) { echo $m . "\n"; });
-        if (!empty($bf['skipped'])) {
-            echo "  Skipped: {$bf['reason']} — will retry once MSSQL is reachable.\n";
-        } else {
-            DB::setConfig('card_activity_backfill_done', '1');
-            echo "  Done: {$bf['cards']} cards in the ledger, earliest first-seen "
-                . ($bf['earliest'] ?? '?') . " ({$bf['merged']} rows merged).\n";
-        }
-    } catch (Exception $e) {
-        echo "  Backfill failed (will retry next run): " . $e->getMessage() . "\n";
-    }
-}
-
-// One-time per-game history backfill from the MSSQL play ledger
-// (PlayerCardTrans TransType 1) into the permanent game_daily_stats /
-// game_hourly_stats rollups — real multi-year Performance trends + Reader-Groups
-// heatmaps. Same rules as the guest backfill: lock-free, only after the nightly
-// rollup ran (so the cutoff reflects the feed's coverage) and the game cache is
-// fresh (so readers map to games), flag-guarded, retried until it succeeds.
-if (DB::getConfig('game_stats_backfill_done') !== '1') {
-    echo "[" . date('c') . "] One-time per-game history backfill from MSSQL PlayerCardTrans...\n";
-    try {
-        $gs = Scheduler::backfillGameStatsFromMssql(2005, function ($m) { echo $m . "\n"; });
-        if (!empty($gs['skipped'])) {
-            echo "  Skipped: {$gs['reason']} — will retry on a later run.\n";
-        } else {
-            DB::setConfig('game_stats_backfill_done', '1');
-            echo "  Done: {$gs['daily_rows']} game-day + {$gs['hourly_rows']} game-hour rows; "
-                . "{$gs['readers_mapped']} readers mapped, {$gs['readers_unmapped']} unmapped; "
-                . "days before {$gs['cutoff']}.\n";
-        }
-    } catch (Exception $e) {
-        echo "  Per-game backfill failed (will retry next run): " . $e->getMessage() . "\n";
-    }
-}
+// One-time MSSQL historical backfills (guest ledger + per-game play history).
+// Runs AFTER the scheduler lock is released — they only widen analytics tables
+// and race nothing — and only on a night the main plan above succeeded (so the
+// game cache is fresh and the rollup cutoff reflects the feed's coverage; the
+// catch exits first on failure). Each is flag-guarded and retried until it
+// succeeds; the same call backs run_backfills.php / update.sh for an on-demand
+// run right after a deploy.
+Scheduler::runPendingBackfills(function ($m) { echo "[" . date('c') . "] " . $m . "\n"; });

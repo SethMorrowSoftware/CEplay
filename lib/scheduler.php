@@ -2111,6 +2111,61 @@ class Scheduler {
     }
 
     /**
+     * Run whichever one-time historical MSSQL backfills haven't finished yet
+     * (guest ledger, then per-game play history), each guarded by its own config
+     * flag so a success is never repeated and a skip/failure simply retries on
+     * the next call. This is the single home for that flag logic — shared by
+     * cron.php (nightly) and run_backfills.php / update.sh (on demand), so a
+     * deploy can surface the deep history immediately instead of at 00:05.
+     *
+     * @param callable|null $log fn(string) for progress
+     * @return array{card:array, game:array} per-backfill status
+     */
+    public static function runPendingBackfills(?callable $log = null): array {
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+        $out = ['card' => ['status' => 'already'], 'game' => ['status' => 'already']];
+
+        if (DB::getConfig('card_activity_backfill_done') !== '1') {
+            $note('Guest-history backfill (card_activity) from MSSQL PlayerCardTrans...');
+            try {
+                $bf = self::backfillCardActivityFromMssql(2005, $note);
+                if (!empty($bf['skipped'])) {
+                    $out['card'] = ['status' => 'skipped', 'reason' => $bf['reason']];
+                    $note('  Skipped: ' . $bf['reason'] . ' — will retry on a later run.');
+                } else {
+                    DB::setConfig('card_activity_backfill_done', '1');
+                    $out['card'] = ['status' => 'done'] + $bf;
+                    $note("  Done: {$bf['cards']} cards, earliest first-seen " . ($bf['earliest'] ?? '?') . ".");
+                }
+            } catch (Exception $e) {
+                $out['card'] = ['status' => 'failed', 'error' => $e->getMessage()];
+                $note('  Failed (will retry next run): ' . $e->getMessage());
+            }
+        }
+
+        if (DB::getConfig('game_stats_backfill_done') !== '1') {
+            $note('Per-game history backfill (game_daily_stats/hourly) from MSSQL PlayerCardTrans...');
+            try {
+                $gs = self::backfillGameStatsFromMssql(2005, $note);
+                if (!empty($gs['skipped'])) {
+                    $out['game'] = ['status' => 'skipped', 'reason' => $gs['reason']];
+                    $note('  Skipped: ' . $gs['reason'] . ' — will retry on a later run.');
+                } else {
+                    DB::setConfig('game_stats_backfill_done', '1');
+                    $out['game'] = ['status' => 'done'] + $gs;
+                    $note("  Done: {$gs['daily_rows']} game-day + {$gs['hourly_rows']} game-hour rows; "
+                        . "{$gs['readers_mapped']} readers mapped, {$gs['readers_unmapped']} unmapped.");
+                }
+            } catch (Exception $e) {
+                $out['game'] = ['status' => 'failed', 'error' => $e->getMessage()];
+                $note('  Failed (will retry next run): ' . $e->getMessage());
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Purge old data to prevent unbounded database growth.
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides
