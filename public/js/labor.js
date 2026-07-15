@@ -18,6 +18,7 @@
         range: 'week',
         offset: 0,
         custom: { from: '', to: '' },
+        includeTimePlays: true, // toggle: count time-pass swipes in ride counts
         data: null,      // last /labor/rate payload
         settings: null   // /labor/settings payload (admins only)
     };
@@ -129,8 +130,25 @@
             })
         ]);
 
+        // Time-pass toggle — same control as Analytics / Reader Groups.
+        // Swipe COUNTS switch between all swipes and paid-only; dollars
+        // never move (passes don't post money at the readers, so the
+        // sales/labor figures are pass-free either way). The payload
+        // carries both counts, so flipping re-renders without a refetch.
+        var tpInput = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: state.includeTimePlays });
+        tpInput.addEventListener('change', function() {
+            state.includeTimePlays = tpInput.checked;
+            if (state.data) renderResults(state.data);
+        });
+        var tpToggle = App.el('label', { className: 'toggle-label',
+            title: 'Include or hide time-pass swipes in the ride counts. Dollars never change — passes don’t post money at the readers.' }, [
+            tpInput,
+            App.el('span', { className: 'toggle-switch' }),
+            App.el('span', { textContent: 'Time-pass plays' })
+        ]);
+
         return App.el('div', { className: 'card perf-controls' }, [
-            App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom])
+            App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom, tpToggle])
         ]);
     }
 
@@ -234,10 +252,19 @@
         var days = data.days || [];
 
         // ---- Plain-language summary ----
+        // With the time-pass toggle off, every swipe COUNT on the page
+        // switches to paid-only. Dollars are pass-free either way.
+        var excludePass = !state.includeTimePlays;
+        var rideCount = function(d) {
+            if (d.rides == null) return null;
+            if (!excludePass) return d.rides;
+            return d.paid_rides != null ? d.paid_rides : Math.max(0, d.rides - (d.pass_rides || 0));
+        };
         var sumSales = 0, sumLabor = 0, sumRides = 0, haveRides = false;
         days.forEach(function(d) {
             sumSales += d.sales || 0; sumLabor += d.labor || 0;
-            if (d.rides != null) { haveRides = true; sumRides += d.rides; }
+            var rc = rideCount(d);
+            if (rc != null) { haveRides = true; sumRides += rc; }
         });
         var avg = sumSales > 0 ? sumLabor / sumSales : null;
 
@@ -261,7 +288,8 @@
         if (haveRides && sumRides > 0 && sumLabor > 0) {
             cards.push(insightCard('🏎️', 'insight-quiet', 'Wages per ride',
                 fmtMoney(sumLabor / sumRides),
-                'across ' + sumRides.toLocaleString() + ' rides (passes included)'));
+                'across ' + sumRides.toLocaleString()
+                    + (excludePass ? ' paid rides (passes hidden)' : ' rides (passes included)')));
         }
         if (cards.length) box.appendChild(App.el('div', { className: 'insight-row' }, cards));
 
@@ -290,8 +318,12 @@
         var showRides = rows.some(function(d) { return d.rides != null; });
         var headCells = [App.el('th', { textContent: rowLabel })];
         if (showRides) {
-            headCells.push(App.el('th', { textContent: 'Rides', title: 'Total kart swipes from the reader feed' }));
-            headCells.push(App.el('th', { textContent: 'Pass', title: 'Time-pass swipes — they never post money at the reader' }));
+            headCells.push(App.el('th', {
+                textContent: excludePass ? 'Paid rides' : 'Rides',
+                title: excludePass ? 'Kart swipes minus time-pass swipes' : 'Total kart swipes from the reader feed' }));
+            if (!excludePass) {
+                headCells.push(App.el('th', { textContent: 'Pass', title: 'Time-pass swipes — they never post money at the reader' }));
+            }
         }
         headCells.push(App.el('th', { textContent: 'Sales' }),
                        App.el('th', { textContent: 'Labor' }),
@@ -320,8 +352,11 @@
                            App.el('span', { className: 'text-muted text-xs', textContent: ' ' + d.date })])
                 ];
                 if (showRides) {
-                    cells.push(App.el('td', { textContent: d.rides != null ? d.rides.toLocaleString() : '—' }));
-                    cells.push(App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: d.pass_rides != null ? d.pass_rides.toLocaleString() : '—' })]));
+                    var rc = rideCount(d);
+                    cells.push(App.el('td', { textContent: rc != null ? rc.toLocaleString() : '—' }));
+                    if (!excludePass) {
+                        cells.push(App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: d.pass_rides != null ? d.pass_rides.toLocaleString() : '—' })]));
+                    }
                 }
                 cells.push(
                     App.el('td', { textContent: fmtMoney(d.sales) }),
@@ -355,7 +390,10 @@
                     'Labor rate = wages ÷ go-kart sales. '
                     + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
                         ? 'Sales are estimated as paid rides × each track’s price plus the sales query; time-pass swipes are not counted as money. '
-                        : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). Rides and Pass show how busy the track was. ')
+                        : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). '
+                            + (excludePass
+                                ? 'Ride counts hide time-pass swipes; dollars are unchanged either way. '
+                                : 'Rides and Pass show how busy the track was. '))
                     + 'Today includes staff currently on the clock. A punch that was never clocked out counts zero on past days — fix it in CenterEdge and the day recalculates.' })
             ])
         ]));
@@ -397,41 +435,56 @@
         if (!hourly || !hourly.hours) return;
         var hours = hourly.hours;
 
+        // The time-pass toggle applies here too: bars show paid swipes
+        // only when passes are excluded.
+        var excludePass = !state.includeTimePlays;
+        var hourCount = function(h) {
+            var total = h.rides || 0;
+            if (!excludePass) return total;
+            return Math.max(0, total - (h.pass_rides || 0));
+        };
+
         // Trim to the venue's active window: first to last hour with any
-        // swipes, wages, or money.
+        // swipes under the current view.
         var lo = -1, hi = -1;
         hours.forEach(function(h, i) {
-            var active = (h.rides || 0) > 0;
-            if (active) { if (lo === -1) lo = i; hi = i; }
+            if (hourCount(h) > 0) { if (lo === -1) lo = i; hi = i; }
         });
         if (lo === -1) return;
         var slice = hours.slice(lo, hi + 1);
 
         // ---- Swipes by the hour ----
-        var maxRides = slice.reduce(function(m, h) { return Math.max(m, h.rides || 0); }, 0);
+        var maxRides = slice.reduce(function(m, h) { return Math.max(m, hourCount(h)); }, 0);
         if (maxRides > 0) {
             var swipeRows = slice.map(function(h) {
-                var w = Math.max(1, Math.round((h.rides || 0) / maxRides * 100));
-                var passNote = (h.pass_rides || 0) > 0 ? ' · ' + h.pass_rides.toLocaleString() + ' passes' : '';
-                return App.el('div', { className: 'labor-hour-row',
-                    title: (h.rides || 0).toLocaleString() + ' swipes' + passNote }, [
+                var n = hourCount(h);
+                var w = Math.max(1, Math.round(n / maxRides * 100));
+                var pass = h.pass_rides || 0;
+                var tip = excludePass
+                    ? n.toLocaleString() + ' paid swipes' + (pass > 0 ? ' (' + pass.toLocaleString() + ' passes hidden)' : '')
+                    : (h.rides || 0).toLocaleString() + ' swipes' + (pass > 0 ? ' · ' + pass.toLocaleString() + ' passes' : '');
+                return App.el('div', { className: 'labor-hour-row', title: tip }, [
                     App.el('span', { className: 'labor-hour-label', textContent: hourLabel(h.hour) }),
                     App.el('span', { className: 'labor-hour-track' }, [
-                        App.el('span', { className: 'labor-hour-fill', style: { width: ((h.rides || 0) > 0 ? w : 0) + '%' } })
+                        App.el('span', { className: 'labor-hour-fill', style: { width: (n > 0 ? w : 0) + '%' } })
                     ]),
-                    App.el('span', { className: 'labor-hour-val', textContent: (h.rides || 0).toLocaleString() })
+                    App.el('span', { className: 'labor-hour-val', textContent: n.toLocaleString() })
                 ]);
             });
-            var coverageNote = !hourly.swipes_full && hourly.swipes_from
-                ? ' Hour-by-hour swipe history starts ' + dayLabel(hourly.swipes_from) + ' — earlier days count in the totals above but not in this panel.'
-                : '';
+            var notes = [];
+            if (excludePass) {
+                notes.push('Time-pass swipes are hidden from these counts.');
+            }
+            if (!hourly.swipes_full && hourly.swipes_from) {
+                notes.push('Hour-by-hour swipe history starts ' + dayLabel(hourly.swipes_from) + ' — earlier days count in the totals above but not in this panel.');
+            }
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-header' }, [
-                    App.el('h3', { textContent: 'Swipes by the hour' })
+                    App.el('h3', { textContent: excludePass ? 'Paid swipes by the hour' : 'Swipes by the hour' })
                 ]),
                 App.el('div', { className: 'card-body' }, [
                     App.el('div', { className: 'labor-hour-list' }, swipeRows)
-                ].concat(coverageNote ? [App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent: coverageNote.trim() })] : []))
+                ].concat(notes.length ? [App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent: notes.join(' ') })] : []))
             ]));
         }
 
