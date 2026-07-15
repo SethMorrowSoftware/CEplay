@@ -436,41 +436,54 @@
         }
 
         // ---- Wages vs sales by the hour ----
-        var maxMoney = slice.reduce(function(m, h) { return Math.max(m, h.est_sales || 0, h.wages || 0); }, 0);
+        // Wage bars carry real dollars only when the punch data could be
+        // matched to the database's daily totals; otherwise they hide and
+        // the note says so (the table above is never affected).
+        var haveWages = hourly.wages_spread_pct != null
+            && slice.some(function(h) { return (h.wages || 0) > 0; });
+        var maxMoney = slice.reduce(function(m, h) {
+            return Math.max(m, h.est_sales || 0, haveWages ? (h.wages || 0) : 0);
+        }, 0);
         if (maxMoney > 0) {
             var moneyRows = slice.map(function(h) {
                 var sw = Math.round((h.est_sales || 0) / maxMoney * 100);
-                var ww = Math.round((h.wages || 0) / maxMoney * 100);
-                if ((h.wages || 0) > 0 && ww < 1) ww = 1;
                 if ((h.est_sales || 0) > 0 && sw < 1) sw = 1;
-                var hourRate = (h.est_sales || 0) > 0 ? (h.wages || 0) / h.est_sales : null;
-                var staff = h.staff_hours != null && h.staff_hours > 0 ? h.staff_hours.toFixed(1) + ' staff-hours' : 'no one clocked in';
-                var rateTxt = hourRate != null ? ' (' + Math.round(hourRate * 100) + '% rate)' : '';
-                return App.el('div', { className: 'labor-hour-row labor-hour-money',
-                    title: '≈' + fmtMoney(h.est_sales) + ' sales · ' + fmtMoney(h.wages) + ' wages · ' + staff + rateTxt }, [
+                var tipParts = ['≈' + fmtMoney(h.est_sales) + ' sales'];
+                var bars = [App.el('span', { className: 'labor-hour-fill labor-hour-sales', style: { width: sw + '%' } })];
+                var vals = [App.el('span', { className: 'labor-money-sales', textContent: '≈' + fmtMoneyShort(h.est_sales) })];
+                if (haveWages) {
+                    var ww = Math.round((h.wages || 0) / maxMoney * 100);
+                    if ((h.wages || 0) > 0 && ww < 1) ww = 1;
+                    tipParts.push(fmtMoney(h.wages) + ' wages');
+                    if (h.staff_hours != null && h.staff_hours > 0) tipParts.push(h.staff_hours.toFixed(1) + ' staff-hours');
+                    var hourRate = (h.est_sales || 0) > 0 ? (h.wages || 0) / h.est_sales : null;
+                    if (hourRate != null) tipParts.push(Math.round(hourRate * 100) + '% rate');
+                    bars.push(App.el('span', { className: 'labor-hour-fill labor-hour-wages', style: { width: ww + '%' } }));
+                    vals.push(App.el('span', { className: 'text-muted', textContent: ' · ' }));
+                    vals.push(App.el('span', { className: 'labor-money-wages', textContent: fmtMoneyShort(h.wages) }));
+                }
+                return App.el('div', { className: 'labor-hour-row labor-hour-money', title: tipParts.join(' · ') }, [
                     App.el('span', { className: 'labor-hour-label', textContent: hourLabel(h.hour) }),
-                    App.el('span', { className: 'labor-hour-track labor-hour-pair' }, [
-                        App.el('span', { className: 'labor-hour-fill labor-hour-sales', style: { width: sw + '%' } }),
-                        App.el('span', { className: 'labor-hour-fill labor-hour-wages', style: { width: ww + '%' } })
-                    ]),
-                    App.el('span', { className: 'labor-hour-val' }, [
-                        App.el('span', { className: 'labor-money-sales', textContent: '≈' + fmtMoneyShort(h.est_sales) }),
-                        App.el('span', { className: 'text-muted', textContent: ' · ' }),
-                        App.el('span', { className: 'labor-money-wages', textContent: fmtMoneyShort(h.wages) })
-                    ])
+                    App.el('span', { className: 'labor-hour-track labor-hour-pair' }, bars),
+                    App.el('span', { className: 'labor-hour-val' }, vals)
                 ]);
             });
-            var spreadNote = hourly.sales_spread_pct != null && hourly.sales_spread_pct < 100
-                ? ' ' + hourly.sales_spread_pct + '% of the period’s sales could be placed into hours; the rest came from days with no recorded swipes.'
-                : '';
+            var notes = ['The register books kart money once per day, so hourly sales (≈) are the day’s real dollars spread across its hours by when the paid swipes happened.'];
+            if (hourly.sales_spread_pct != null && hourly.sales_spread_pct < 100) {
+                notes.push(hourly.sales_spread_pct + '% of the period’s sales could be placed into hours; the rest came from days with no recorded swipes.');
+            }
+            if (!haveWages) {
+                notes.push('The hourly wage split is unavailable for this period — the totals in the table are unaffected.');
+            } else if (hourly.wages_spread_pct != null && hourly.wages_spread_pct < 100) {
+                notes.push(hourly.wages_spread_pct + '% of the period’s wages could be placed into hours.');
+            }
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-header' }, [
-                    App.el('h3', { textContent: 'Wages vs sales by the hour' })
+                    App.el('h3', { textContent: haveWages ? 'Wages vs sales by the hour' : 'Sales by the hour' })
                 ]),
                 App.el('div', { className: 'card-body' }, [
                     App.el('div', { className: 'labor-hour-list' }, moneyRows),
-                    App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                        'Wages are exact, from the time clock. The register books kart money once per day, so hourly sales (≈) are the day’s real dollars spread across its hours by when the paid swipes happened.' + spreadNote })
+                    App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent: notes.join(' ') })
                 ])
             ]));
         }
@@ -551,7 +564,9 @@
 
         var salesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 7 });
         salesTa.value = s.sales_range_sql || '';
-        var punchesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 10 });
+        var laborTa = App.el('textarea', { className: 'form-input labor-sql', rows: 10 });
+        laborTa.value = s.labor_range_sql || '';
+        var punchesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 8 });
         punchesTa.value = s.punches_sql || '';
 
         var statusEl = App.el('span', { className: 'text-sm text-secondary' });
@@ -563,7 +578,8 @@
                     var payload = {
                         host: hostIn.value.trim(), port: parseInt(portIn.value, 10) || 1433,
                         database: dbIn.value.trim(), username: userIn.value.trim(),
-                        sales_range_sql: salesTa.value, punches_sql: punchesTa.value,
+                        sales_range_sql: salesTa.value, labor_range_sql: laborTa.value,
+                        punches_sql: punchesTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
                         price_per_ride: parseFloat(priceIn.value) || 0,
                         add_ride_value: addValueCb.checked,
@@ -593,6 +609,7 @@
             onClick: function() {
                 if (!s.defaults) return;
                 salesTa.value = s.defaults.sales_range_sql || salesTa.value;
+                laborTa.value = s.defaults.labor_range_sql || laborTa.value;
                 punchesTa.value = s.defaults.punches_sql || punchesTa.value;
                 statusEl.textContent = 'Defaults restored — review, then Save settings.';
             } });
@@ -615,7 +632,7 @@
                     if (r.success) {
                         statusEl.textContent = '✓ Connected via ' + r.driver + ' — today: ' + fmtMoney(r.sales) + ' sales, '
                             + fmtMoney(r.labor) + ' labor'
-                            + (r.punches_today != null ? ', ' + r.punches_today + ' punches' : '') + '.';
+                            + (r.punches_today != null ? ' (punches: ' + r.punches_today + ')' : '') + '.';
                         if (r.diagnostics) {
                             var lines = [];
                             Object.keys(r.diagnostics).forEach(function(k) {
@@ -661,7 +678,8 @@
                 addValueToggle,
                 trackPricesBox,
                 field('Kart sales by day (:from … :to) — one (day, total) row per day', salesTa),
-                field('Time-clock punches (:from … :to) — (clock_in, clock_out, pay_rate) rows; wages and the hourly split are computed from these', punchesTa),
+                field('Kart wages by day (:from … :to) — one (day, total) row per day; the database computes the dollars', laborTa),
+                field('Time-clock punches (:from … :to) — OPTIONAL, powers only the hour-of-day wage split (rescaled to the daily totals above); blank disables it', punchesTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :from and :to. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
                 App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
