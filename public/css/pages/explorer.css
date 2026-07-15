@@ -10,6 +10,15 @@
 }
 @media (max-width: 900px) { .explorer-grid { grid-template-columns: 1fr; } }
 
+.explorer-empty-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+    cursor: pointer;
+    user-select: none;
+}
+
 .explorer-table-list {
     margin-top: 0.6rem;
     max-height: 30rem;
