@@ -104,6 +104,23 @@ class MssqlClient
         return str_replace(':date', "'" . $date . "'", $sql);
     }
 
+    /**
+     * Substitute the :from and :to placeholders with validated ISO date
+     * literals (inclusive day range). Same inlining rationale as bindDate.
+     */
+    public static function bindRange(string $sql, string $from, string $to): string
+    {
+        foreach (['from' => $from, 'to' => $to] as $name => $val) {
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $val)) {
+                throw new RuntimeException('Invalid date: ' . $val);
+            }
+            if (strpos($sql, ':' . $name) === false) {
+                throw new RuntimeException('Query must contain the :' . $name . ' placeholder.');
+            }
+        }
+        return str_replace([':from', ':to'], ["'" . $from . "'", "'" . $to . "'"], $sql);
+    }
+
     public function connect(): void
     {
         if ($this->pdo !== null) {

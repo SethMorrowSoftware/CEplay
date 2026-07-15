@@ -59,6 +59,52 @@
 .labor-bar-labor  { background: var(--danger); }
 .labor-bar-profit { background: var(--success); }
 
+/* Hour-of-day panels: one row per hour — label, track, value. */
+.labor-hour-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.labor-hour-row { display: flex; align-items: center; gap: 0.75rem; }
+.labor-hour-label {
+    min-width: 3.6rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: right;
+    white-space: nowrap;
+}
+.labor-hour-track {
+    flex: 1;
+    height: 12px;
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    overflow: hidden;
+}
+.labor-hour-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+.labor-hour-val {
+    min-width: 7.5rem;
+    font-size: 0.8rem;
+    text-align: right;
+    white-space: nowrap;
+}
+/* Money pair: two thin bars per hour — green sales above red wages. */
+.labor-hour-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    height: auto;
+    background: transparent;
+    border-radius: 0;
+    overflow: visible;
+}
+.labor-hour-pair .labor-hour-fill { height: 6px; }
+.labor-hour-sales { background: var(--success); }
+.labor-hour-wages { background: var(--danger); }
+.labor-money-sales { color: var(--success); font-weight: 600; }
+.labor-money-wages { color: var(--danger); font-weight: 600; }
+
 /* Admin form */
 .labor-conn-grid {
     display: grid;

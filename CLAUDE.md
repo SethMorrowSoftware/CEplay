@@ -63,22 +63,31 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   splits rely on `game_daily_stats.time_plays`, tracked since the
   `time_plays_daily_since` config stamp (older rollup rows can't be split).
 - Go-Kart Labor (`#/labor`, `/api/labor/*`, `lib/mssql_client.php`) compares
-  sales vs labor cost per selected day. Labor comes from the venue's
-  CenterEdge MSSQL database (TimeClock_Weekly, 'Go-Karts' job join); sales =
-  MSSQL walk-up cash (Sales, CatNo 108) + paid rides × a configurable
-  per-ride price, where paid rides = the configured go-kart READER GROUP's
-  plays minus time-pass plays from the app's own feed (the MSSQL Sales
-  lines post card-swiped rides at $0 and can't distinguish pass swipes).
-  Test connection prints a connection fingerprint (server, DB, freshness,
-  category names/breakdowns) for diagnosing data questions. Connection settings
-  live encrypted in api_config; the two per-day queries are admin-editable
-  SQL with a required `:date` placeholder, guarded to a single SELECT
-  (comment-stripping keyword blacklist — see MssqlClient::assertReadOnly).
-  Driver detection tries PDO sqlsrv → dblib → odbc; the page reports what's
-  installed. View gate: analytics + view_revenue (nav key view_revenue);
-  config gate: settings. The sandbox/test env has no MSSQL driver — the
-  live connection test happens on the venue server via the page's Test
-  connection button.
+  go-kart sales vs staff wages by Day/Week/Month/Year/Custom range (same
+  window params + semantics as Performance via `perfResolveWindow`; Year
+  renders month rows client-side). Sales = the POS's own "Go Kart Readers"
+  division dollars (Sales, DivNo 808 — time passes never post money there);
+  labor = raw TimeClock_Weekly punches ('Go-Karts' job join) costed in PHP
+  (`laborWagesFromPunches`: PayRate × seconds, wages belong to the clock-IN
+  day, an unclosed punch accrues to now only when opened today, zero on
+  past days). Any range costs exactly TWO MSSQL round-trips: an
+  admin-editable sales-by-day query and a punches query, each with required
+  `:from`/`:to` placeholders, guarded to a single SELECT
+  (MssqlClient::assertReadOnly; the legacy per-day `:date` pair remains for
+  the `dates=` compat path). The same punches feed the hour-of-day panels:
+  swipes/hour come from the app's own reader feed (readerHourlyRows stitch,
+  coverage-aware), wages/hour from the punch split, and hourly SALES are an
+  estimate — each day's real dollars spread across its hours by paid-swipe
+  share (`sales_spread_pct` reports how much could be placed). Optional
+  estimate mode (`labor_add_ride_value`, default OFF) adds paid rides ×
+  per-track price to sales instead. Test connection runs both live queries
+  and prints a fingerprint (server, DB, freshness, category/division dumps,
+  punch count) for diagnosing data questions. Connection settings live
+  encrypted in api_config. Driver detection tries PDO sqlsrv → dblib →
+  odbc; the page reports what's installed. View gate: analytics +
+  view_revenue (nav key view_revenue); config gate: settings. The
+  sandbox/test env has no MSSQL driver — the live connection test happens
+  on the venue server via the page's Test connection button.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.
