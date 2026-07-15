@@ -148,13 +148,15 @@ function analyticsOverview(bool $hideMoney = false): void {
     // Resolve the requested window into [start, end] in UTC. We compare ISO 8601
     // strings lexically against transaction_time / action_log.timestamp, so we
     // emit explicit UTC strings here to keep the comparison unambiguous.
-    $rangeKey = isset($_GET['range']) ? (string)$_GET['range'] : '7d';
-    $allowed = ['today', '7d', '30d', '90d', 'all', 'custom'];
-    if (!in_array($rangeKey, $allowed, true)) {
-        $rangeKey = '7d';
-    }
-
-    list($startLocal, $endLocal) = analyticsResolveRange($rangeKey, $tz);
+    //
+    // Day / Week / Month / Year / Custom (+ offset) — the SAME period model the
+    // Performance, Reader Groups, Labor and Card Loads pages use, so every
+    // reporting page shares one top-bar picker. perfResolveWindow hands back the
+    // local start and (exclusive) end as DateTime objects, plus the calendar-
+    // previous period for the "vs previous" deltas.
+    $win = perfResolveWindow($tz);
+    $startLocal = clone $win['start'];
+    $endLocal   = clone $win['endExcl'];
 
     $startUtc = clone $startLocal; $startUtc->setTimezone($utc);
     $endUtc   = clone $endLocal;   $endUtc->setTimezone($utc);
@@ -168,10 +170,10 @@ function analyticsOverview(bool $hideMoney = false): void {
     $startSql    = $sqlUtc($startUtc); // For action_log (DB stores "YYYY-MM-DD HH:MM:SS" UTC)
     $endSql      = $sqlUtc($endUtc);
 
-    // Previous period of equal length, immediately preceding the selected range.
-    $rangeSeconds = $endUtc->getTimestamp() - $startUtc->getTimestamp();
-    $prevEndUtc   = (clone $startUtc);
-    $prevStartUtc = (clone $startUtc)->modify('-' . max(1, $rangeSeconds) . ' seconds');
+    // Previous period: the calendar-previous window of the same kind (last
+    // week / month / year, or the equal-length span before a custom range).
+    $prevStartUtc = (clone $win['prev_start'])->setTimezone($utc);
+    $prevEndUtc   = (clone $win['prev_endExcl'])->setTimezone($utc);
     $prevStartIso = $isoUtc($prevStartUtc);
     $prevEndIso   = $isoUtc($prevEndUtc);
 
@@ -373,11 +375,15 @@ function analyticsOverview(bool $hideMoney = false): void {
     );
 
     $payload = [
+        // Canonical window meta for the shared top-bar picker; `label` drives
+        // the ‹ prev / next › nav — same shape every reporting page returns.
+        'window' => perfRangeMeta($win, $tzName),
         'range' => [
-            'key'      => $rangeKey,
+            // Back-compat alias — `window` is canonical now.
+            'key'      => $win['range'],
             'timezone' => $tzName,
-            'from'     => $startLocal->format('Y-m-d'),
-            'to'       => $endLocal->format('Y-m-d'),
+            'from'     => $win['from'],
+            'to'       => $win['to'],
             'from_iso' => $startIsoUtc,
             'to_iso'   => $endIsoUtc,
         ],
@@ -422,67 +428,6 @@ function analyticsOverview(bool $hideMoney = false): void {
     }
 
     echo json_encode($payload);
-}
-
-/**
- * Resolve a range key (or custom from/to) into [startLocal, endLocal] DateTime
- * objects in the app timezone. End is exclusive (next-second boundary).
- */
-function analyticsResolveRange(string $key, DateTimeZone $tz): array {
-    $now = new DateTime('now', $tz);
-
-    if ($key === 'custom') {
-        $from = isset($_GET['from']) ? (string)$_GET['from'] : '';
-        $to   = isset($_GET['to'])   ? (string)$_GET['to']   : '';
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
-            throw new RuntimeException('Custom range requires from/to in YYYY-MM-DD format.');
-        }
-        $start = DateTime::createFromFormat('!Y-m-d', $from, $tz);
-        $end   = DateTime::createFromFormat('!Y-m-d', $to, $tz);
-        if (!$start || !$end) {
-            throw new RuntimeException('Invalid custom range dates.');
-        }
-        $end->modify('+1 day'); // make end exclusive at next-day midnight
-        if ($end <= $start) {
-            throw new RuntimeException('Custom range "to" must be on or after "from".');
-        }
-        return [$start, $end];
-    }
-
-    $end = (clone $now);
-
-    switch ($key) {
-        case 'today':
-            $start = (clone $now)->setTime(0, 0, 0);
-            break;
-        case '30d':
-            $start = (clone $now)->modify('-30 days');
-            break;
-        case '90d':
-            $start = (clone $now)->modify('-90 days');
-            break;
-        case 'all':
-            // Use the earliest record timestamp, falling back to 1 year ago.
-            $row = DB::queryOne('SELECT MIN(transaction_time) AS earliest FROM game_play_transactions');
-            $earliest = $row['earliest'] ?? null;
-            if ($earliest) {
-                try {
-                    $start = new DateTime($earliest);
-                    $start->setTimezone($tz);
-                } catch (Exception $e) {
-                    $start = (clone $now)->modify('-1 year');
-                }
-            } else {
-                $start = (clone $now)->modify('-1 year');
-            }
-            break;
-        case '7d':
-        default:
-            $start = (clone $now)->modify('-7 days');
-            break;
-    }
-
-    return [$start, $end];
 }
 
 /**
