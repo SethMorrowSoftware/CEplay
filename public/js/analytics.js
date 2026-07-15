@@ -29,14 +29,16 @@
         expired_override: 'Expired override'
     };
 
+    var RANGE_LABELS = { day: 'Day', week: 'Week', month: 'Month', year: 'Year', custom: 'Custom' };
+
     // Module state — reset on every render() call.
     var state;
 
     function freshState() {
         return {
-            rangeKey: '7d',
-            from: '',
-            to: '',
+            range: 'week',   // Day/Week/Month/Year/Custom — shared with the other reporting pages
+            offset: 0,       // 0 = current period, negative = past
+            custom: { from: '', to: '' },
             includeTimePlays: true, // toggle: count time-pass plays
             overview: null,
             charts: [],
@@ -53,6 +55,7 @@
         state = freshState();
 
         container.appendChild(buildHeader());
+        container.appendChild(buildControls());
         // Banner shown while the time-pass toggle is excluding plays, so a
         // screenshot or glance can never be misread as the full picture.
         container.appendChild(App.el('div', {
@@ -110,65 +113,6 @@
     // Layout scaffolding
     // ------------------------------------------------------------------
     function buildHeader() {
-        var rangeSelect = App.el('select', {
-            className: 'form-select',
-            id: 'analytics-range',
-            'aria-label': 'Time range',
-            style: { maxWidth: '170px' },
-            onChange: function() {
-                state.rangeKey = this.value;
-                var customRow = document.getElementById('analytics-custom-row');
-                if (customRow) customRow.style.display = state.rangeKey === 'custom' ? 'flex' : 'none';
-                if (state.rangeKey !== 'custom') loadAndRender();
-            }
-        });
-        [
-            { v: 'today', l: 'Today' },
-            { v: '7d', l: 'Last 7 days' },
-            { v: '30d', l: 'Last 30 days' },
-            { v: '90d', l: 'Last 90 days' },
-            { v: 'all', l: 'All time' },
-            { v: 'custom', l: 'Custom…' }
-        ].forEach(function(opt) {
-            var o = App.el('option', { value: opt.v, textContent: opt.l });
-            if (opt.v === state.rangeKey) o.selected = true;
-            rangeSelect.appendChild(o);
-        });
-
-        var fromInput = App.el('input', {
-            className: 'form-input',
-            type: 'date',
-            id: 'analytics-from',
-            'aria-label': 'Custom range start',
-            style: { maxWidth: '160px' }
-        });
-        var toInput = App.el('input', {
-            className: 'form-input',
-            type: 'date',
-            id: 'analytics-to',
-            'aria-label': 'Custom range end',
-            style: { maxWidth: '160px' }
-        });
-        var applyBtn = App.el('button', {
-            className: 'btn btn-secondary btn-sm',
-            textContent: 'Apply',
-            onClick: function() {
-                state.from = fromInput.value;
-                state.to = toInput.value;
-                if (!state.from || !state.to) {
-                    App.toast('Choose a from and to date.', 'warning');
-                    return;
-                }
-                loadAndRender();
-            }
-        });
-
-        var customRow = App.el('div', {
-            className: 'flex gap-sm',
-            id: 'analytics-custom-row',
-            style: { display: 'none', alignItems: 'center', flexWrap: 'wrap' }
-        }, [fromInput, App.el('span', { textContent: 'to', className: 'text-muted' }), toInput, applyBtn]);
-
         var refreshBtn = App.el('button', {
             className: 'btn btn-secondary btn-sm',
             textContent: 'Refresh',
@@ -182,11 +126,86 @@
             style: { minWidth: '7.5rem', textAlign: 'right' }
         });
 
-        // Include/exclude time-pass plays across the whole page. On this
-        // page the exclusion is exact and total: an excluded play's
-        // tickets/points/payments drop out with it (each raw transaction
-        // carries the flag), so the owner sees the venue as if pass traffic
-        // never happened.
+        var actions = App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', flexWrap: 'wrap' } }, [
+            refreshBtn,
+            lastUpdated
+        ]);
+
+        return App.el('div', { className: 'page-header' }, [
+            App.el('div', {}, [
+                App.el('h1', { className: 'page-title', textContent: 'Analytics' }),
+                App.el('p', { className: 'page-subtitle', textContent: 'How the venue is doing — plays, tickets, guests and payments over the range you pick. The cards up top are the headlines; the charts below are the detail.' })
+            ]),
+            actions
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    // Range controls — the SAME top bar as the Performance / Reader Groups /
+    // Labor / Card Loads pages (Day / Week / Month / Year / Custom + prev-next
+    // navigation), so every reporting page feels like one product.
+    // ------------------------------------------------------------------
+    function buildControls() {
+        var presetRow = App.el('div', { className: 'perf-range-presets', id: 'analytics-presets' },
+            Object.keys(RANGE_LABELS).map(function(key) {
+                return App.el('button', {
+                    className: 'btn btn-sm ' + (key === state.range ? 'btn-primary' : 'btn-ghost'),
+                    textContent: RANGE_LABELS[key],
+                    onClick: function() {
+                        if (state.range === key && key !== 'custom') return;
+                        state.range = key;
+                        state.offset = 0;
+                        refreshPresetButtons();
+                        toggleCustomRow();
+                        if (key !== 'custom') loadAndRender();
+                    }
+                });
+            })
+        );
+
+        var nav = App.el('div', { className: 'perf-nav', id: 'analytics-nav' }, [
+            App.el('button', {
+                className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '‹',
+                title: 'Previous period', 'aria-label': 'Previous period',
+                onClick: function() { if (state.range === 'custom') return; state.offset -= 1; loadAndRender(); }
+            }),
+            App.el('div', { className: 'perf-nav-label', id: 'analytics-nav-label', textContent: '…' }),
+            App.el('button', {
+                className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '›',
+                title: 'Next period', 'aria-label': 'Next period',
+                onClick: function() { if (state.range === 'custom' || state.offset >= 0) return; state.offset += 1; loadAndRender(); }
+            }),
+            App.el('button', {
+                className: 'btn btn-sm btn-ghost', textContent: 'Today',
+                title: 'Jump to the current period',
+                onClick: function() { if (state.offset === 0) return; state.offset = 0; loadAndRender(); }
+            })
+        ]);
+
+        var custom = App.el('div', { className: 'perf-custom', id: 'analytics-custom',
+            style: { display: state.range === 'custom' ? '' : 'none' } }, [
+            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'analytics-custom-from', value: state.custom.from }),
+            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'analytics-custom-to', value: state.custom.to }),
+            App.el('button', {
+                className: 'btn btn-sm btn-primary', textContent: 'Apply',
+                onClick: function() {
+                    var from = document.getElementById('analytics-custom-from').value;
+                    var to = document.getElementById('analytics-custom-to').value;
+                    if (!from || !to) { App.toast('Pick both a start and end date.', 'warning'); return; }
+                    if (from > to) { App.toast('"From" must be on or before "To".', 'warning'); return; }
+                    state.custom.from = from;
+                    state.custom.to = to;
+                    loadAndRender();
+                }
+            })
+        ]);
+
+        // Include/exclude time-pass plays across the whole page. On this page
+        // the exclusion is exact and total: an excluded play's tickets/points/
+        // payments drop out with it (each raw transaction carries the flag), so
+        // the owner sees the venue as if pass traffic never happened.
         var timeToggleInput = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: state.includeTimePlays });
         timeToggleInput.addEventListener('change', function() {
             state.includeTimePlays = timeToggleInput.checked;
@@ -203,22 +222,25 @@
             App.el('span', { textContent: 'Time-pass plays' })
         ]);
 
-        var actions = App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', flexWrap: 'wrap' } }, [
-            App.el('label', { className: 'text-sm text-muted', textContent: 'Range:' }),
-            rangeSelect,
-            customRow,
-            timeToggle,
-            refreshBtn,
-            lastUpdated
+        return App.el('div', { className: 'card perf-controls' }, [
+            App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom, timeToggle])
         ]);
+    }
 
-        return App.el('div', { className: 'page-header' }, [
-            App.el('div', {}, [
-                App.el('h1', { className: 'page-title', textContent: 'Analytics' }),
-                App.el('p', { className: 'page-subtitle', textContent: 'How the venue is doing — plays, tickets, guests and payments over the range you pick. The cards up top are the headlines; the charts below are the detail.' })
-            ]),
-            actions
-        ]);
+    function refreshPresetButtons() {
+        var wrap = document.getElementById('analytics-presets');
+        if (!wrap) return;
+        var keys = Object.keys(RANGE_LABELS);
+        Array.prototype.forEach.call(wrap.children, function(btn, i) {
+            btn.className = 'btn btn-sm ' + (keys[i] === state.range ? 'btn-primary' : 'btn-ghost');
+        });
+    }
+
+    function toggleCustomRow() {
+        var custom = document.getElementById('analytics-custom');
+        var nav = document.getElementById('analytics-nav');
+        if (custom) custom.style.display = state.range === 'custom' ? '' : 'none';
+        if (nav) nav.style.display = state.range === 'custom' ? 'none' : '';
     }
 
     function buildKpiSection() {
@@ -649,9 +671,10 @@
         if (showSpinner === undefined) showSpinner = true;
         var gen = App.navGeneration();
 
-        var qs = 'range=' + encodeURIComponent(state.rangeKey);
-        if (state.rangeKey === 'custom' && state.from && state.to) {
-            qs += '&from=' + encodeURIComponent(state.from) + '&to=' + encodeURIComponent(state.to);
+        var qs = 'range=' + encodeURIComponent(state.range) + '&offset=' + encodeURIComponent(state.offset);
+        if (state.range === 'custom') {
+            if (!state.custom.from || !state.custom.to) return; // wait for Apply
+            qs += '&from=' + encodeURIComponent(state.custom.from) + '&to=' + encodeURIComponent(state.custom.to);
         }
         if (!state.includeTimePlays) qs += '&exclude_time_plays=1';
 
@@ -662,6 +685,8 @@
             var data = await API.get('analytics/overview?' + qs);
             if (App.navGeneration() !== gen) return; // user navigated away
             state.overview = data;
+            var navLabel = document.getElementById('analytics-nav-label');
+            if (navLabel && data.window && data.window.label) navLabel.textContent = data.window.label;
             renderTimePlayNote(data);
             renderInsights(data);
             renderKpis(data);
