@@ -19,6 +19,7 @@ const Icons = {
     performance:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/><circle cx="17" cy="7" r="1.3" fill="currentColor" stroke="none"/></svg>',
     readers:   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
     labor:     '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3.5 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3.5 12h2M18.5 12h2" stroke="currentColor" stroke-width="2"/></svg>',
+    explorer:  '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 5.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 11.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
     logs:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M5 9h14M5 14h10M5 19h14"/></svg>',
     settings:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     sun:       '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>',
@@ -99,6 +100,7 @@ const App = {
         '#/overrides':   'view_overrides',
         '#/analytics':   'analytics',
         '#/logs':        'view_logs',
+        '#/explorer':    'settings',
         '#/settings':    'settings'
     },
 
@@ -267,6 +269,7 @@ const App = {
             '#/overrides': 'Overrides',
             '#/analytics': 'Analytics',
             '#/logs': 'Action Log',
+            '#/explorer': 'Database Explorer',
             '#/settings': 'Settings',
             '#/login': 'Login'
         };
@@ -472,6 +475,7 @@ const App = {
             { hash: '#/overrides', icon: Icons.overrides, label: 'Overrides' },
             { hash: '#/analytics', icon: Icons.analytics, label: 'Analytics' },
             { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log' },
+            { hash: '#/explorer',  icon: Icons.explorer,  label: 'DB Explorer' },
             { hash: '#/settings',  icon: Icons.settings,  label: 'Settings' }
         ];
         // Every section is gated by its SECTION_AREAS permission — a role

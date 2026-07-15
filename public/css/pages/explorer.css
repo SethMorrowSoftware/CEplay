@@ -1,0 +1,59 @@
+/* ============================================================
+   Database Explorer — table browser, metric hunter, SQL runner
+   ============================================================ */
+
+.explorer-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 2.4fr;
+    gap: 1rem;
+    align-items: start;
+}
+@media (max-width: 900px) { .explorer-grid { grid-template-columns: 1fr; } }
+
+.explorer-table-list {
+    margin-top: 0.6rem;
+    max-height: 30rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.explorer-table-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.35rem 0.55rem;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.83rem;
+    text-align: left;
+    cursor: pointer;
+}
+.explorer-table-item:hover { background: var(--bg-hover); }
+.explorer-table-item.active { background: var(--accent-soft, rgba(91, 141, 239, 0.12)); color: var(--accent); }
+
+.explorer-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-table-rows { color: var(--text-muted); font-size: 0.72rem; white-space: nowrap; }
+
+/* Wide result sets scroll inside their card, never the page. */
+.explorer-scroll { overflow-x: auto; max-height: 26rem; overflow-y: auto; }
+
+.explorer-cols td code { font-size: 0.78rem; }
+
+.explorer-results th, .explorer-results td {
+    white-space: nowrap;
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.explorer-hunter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 0.75rem;
+}
