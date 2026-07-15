@@ -55,6 +55,22 @@ const LABOR_DEFAULT_SALES_SQL = "SELECT COALESCE(SUM(AmtSold), 0)\nFROM [CenterE
 
 const LABOR_DEFAULT_LABOR_SQL = "SELECT COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0)\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'\n  AND ClockInDate = :date";
 
+// ---- Range-era queries (v2) ------------------------------------------
+// One round-trip per range instead of two per day, so Month and Year views
+// are as cheap as a single day. Same proven buckets as the per-day pair
+// above (DivNo 808 reader dollars; the 'Go-Karts' time-clock join).
+//
+// Sales: one (day, total) row per day with money. CONVERT(...,120) yields
+// 'YYYY-MM-DD' strings, uniform across dblib/odbc/sqlsrv drivers.
+const LABOR_DEFAULT_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ShiftDate, 120) AS day, COALESCE(SUM(AmtSold), 0) AS total\nFROM [CenterEdge].[dbo].[Sales]\nWHERE DivNo = 808  /* \"Go Kart Readers\" division: real dollars spent at the kart readers */\n  AND ShiftDate >= :from\n  AND ShiftDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ShiftDate, 120)";
+
+// Labor: the raw punches instead of a pre-summed total. PHP applies the
+// same wage math the old SQL did (PayRate × seconds; an UNCLOSED punch
+// accrues to now only when opened today, zero on past days) AND can split
+// the same rows into hour-of-day buckets — one query, two views, no way
+// for the daily table and the hourly panel to disagree.
+const LABOR_DEFAULT_PUNCHES_SQL = "SELECT\n  CONVERT(VARCHAR(19), ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME), 120) AS clock_in,\n  CASE WHEN ClockOutDate IS NOT NULL\n    THEN CONVERT(VARCHAR(19), ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME), 120)\n    ELSE NULL END AS clock_out,\n  PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
+
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
 
@@ -76,9 +92,125 @@ function handleLabor(string $method, array $parts, ?array $input): void {
 
 function laborQueries(): array {
     return [
+        // Legacy per-day pair — kept for the `dates=` compatibility path.
         'sales_sql' => DB::getConfig('labor_sales_sql') ?: LABOR_DEFAULT_SALES_SQL,
         'labor_sql' => DB::getConfig('labor_labor_sql') ?: LABOR_DEFAULT_LABOR_SQL,
+        // Range pair — what the page uses now.
+        'sales_range_sql' => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
+        'punches_sql'     => DB::getConfig('labor_punches_sql') ?: LABOR_DEFAULT_PUNCHES_SQL,
     ];
+}
+
+/**
+ * Turn raw time-clock punch rows into daily wage totals and hour-of-day
+ * splits. Pure function — used by the live endpoint and directly testable.
+ *
+ * Rules (mirroring the proven per-day SQL):
+ *  - a punch's WAGES belong to its clock-IN date (the old query filtered
+ *    `ClockInDate = :date`), even if the shift crosses midnight;
+ *  - an unclosed punch accrues to "now" only when opened today (staff
+ *    currently on the clock); on a past day it counts zero — the data is
+ *    broken and the fix is closing it in CenterEdge, not inventing hours;
+ *  - the hourly split walks the punch's real clock time, so a 6 PM–1 AM
+ *    shift feeds hours 18–23 and 0 (staff_seconds counts bodies-on-clock
+ *    the same way).
+ *
+ * @param array<int,array> $punchRows rows with clock_in / clock_out /
+ *        pay_rate keys (case-insensitive; positional fallback)
+ * @return array{daily: array<string,float>, hourly_wages: float[],
+ *               hourly_staff_seconds: int[], punches: int, open_now: int}
+ */
+function laborWagesFromPunches(array $punchRows, DateTimeZone $tz): array {
+    $daily = [];
+    $hourlyWages = array_fill(0, 24, 0.0);
+    $hourlyStaff = array_fill(0, 24, 0);
+    $now = new DateTime('now', $tz);
+    $today = $now->format('Y-m-d');
+    $used = 0;
+    $openNow = 0;
+
+    foreach ($punchRows as $row) {
+        // Tolerant field lookup: named (any case), then positional.
+        $vals = array_values($row);
+        $get = function (string $name, int $pos) use ($row, $vals) {
+            foreach ($row as $k => $v) {
+                if (strcasecmp((string)$k, $name) === 0) return $v;
+            }
+            return $vals[$pos] ?? null;
+        };
+        $inRaw  = trim((string)($get('clock_in', 0) ?? ''));
+        $outRaw = $get('clock_out', 1);
+        $rate   = (float)($get('pay_rate', 2) ?? 0);
+        if ($inRaw === '' || $rate <= 0) continue;
+
+        $in = DateTime::createFromFormat('Y-m-d H:i:s', $inRaw, $tz)
+            ?: DateTime::createFromFormat('Y-m-d H:i', $inRaw, $tz);
+        if (!$in) continue;
+        $inDate = $in->format('Y-m-d');
+
+        $out = null;
+        $outStr = $outRaw === null ? '' : trim((string)$outRaw);
+        if ($outStr !== '') {
+            $out = DateTime::createFromFormat('Y-m-d H:i:s', $outStr, $tz)
+                ?: DateTime::createFromFormat('Y-m-d H:i', $outStr, $tz);
+        } elseif ($inDate === $today) {
+            $out = clone $now;   // on the clock right now
+            $openNow++;
+        }
+        // Unclosed on a past day, or out before in: zero hours.
+        if (!$out || $out <= $in) continue;
+
+        $seconds = $out->getTimestamp() - $in->getTimestamp();
+        $daily[$inDate] = ($daily[$inDate] ?? 0.0) + $rate * $seconds / 3600.0;
+        $used++;
+
+        // Hour-of-day split: walk hour boundaries in venue-local time.
+        $cursor = clone $in;
+        $guard = 24 * 8; // a punch should never span more than a week
+        while ($cursor < $out && $guard-- > 0) {
+            $hour = (int)$cursor->format('G');
+            $hourEnd = (clone $cursor)->setTime($hour, 59, 59)->modify('+1 second');
+            $segEnd = ($hourEnd < $out) ? $hourEnd : $out;
+            $segSec = $segEnd->getTimestamp() - $cursor->getTimestamp();
+            if ($segSec > 0) {
+                $hourlyWages[$hour] += $rate * $segSec / 3600.0;
+                $hourlyStaff[$hour] += $segSec;
+            }
+            $cursor = $segEnd;
+        }
+    }
+
+    return [
+        'daily' => $daily,
+        'hourly_wages' => $hourlyWages,
+        'hourly_staff_seconds' => $hourlyStaff,
+        'punches' => $used,
+        'open_now' => $openNow,
+    ];
+}
+
+/**
+ * Per-day sales map from the range query's (day, total) rows, tolerant of
+ * column naming (named keys any case, else first two columns).
+ *
+ * @return array<string,float> 'YYYY-MM-DD' => dollars
+ */
+function laborSalesMapFromRows(array $rows): array {
+    $map = [];
+    foreach ($rows as $row) {
+        $vals = array_values($row);
+        $day = null; $total = null;
+        foreach ($row as $k => $v) {
+            if (strcasecmp((string)$k, 'day') === 0) $day = $v;
+            if (strcasecmp((string)$k, 'total') === 0) $total = $v;
+        }
+        if ($day === null)   $day = $vals[0] ?? null;
+        if ($total === null) $total = $vals[1] ?? null;
+        $day = substr(trim((string)$day), 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) continue;
+        $map[$day] = ($map[$day] ?? 0.0) + (float)$total;
+    }
+    return $map;
 }
 
 function laborRideConfig(): array {
@@ -154,7 +286,12 @@ function laborGetSettings(): void {
     $out += laborQueries();
     $out += laborRideConfig();
     $out['configured'] = MssqlClient::isConfigured();
-    $out['defaults'] = ['sales_sql' => LABOR_DEFAULT_SALES_SQL, 'labor_sql' => LABOR_DEFAULT_LABOR_SQL];
+    $out['defaults'] = [
+        'sales_sql' => LABOR_DEFAULT_SALES_SQL,
+        'labor_sql' => LABOR_DEFAULT_LABOR_SQL,
+        'sales_range_sql' => LABOR_DEFAULT_SALES_RANGE_SQL,
+        'punches_sql'     => LABOR_DEFAULT_PUNCHES_SQL,
+    ];
     // For the "value rides from this area" dropdown — read directly so the
     // settings gate alone suffices. Members ship per group so the per-track
     // price editor can rebuild instantly when the selection changes.
@@ -181,14 +318,26 @@ function laborPutSettings(array $input): void {
         throw new RuntimeException('A password is required for the first save.');
     }
 
-    $salesSql = Validator::requireString($input, 'sales_sql', 4000);
-    $laborSql = Validator::requireString($input, 'labor_sql', 4000);
-    // Validate both queries NOW so a bad save fails loudly, not at 9 PM
-    // when someone opens the report.
-    MssqlClient::assertReadOnly($salesSql);
-    MssqlClient::assertReadOnly($laborSql);
-    MssqlClient::bindDate($salesSql, '2000-01-01');
-    MssqlClient::bindDate($laborSql, '2000-01-01');
+    // The range pair is what the page runs; validate NOW so a bad save
+    // fails loudly, not at 9 PM when someone opens the report.
+    $salesRangeSql = Validator::requireString($input, 'sales_range_sql', 4000);
+    $punchesSql    = Validator::requireString($input, 'punches_sql', 4000);
+    MssqlClient::assertReadOnly($salesRangeSql);
+    MssqlClient::assertReadOnly($punchesSql);
+    MssqlClient::bindRange($salesRangeSql, '2000-01-01', '2000-01-02');
+    MssqlClient::bindRange($punchesSql, '2000-01-01', '2000-01-02');
+
+    // Legacy per-day pair: optional (older clients / the dates= compat path).
+    $salesSql = isset($input['sales_sql']) ? (string)$input['sales_sql'] : '';
+    $laborSql = isset($input['labor_sql']) ? (string)$input['labor_sql'] : '';
+    if ($salesSql !== '') {
+        MssqlClient::assertReadOnly($salesSql);
+        MssqlClient::bindDate($salesSql, '2000-01-01');
+    }
+    if ($laborSql !== '') {
+        MssqlClient::assertReadOnly($laborSql);
+        MssqlClient::bindDate($laborSql, '2000-01-01');
+    }
 
     DB::setConfig('mssql_host', $host);
     DB::setConfig('mssql_port', (string)$port);
@@ -197,8 +346,10 @@ function laborPutSettings(array $input): void {
     if ($password !== '') {
         DB::setConfig('mssql_password', Crypto::encrypt($password));
     }
-    DB::setConfig('labor_sales_sql', $salesSql);
-    DB::setConfig('labor_labor_sql', $laborSql);
+    DB::setConfig('labor_sales_range_sql', $salesRangeSql);
+    DB::setConfig('labor_punches_sql', $punchesSql);
+    if ($salesSql !== '') DB::setConfig('labor_sales_sql', $salesSql);
+    if ($laborSql !== '') DB::setConfig('labor_labor_sql', $laborSql);
 
     // Ride valuation: which reader group counts as "the karts", and what a
     // paid (non-time-pass) swipe is worth.
@@ -270,8 +421,13 @@ function laborTest(?array $input = null): void {
     $q = laborQueries();
     try {
         $client->connect();
-        $sales = $client->scalar(MssqlClient::bindDate($q['sales_sql'], $today));
-        $labor = $client->scalar(MssqlClient::bindDate($q['labor_sql'], $today));
+        // Exercise the two queries the page actually runs, scoped to today.
+        $salesMap = laborSalesMapFromRows(
+            $client->rows(MssqlClient::bindRange($q['sales_range_sql'], $today, $today), 10));
+        $sales = $salesMap[$today] ?? 0.0;
+        $punchRows = $client->rows(MssqlClient::bindRange($q['punches_sql'], $today, $today), 500);
+        $wages = laborWagesFromPunches($punchRows, $tz);
+        $labor = $wages['daily'][$today] ?? 0.0;
 
         // Fingerprint the connection so "works in Grafana, wrong here" can
         // be settled with facts: WHICH server/instance/database is the app
@@ -459,6 +615,8 @@ function laborTest(?array $input = null): void {
             'today'   => $today,
             'sales'   => round($sales, 2),
             'labor'   => round($labor, 2),
+            'punches_today'  => count($punchRows),
+            'staff_on_clock' => $wages['open_now'],
             'diagnostics' => $diag,
         ]);
     } catch (Exception $e) {
@@ -473,75 +631,62 @@ function laborRate(): void {
     Auth::requireAccess('analytics');
     Auth::requireAccess('view_revenue');
 
-    $raw = trim((string)($_GET['dates'] ?? ''));
-    if ($raw === '') {
-        throw new RuntimeException('dates parameter is required (comma-separated YYYY-MM-DD).');
-    }
-    $dates = array_values(array_unique(array_filter(array_map('trim', explode(',', $raw)))));
-    if (count($dates) > 14) {
-        throw new RuntimeException('At most 14 dates per request.');
-    }
-    foreach ($dates as $d) {
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
-            throw new RuntimeException('Invalid date: ' . $d);
+    list($tz, $tzName) = perfTimezone();
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+
+    // Window: same range/offset/anchor/from/to params (and semantics) as
+    // the Performance page. The legacy `dates=` list is still accepted and
+    // maps onto its min..max range.
+    $legacyDates = null;
+    $rawDates = trim((string)($_GET['dates'] ?? ''));
+    if ($rawDates !== '' && !isset($_GET['range'])) {
+        $legacyDates = array_values(array_unique(array_filter(array_map('trim', explode(',', $rawDates)))));
+        if (count($legacyDates) > 31) {
+            throw new RuntimeException('At most 31 dates per request.');
         }
+        foreach ($legacyDates as $d) {
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+                throw new RuntimeException('Invalid date: ' . $d);
+            }
+        }
+        sort($legacyDates);
+        $from = $legacyDates[0];
+        $to   = $legacyDates[count($legacyDates) - 1];
+        $win = [
+            'range' => 'custom', 'offset' => 0, 'granularity' => 'day',
+            'label' => $from . ' – ' . $to, 'from' => $from, 'to' => $to,
+            'prev_from' => $from, 'prev_to' => $to,
+        ];
+    } else {
+        $win = perfResolveWindow($tz);
+        $from = $win['from'];
+        $to   = $win['to'];
     }
 
-    $q = laborQueries();
+    // Clamp the future away (a Year view in July would otherwise ask MSSQL
+    // about days that haven't happened), and bound the span: one Year is
+    // the biggest period the page offers.
+    if ($to > $today) $to = $today;
+    $spanDays = laborDateSpan($from, $to);
+    if ($spanDays < 1) {
+        throw new RuntimeException('The selected period is entirely in the future.');
+    }
+    if ($spanDays > 380) {
+        throw new RuntimeException('Ranges longer than a year aren\'t supported here — pick a year or less.');
+    }
+    $dates = [];
+    $cursor = DateTime::createFromFormat('!Y-m-d', $from, $tz);
+    for ($i = 0; $i < $spanDays; $i++) {
+        $dates[] = $cursor->format('Y-m-d');
+        $cursor->modify('+1 day');
+    }
+
+    $meta = perfRangeMeta($win, $tzName);
+    $meta['to'] = $to; // reflect the future-clamp
+
     $ride = laborRideConfig();
-    // Swipe counts come from the app's own reader feed and exclude
-    // time-pass swipes from the paid-ride valuation.
-    $rideStats = [];
-    if ($ride['reader_group_id']) {
-        try {
-            $rideStats = laborRideStats($dates, $ride['reader_group_id'], $ride);
-        } catch (Exception $e) {
-            error_log('labor ride stats failed: ' . $e->getMessage());
-        }
-    }
-
-    $client = new MssqlClient();
-    $days = [];
-    foreach ($dates as $d) {
-        try {
-            $cash  = $client->scalar(MssqlClient::bindDate($q['sales_sql'], $d));
-            $labor = $client->scalar(MssqlClient::bindDate($q['labor_sql'], $d));
-            $day = [
-                'date'  => $d,
-                'cash'  => round($cash, 2),
-                'labor' => round($labor, 2),
-            ];
-            $sales = $cash;
-            if (isset($rideStats[$d])) {
-                $rides = $rideStats[$d]['rides'];
-                $pass  = $rideStats[$d]['pass'];
-                // Rides/Pass always render as context; the price-based value
-                // is ADDED only when explicitly enabled — the default sales
-                // query already carries the POS's own reader dollars.
-                if ($ride['add_ride_value']) {
-                    $sales += $rideStats[$d]['value'];
-                    $day['ride_value'] = $rideStats[$d]['value'];
-                }
-                $day['rides'] = $rides;
-                $day['pass_rides'] = $pass;
-                $day['paid_rides'] = max(0, $rides - $pass);
-            }
-            $day['sales'] = round($sales, 2);
-            $day['rate']  = $sales > 0 ? round($labor / $sales, 4) : null;
-            $days[] = $day;
-        } catch (Exception $e) {
-            $days[] = ['date' => $d, 'error' => $e->getMessage()];
-            // A connection-level failure will fail every date the same way;
-            // stop after the first so the response arrives fast.
-            if (strpos($e->getMessage(), 'Could not connect') !== false
-                || strpos($e->getMessage(), 'not configured') !== false
-                || strpos($e->getMessage(), 'driver') !== false) {
-                break;
-            }
-        }
-    }
-    echo json_encode([
-        'days' => $days,
+    $base = [
+        'window' => $meta,
         'configured' => MssqlClient::isConfigured(),
         'ride_valuation' => [
             'reader_group_id' => $ride['reader_group_id'],
@@ -550,5 +695,160 @@ function laborRate(): void {
             'add_ride_value'  => (bool)$ride['add_ride_value'],
         ],
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
-    ]);
+    ];
+
+    // Swipe counts from the app's own reader feed: daily columns for every
+    // day in range, plus per-(date,hour) rows for the hourly panels.
+    $rideStats = [];
+    $hourRows = [];
+    $coverage = null;
+    if ($ride['reader_group_id']) {
+        try {
+            $rideStats = laborRideStats($dates, $ride['reader_group_id'], $ride);
+            $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
+                'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$ride['reader_group_id']]));
+            if ($members) {
+                $memberSet = array_flip($members);
+                $hourRows = readerHourlyRows($from, $to, $tz, $memberSet);
+                $coverage = readerHourlyCoverage($from, $to, $tz);
+            }
+        } catch (Exception $e) {
+            error_log('labor ride stats failed: ' . $e->getMessage());
+        }
+    }
+
+    // ---- MSSQL: exactly two round-trips per request ----
+    $q = laborQueries();
+    try {
+        $client = new MssqlClient();
+        $salesMap = laborSalesMapFromRows(
+            $client->rows(MssqlClient::bindRange($q['sales_range_sql'], $from, $to), 500));
+        $punchRows = $client->rows(MssqlClient::bindRange($q['punches_sql'], $from, $to), 20000);
+    } catch (Exception $e) {
+        echo json_encode($base + ['error' => $e->getMessage(), 'days' => []]);
+        return;
+    }
+    $wages = laborWagesFromPunches($punchRows, $tz);
+    $result = laborComposeResults($dates, $salesMap, $wages, $rideStats, $hourRows, $coverage, $ride);
+    $days = $result['days'];
+
+    // Legacy `dates=` callers get exactly the days they asked for.
+    if ($legacyDates !== null) {
+        $set = array_flip($legacyDates);
+        $days = array_values(array_filter($days, function ($d) use ($set) {
+            return isset($set[$d['date']]);
+        }));
+    }
+
+    echo json_encode($base + ['days' => $days, 'hourly' => $result['hourly']]);
+}
+
+/**
+ * Compose the daily rows + hour-of-day panel from the fetched pieces.
+ * Pure function — directly testable without an MSSQL connection.
+ *
+ * Swipes per hour are real (the app's own feed). Wages per hour are real
+ * (split from the punches). SALES per hour are an estimate: the POS books
+ * kart-reader money once per day, so each day's real dollars are spread
+ * across its hours by paid-swipe share; days with money but no recorded
+ * swipes stay un-spread and are reported via sales_spread_pct.
+ *
+ * @param string[] $dates every ISO date in the window, ascending
+ * @param array<string,float> $salesMap day => dollars
+ * @param array $wages laborWagesFromPunches() output
+ * @param array $rideStats laborRideStats() output (day => rides/pass/value)
+ * @param array $hourRows readerHourlyRows() output
+ * @param ?array $coverage readerHourlyCoverage() output
+ * @param array $ride laborRideConfig() output
+ * @return array{days: array, hourly: ?array}
+ */
+function laborComposeResults(array $dates, array $salesMap, array $wages, array $rideStats, array $hourRows, ?array $coverage, array $ride): array {
+    $from = $dates ? $dates[0] : '';
+    $to   = $dates ? $dates[count($dates) - 1] : '';
+
+    // ---- Daily rows (every day in range, zeros included) ----
+    $days = [];
+    foreach ($dates as $d) {
+        $cash  = round($salesMap[$d] ?? 0.0, 2);
+        $labor = round($wages['daily'][$d] ?? 0.0, 2);
+        $day = ['date' => $d, 'cash' => $cash, 'labor' => $labor];
+        $sales = $cash;
+        if (isset($rideStats[$d])) {
+            $rides = $rideStats[$d]['rides'];
+            $pass  = $rideStats[$d]['pass'];
+            if ($ride['add_ride_value']) {
+                $sales += $rideStats[$d]['value'];
+                $day['ride_value'] = $rideStats[$d]['value'];
+            }
+            $day['rides'] = $rides;
+            $day['pass_rides'] = $pass;
+            $day['paid_rides'] = max(0, $rides - $pass);
+        }
+        $day['sales'] = round($sales, 2);
+        $day['rate']  = $sales > 0 ? round($labor / $sales, 4) : null;
+        $days[] = $day;
+    }
+
+    // ---- Hour-of-day panel ----
+    $hourly = null;
+    if ($hourRows || array_sum($wages['hourly_wages']) > 0) {
+        $ridesByHour = array_fill(0, 24, 0);
+        $passByHour  = array_fill(0, 24, 0);
+        $paidByDateHour = [];
+        foreach ($hourRows as $r) {
+            $h = (int)$r['hour'];
+            $ridesByHour[$h] += (int)$r['plays'];
+            $passByHour[$h]  += (int)$r['time_plays'];
+            $paid = max(0, (int)$r['plays'] - (int)$r['time_plays']);
+            if ($paid > 0) {
+                $paidByDateHour[$r['date']][$h] = ($paidByDateHour[$r['date']][$h] ?? 0) + $paid;
+            }
+        }
+        $estByHour = array_fill(0, 24, 0.0);
+        $distributed = 0.0;
+        $undistributed = 0.0;
+        foreach ($salesMap as $d => $amount) {
+            if ($amount <= 0 || $d < $from || $d > $to) continue;
+            $dayPaid = isset($paidByDateHour[$d]) ? array_sum($paidByDateHour[$d]) : 0;
+            if ($dayPaid > 0) {
+                foreach ($paidByDateHour[$d] as $h => $n) {
+                    $estByHour[$h] += $amount * $n / $dayPaid;
+                }
+                $distributed += $amount;
+            } else {
+                $undistributed += $amount;
+            }
+        }
+        $hours = [];
+        for ($h = 0; $h < 24; $h++) {
+            $hours[] = [
+                'hour'        => $h,
+                'rides'       => $ridesByHour[$h],
+                'pass_rides'  => $passByHour[$h],
+                'wages'       => round($wages['hourly_wages'][$h], 2),
+                'staff_hours' => round($wages['hourly_staff_seconds'][$h] / 3600.0, 2),
+                'est_sales'   => round($estByHour[$h], 2),
+            ];
+        }
+        $totalSales = $distributed + $undistributed;
+        $hourly = [
+            'hours' => $hours,
+            // Hour-grain swipe history only accumulates from the day the
+            // hourly rollup shipped — say what's actually covered.
+            'swipes_from'     => $coverage['from'] ?? null,
+            'swipes_full'     => (bool)($coverage['full'] ?? false),
+            'sales_spread_pct' => $totalSales > 0 ? round($distributed / $totalSales * 100) : null,
+            'staff_open_now'  => $wages['open_now'],
+        ];
+    }
+
+    return ['days' => $days, 'hourly' => $hourly];
+}
+
+/** Inclusive day count between two ISO dates (0 when to < from). */
+function laborDateSpan(string $from, string $to): int {
+    $a = DateTime::createFromFormat('!Y-m-d', $from, new DateTimeZone('UTC'));
+    $b = DateTime::createFromFormat('!Y-m-d', $to, new DateTimeZone('UTC'));
+    if (!$a || !$b || $b < $a) return 0;
+    return (int)round(($b->getTimestamp() - $a->getTimestamp()) / 86400) + 1;
 }
