@@ -281,3 +281,13 @@
 }
 .detail-stat-value.text-sm { font-size: 0.85rem; }
 
+/* --- Ticket Trends report: gold fill for the by-day and by-area bars, riding
+   the shared .labor-hour-track / .labor-bar-track rails (Card Loads pattern). */
+.tickets-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: var(--tickets);
+    transition: width 0.3s ease;
+}
+

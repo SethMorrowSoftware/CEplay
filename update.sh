@@ -222,7 +222,7 @@ podman run --rm --network host \
 # =============================================================================
 #  6. MSSQL driver overlay (Go-Kart Labor report)
 # =============================================================================
-hdr "6/7  MSSQL driver overlay"
+hdr "6/7  MSSQL driver overlay + historical backfill"
 # Rebuild the pdo_dblib overlay on the operator's PHP base so the Go-Kart
 # Labor report can reach the CenterEdge MSSQL database. The built image is
 # persisted to /var/persist (podman's cache does NOT survive FCOS OS
@@ -254,6 +254,31 @@ if [[ -f "${SRC_DIR}/deploy/Containerfile.mssql" && -f "${SRC_DIR}/deploy/write-
     fi
 else
     note "deploy/Containerfile.mssql not in source tree — skipping."
+fi
+
+# Seed the one-time historical backfills NOW (best-effort) so the deep history —
+# guest new-vs-returning, multi-year Performance trends, ticket trends — shows up
+# right after this update instead of waiting for tonight's cron. Idempotent and
+# flag-guarded (Scheduler::runPendingBackfills): if it can't finish, or MSSQL
+# isn't reachable, cron simply retries later, so this NEVER fails the update.
+# Uses the pdo_dblib overlay image when available (loading it from the persisted
+# tar if needed); the first run can take a few minutes over ~20 years of data.
+BACKFILL_IMAGE="$PHP_IMAGE"
+if podman image exists "$MSSQL_IMAGE" 2>/dev/null; then
+    BACKFILL_IMAGE="$MSSQL_IMAGE"
+elif [[ -f "$MSSQL_TAR" ]] && podman load -i "$MSSQL_TAR" &>/dev/null; then
+    BACKFILL_IMAGE="$MSSQL_IMAGE"
+fi
+info "Seeding historical backfills from MSSQL (one-time; the first run can take a few minutes)..."
+if podman run --rm --network host \
+        --env-file "$ENV_FILE" \
+        -v "${INSTALL_DIR}:${INSTALL_DIR}:z" \
+        -w "$INSTALL_DIR" -u 33:33 \
+        "$BACKFILL_IMAGE" \
+        php run_backfills.php; then
+    ok "Historical backfills finished (or safely skipped)."
+else
+    warn "Historical backfills didn't finish — cron will retry tonight. (Non-fatal.)"
 fi
 
 # =============================================================================

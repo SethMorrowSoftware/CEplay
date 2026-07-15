@@ -1,0 +1,35 @@
+<?php
+/**
+ * Run the one-time MSSQL historical backfills NOW, instead of waiting for the
+ * nightly cron — guest ledger (card_activity) + per-game play history
+ * (game_daily_stats / game_hourly_stats). update.sh calls this after a deploy so
+ * the deep history shows up immediately; it's also runnable by hand.
+ *
+ * Idempotent and flag-guarded exactly like cron.php (same
+ * Scheduler::runPendingBackfills()): running it early just means cron finds the
+ * work already done. Safe with no MSSQL / no driver — each backfill reports
+ * "skipped" (or "failed") and leaves its flag unset so cron retries later.
+ *
+ * Venue server only. Usage: php run_backfills.php
+ */
+
+if (php_sapi_name() !== 'cli') {
+    http_response_code(403);
+    exit("This script can only be run from the command line.\n");
+}
+
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/lib/db.php';
+require_once __DIR__ . '/lib/crypto.php';
+require_once __DIR__ . '/lib/scheduler.php';
+
+$log = function (string $m) { echo '[' . date('c') . '] ' . $m . "\n"; };
+
+$log('Running pending MSSQL historical backfills...');
+$res = Scheduler::runPendingBackfills($log);
+
+// Exit non-zero only if a backfill actively FAILED (so a caller can notice);
+// "skipped" (no MSSQL yet) and "already done" are both fine.
+$failed = ($res['card']['status'] ?? '') === 'failed' || ($res['game']['status'] ?? '') === 'failed';
+$log('Backfills: guest=' . ($res['card']['status'] ?? '?') . ', per-game=' . ($res['game']['status'] ?? '?') . '.');
+exit($failed ? 1 : 0);

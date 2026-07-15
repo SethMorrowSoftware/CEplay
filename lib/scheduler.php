@@ -1810,6 +1810,362 @@ class Scheduler {
     }
 
     /**
+     * One-time (idempotent) historical seed of the card_activity guest ledger
+     * from the CenterEdge MSSQL PlayerCardTrans table.
+     *
+     * rollupCardActivity() above can only see the ~30-day raw feed, so a guest
+     * whose first-ever visit predates that window looks brand-new and returning
+     * counts collapse near the window start. PlayerCardTrans holds every card
+     * transaction back ~two decades, so MIN(TransDateTime) per card is the
+     * guest's TRUE first visit. This reads that (batched by year so each GROUP
+     * BY stays small) and widens the ledger through the SAME monotonic UPSERT
+     * the nightly rollup uses — first-seen only moves earlier, last-seen only
+     * later — so it can never narrow a range and is safe to re-run or to overlap
+     * with the nightly rollup.
+     *
+     * Runs where MSSQL is reachable (the venue server). Returns
+     * ['skipped' => true, 'reason' => ...] when the connection isn't configured
+     * so the caller can leave its "done" flag unset and retry on a later run. A
+     * per-year query/write failure propagates (rolled back), so a partial run
+     * never sets the caller's flag — the next run simply redoes the (idempotent)
+     * scan.
+     *
+     * @param int $fromYear earliest calendar year to scan
+     * @param callable|null $log optional fn(string) for per-year progress
+     * @return array{skipped?:bool,reason?:string,cards?:int,earliest?:?string,merged?:int}
+     */
+    public static function backfillCardActivityFromMssql(int $fromYear = 2005, ?callable $log = null): array {
+        require_once __DIR__ . '/mssql_client.php';
+        if (!MssqlClient::isConfigured()) {
+            return ['skipped' => true, 'reason' => 'MSSQL not configured'];
+        }
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+
+        if ($fromYear < 1990) $fromYear = 1990;
+        $toYear = (int)date('Y');
+
+        $client = new MssqlClient();
+        $client->setTimeout(180); // one heavy GROUP BY per year over PlayerCardTrans
+
+        // Verbatim the monotonic UPSERT rollupCardActivity() uses: on YYYY-MM-DD
+        // strings SQLite's min()/max() are chronological, so first-seen only
+        // moves earlier and last-seen only later — never inward.
+        $upsertSql =
+            'INSERT INTO card_activity (card_number, first_seen_date, last_seen_date, updated_at)
+             VALUES (:p0, :p1, :p2, datetime(\'now\'))
+             ON CONFLICT(card_number) DO UPDATE SET
+                first_seen_date = min(first_seen_date, excluded.first_seen_date),
+                last_seen_date  = max(last_seen_date, excluded.last_seen_date),
+                updated_at = datetime(\'now\')';
+
+        $merged = 0;
+        for ($year = $fromYear; $year <= $toYear; $year++) {
+            $from = sprintf('%04d-01-01', $year);
+            $to   = sprintf('%04d-01-01', $year + 1);
+            // TransDateTime is the POS's own venue-local clock — the same wall
+            // time the app bins guest dates by — so the date part is taken
+            // directly, with no timezone conversion. Card "000000" is the
+            // credit-card/cardless sentinel and blank cards are junk; both are
+            // excluded, matching rollupCardActivity(). Year bounds come from an
+            // integer, so the inlined literals are injection-proof (and rows()
+            // re-checks via MssqlClient::assertReadOnly).
+            $sql = "SELECT CardNumber,"
+                 . " CONVERT(VARCHAR(10), MIN(TransDateTime), 120) AS first_date,"
+                 . " CONVERT(VARCHAR(10), MAX(TransDateTime), 120) AS last_date"
+                 . " FROM dbo.PlayerCardTrans"
+                 . " WHERE CardNumber <> '' AND CardNumber <> '000000'"
+                 . "   AND TransDateTime >= '{$from}' AND TransDateTime < '{$to}'"
+                 . " GROUP BY CardNumber";
+            $rows = $client->rows($sql, 5000000);
+            if (!$rows) { $note("  {$year}: no card transactions."); continue; }
+
+            $db = DB::getInstance();
+            $db->exec('BEGIN');
+            try {
+                $n = 0;
+                foreach ($rows as $r) {
+                    $card  = trim((string)($r['CardNumber'] ?? ''));
+                    $first = substr((string)($r['first_date'] ?? ''), 0, 10);
+                    $last  = substr((string)($r['last_date'] ?? ''), 0, 10);
+                    if ($card === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $first)) continue;
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $last)) $last = $first;
+                    DB::execute($upsertSql, [$card, $first, $last]);
+                    $n++;
+                }
+                $db->exec('COMMIT');
+            } catch (Exception $e) {
+                $db->exec('ROLLBACK');
+                throw $e;
+            }
+            $merged += $n;
+            $note("  {$year}: " . count($rows) . " distinct cards → {$n} merged.");
+        }
+
+        $summary = DB::queryOne('SELECT COUNT(*) AS c, MIN(first_seen_date) AS earliest FROM card_activity') ?: [];
+        return [
+            'cards'    => (int)($summary['c'] ?? 0),
+            'earliest' => $summary['earliest'] ?? null,
+            'merged'   => $merged,
+        ];
+    }
+
+    /**
+     * One-time (idempotent) historical seed of the permanent per-game rollups
+     * (game_daily_stats + game_hourly_stats) from MSSQL PlayerCardTrans plays.
+     *
+     * rollupDailyStats() only reaches back over the ~30-day raw feed, so month/
+     * year Performance history and the Reader-Groups heatmaps are empty before
+     * the app started. PlayerCardTrans TransType 1 (plays) records every reader
+     * swipe back ~two decades with a real TransDateTime, rdrkey, Amount (card
+     * value-units) and CardNumber — enough to reconstruct PLAYS, VALUE and
+     * UNIQUE-CARDS per game/day/hour.
+     *
+     * What it can't reconstruct (left 0, exactly as the app's own pre-feature
+     * days already read): TICKETS (every ValueNo-3 credit is booked with rdrkey
+     * 0 — no per-game source exists anywhere in the POS DB), and the cash /
+     * bonus / time-pass splits.
+     *
+     * Safety rails:
+     *  - rdrkey → game_id via the app's game cache + the MSSQL reader master
+     *    (ReaderDevices): direct reader-number == game_id first, then a
+     *    normalized name match. Unmapped readers (retired/renamed) are skipped
+     *    and counted.
+     *  - Only days STRICTLY BEFORE the app's own rollup coverage are written, so
+     *    the richer feed-derived rows are never overwritten and nothing double-
+     *    counts. Expect a small seam at that boundary (two different sources).
+     *  - game_hourly_stats is purge-bounded (~400 days), so hours are only
+     *    written inside that window (older hours would be purged next run).
+     *  - Batched by month (small buffers) and INSERT OR REPLACE on the rollup
+     *    PKs ⇒ bounded memory and safe to re-run.
+     *
+     * Returns ['skipped'=>true,...] when MSSQL isn't configured or no reader
+     * maps to a game, so the caller can leave its "done" flag unset and retry.
+     */
+    public static function backfillGameStatsFromMssql(int $fromYear = 2005, ?callable $log = null): array {
+        require_once __DIR__ . '/mssql_client.php';
+        if (!MssqlClient::isConfigured()) {
+            return ['skipped' => true, 'reason' => 'MSSQL not configured'];
+        }
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+
+        $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+
+        // Boundary: never touch days the nightly rollup already owns (its rows
+        // carry tickets/cash/time-plays this backfill can't). game_daily_stats
+        // grows forward from app start, so its earliest date is the cutoff;
+        // empty ⇒ backfill everything up to today.
+        $row = DB::queryOne('SELECT MIN(stat_date) AS earliest FROM game_daily_stats');
+        $cutoff = ($row && !empty($row['earliest']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$row['earliest']))
+            ? (string)$row['earliest']
+            : (new DateTime('now', $tz))->format('Y-m-d');
+        // Hourly rows older than the purge horizon (~400d) get deleted next
+        // cron, so only write hours from here forward.
+        $hourlyFrom = (new DateTime('now', $tz))->modify('-395 days')->format('Y-m-d');
+
+        if ($fromYear < 1990) $fromYear = 1990;
+        $cutoffYear = (int)substr($cutoff, 0, 4);
+        if ($fromYear > $cutoffYear) {
+            return ['readers_mapped' => 0, 'readers_unmapped' => 0, 'daily_rows' => 0, 'hourly_rows' => 0, 'cutoff' => $cutoff];
+        }
+
+        // ---- rdrkey → game_id map (direct number, then normalized name) ----
+        $gameName = []; $byName = [];
+        foreach (DB::query('SELECT game_id, game_name FROM game_state_cache') as $g) {
+            $gid = (string)$g['game_id'];
+            $gameName[$gid] = (string)$g['game_name'];
+            $n = self::normReaderName((string)$g['game_name']);
+            if ($n !== '' && !isset($byName[$n])) $byName[$n] = $gid;
+        }
+        $client = new MssqlClient();
+        $client->setTimeout(180);
+        $readerMap = []; $unmapped = 0;
+        foreach ($client->rows('SELECT rdrKey, Description FROM dbo.ReaderDevices', 100000) as $rd) {
+            $rk = (int)($rd['rdrKey'] ?? 0);
+            if ($rk === 0) continue;
+            $rks = (string)$rk;
+            if (isset($gameName[$rks])) { $readerMap[$rk] = $rks; continue; } // reader number IS the game id
+            $n = self::normReaderName((string)($rd['Description'] ?? ''));
+            if ($n !== '' && isset($byName[$n])) { $readerMap[$rk] = $byName[$n]; }
+            else { $unmapped++; }
+        }
+        if (!$readerMap) {
+            return ['skipped' => true, 'reason' => 'no readers mapped to games (is game_state_cache populated?)'];
+        }
+        $note('Mapped ' . count($readerMap) . ' readers to games (' . $unmapped . ' unmapped); backfilling days before ' . $cutoff . '.');
+
+        $db = DB::getInstance();
+        $dailyWritten = 0; $hourlyWritten = 0;
+
+        for ($year = $fromYear; $year <= $cutoffYear; $year++) {
+            for ($m = 1; $m <= 12; $m++) {
+                $from  = sprintf('%04d-%02d-01', $year, $m);
+                $next  = ($m === 12) ? sprintf('%04d-01-01', $year + 1) : sprintf('%04d-%02d-01', $year, $m + 1);
+                $upper = ($next > $cutoff) ? $cutoff : $next; // exclusive; never past the app's coverage
+                if ($from >= $upper) continue; // month entirely at/after the cutoff
+
+                // ---- Daily: plays / value / unique-cards per reader per local day ----
+                // TransDateTime is the POS's venue-local clock, so CONVERT(...,120)
+                // and DATEPART(HOUR) yield the same local day/hour the app bins by.
+                $dailySql = "SELECT rdrkey, CONVERT(VARCHAR(10), TransDateTime, 120) AS d,"
+                    . " COUNT(*) AS plays, SUM(Amount) AS val, COUNT(DISTINCT CardNumber) AS cards"
+                    . " FROM dbo.PlayerCardTrans"
+                    . " WHERE TransType = 1 AND rdrkey <> 0"
+                    . "   AND TransDateTime >= '{$from}' AND TransDateTime < '{$upper}'"
+                    . " GROUP BY rdrkey, CONVERT(VARCHAR(10), TransDateTime, 120)";
+                $dayAgg = []; // [date][game_id] => [plays,val,cards]
+                foreach ($client->rows($dailySql, 5000000) as $r) {
+                    $rk = (int)($r['rdrkey'] ?? 0);
+                    if (!isset($readerMap[$rk])) continue;
+                    $gid = $readerMap[$rk];
+                    $d = substr((string)($r['d'] ?? ''), 0, 10);
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) || $d >= $cutoff) continue;
+                    if (!isset($dayAgg[$d][$gid])) $dayAgg[$d][$gid] = ['plays' => 0, 'val' => 0.0, 'cards' => 0];
+                    $dayAgg[$d][$gid]['plays'] += (int)($r['plays'] ?? 0);
+                    $dayAgg[$d][$gid]['val']   += (float)($r['val'] ?? 0);
+                    // Summed across a game's readers (rare — most games are one
+                    // reader); slightly over-counts unique cards only when one
+                    // card used two readers of the same game on the same day.
+                    $dayAgg[$d][$gid]['cards'] += (int)($r['cards'] ?? 0);
+                }
+                if ($dayAgg) {
+                    $db->exec('BEGIN');
+                    try {
+                        foreach ($dayAgg as $d => $byGid) {
+                            foreach ($byGid as $gid => $a) {
+                                DB::execute(
+                                    'INSERT OR REPLACE INTO game_daily_stats
+                                        (stat_date, game_id, game_name, plays, tickets, cash, regular_points, bonus_points, unique_cards, time_plays, updated_at)
+                                     VALUES (:p0, :p1, :p2, :p3, 0, 0, :p4, 0, :p5, 0, datetime(\'now\'))',
+                                    [$d, (string)$gid, (string)($gameName[$gid] ?? ''), $a['plays'], $a['val'], $a['cards']]
+                                );
+                                $dailyWritten++;
+                            }
+                        }
+                        $db->exec('COMMIT');
+                    } catch (Exception $e) { $db->exec('ROLLBACK'); throw $e; }
+                }
+
+                // ---- Hourly: plays per reader per local day+hour (retention window only) ----
+                $hFrom = ($from < $hourlyFrom) ? $hourlyFrom : $from;
+                if ($hFrom < $upper) {
+                    $hourlySql = "SELECT rdrkey, CONVERT(VARCHAR(10), TransDateTime, 120) AS d, DATEPART(HOUR, TransDateTime) AS h,"
+                        . " COUNT(*) AS plays"
+                        . " FROM dbo.PlayerCardTrans"
+                        . " WHERE TransType = 1 AND rdrkey <> 0"
+                        . "   AND TransDateTime >= '{$hFrom}' AND TransDateTime < '{$upper}'"
+                        . " GROUP BY rdrkey, CONVERT(VARCHAR(10), TransDateTime, 120), DATEPART(HOUR, TransDateTime)";
+                    $hourAgg = []; // [date][hour][game_id] => plays
+                    foreach ($client->rows($hourlySql, 5000000) as $r) {
+                        $rk = (int)($r['rdrkey'] ?? 0);
+                        if (!isset($readerMap[$rk])) continue;
+                        $gid = $readerMap[$rk];
+                        $d = substr((string)($r['d'] ?? ''), 0, 10);
+                        $h = (int)($r['h'] ?? -1);
+                        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) || $d >= $cutoff || $h < 0 || $h > 23) continue;
+                        $hourAgg[$d][$h][$gid] = ($hourAgg[$d][$h][$gid] ?? 0) + (int)($r['plays'] ?? 0);
+                    }
+                    if ($hourAgg) {
+                        $db->exec('BEGIN');
+                        try {
+                            foreach ($hourAgg as $d => $byHour) {
+                                foreach ($byHour as $h => $byGid) {
+                                    foreach ($byGid as $gid => $plays) {
+                                        DB::execute(
+                                            'INSERT OR REPLACE INTO game_hourly_stats
+                                                (stat_date, hour, game_id, plays, tickets, cash, time_plays, updated_at)
+                                             VALUES (:p0, :p1, :p2, :p3, 0, 0, 0, datetime(\'now\'))',
+                                            [$d, (int)$h, (string)$gid, $plays]
+                                        );
+                                        $hourlyWritten++;
+                                    }
+                                }
+                            }
+                            $db->exec('COMMIT');
+                        } catch (Exception $e) { $db->exec('ROLLBACK'); throw $e; }
+                    }
+                }
+            }
+            $note("  {$year}: {$dailyWritten} game-day rows, {$hourlyWritten} game-hour rows (cumulative).");
+        }
+
+        return [
+            'readers_mapped'   => count($readerMap),
+            'readers_unmapped' => $unmapped,
+            'daily_rows'       => $dailyWritten,
+            'hourly_rows'      => $hourlyWritten,
+            'cutoff'           => $cutoff,
+        ];
+    }
+
+    /**
+     * Normalize a reader/game name for cross-source matching (app game cache ↔
+     * MSSQL ReaderDevices.Description). Lower-cases, strips a leading sort-order
+     * digit prefix (e.g. "1Batting Cage 1"), and collapses whitespace.
+     */
+    private static function normReaderName(string $s): string {
+        $s = function_exists('mb_strtolower') ? mb_strtolower(trim($s)) : strtolower(trim($s));
+        $s = preg_replace('/^\d+\s*/', '', $s);
+        $s = preg_replace('/\s+/', ' ', $s);
+        return trim((string)$s);
+    }
+
+    /**
+     * Run whichever one-time historical MSSQL backfills haven't finished yet
+     * (guest ledger, then per-game play history), each guarded by its own config
+     * flag so a success is never repeated and a skip/failure simply retries on
+     * the next call. This is the single home for that flag logic — shared by
+     * cron.php (nightly) and run_backfills.php / update.sh (on demand), so a
+     * deploy can surface the deep history immediately instead of at 00:05.
+     *
+     * @param callable|null $log fn(string) for progress
+     * @return array{card:array, game:array} per-backfill status
+     */
+    public static function runPendingBackfills(?callable $log = null): array {
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+        $out = ['card' => ['status' => 'already'], 'game' => ['status' => 'already']];
+
+        if (DB::getConfig('card_activity_backfill_done') !== '1') {
+            $note('Guest-history backfill (card_activity) from MSSQL PlayerCardTrans...');
+            try {
+                $bf = self::backfillCardActivityFromMssql(2005, $note);
+                if (!empty($bf['skipped'])) {
+                    $out['card'] = ['status' => 'skipped', 'reason' => $bf['reason']];
+                    $note('  Skipped: ' . $bf['reason'] . ' — will retry on a later run.');
+                } else {
+                    DB::setConfig('card_activity_backfill_done', '1');
+                    $out['card'] = ['status' => 'done'] + $bf;
+                    $note("  Done: {$bf['cards']} cards, earliest first-seen " . ($bf['earliest'] ?? '?') . ".");
+                }
+            } catch (Exception $e) {
+                $out['card'] = ['status' => 'failed', 'error' => $e->getMessage()];
+                $note('  Failed (will retry next run): ' . $e->getMessage());
+            }
+        }
+
+        if (DB::getConfig('game_stats_backfill_done') !== '1') {
+            $note('Per-game history backfill (game_daily_stats/hourly) from MSSQL PlayerCardTrans...');
+            try {
+                $gs = self::backfillGameStatsFromMssql(2005, $note);
+                if (!empty($gs['skipped'])) {
+                    $out['game'] = ['status' => 'skipped', 'reason' => $gs['reason']];
+                    $note('  Skipped: ' . $gs['reason'] . ' — will retry on a later run.');
+                } else {
+                    DB::setConfig('game_stats_backfill_done', '1');
+                    $out['game'] = ['status' => 'done'] + $gs;
+                    $note("  Done: {$gs['daily_rows']} game-day + {$gs['hourly_rows']} game-hour rows; "
+                        . "{$gs['readers_mapped']} readers mapped, {$gs['readers_unmapped']} unmapped.");
+                }
+            } catch (Exception $e) {
+                $out['game'] = ['status' => 'failed', 'error' => $e->getMessage()];
+                $note('  Failed (will retry next run): ' . $e->getMessage());
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Purge old data to prevent unbounded database growth.
      * Called by the daily cron job. Keeps 90 days of action_log,
      * 30 days of executed scheduled_actions, and removes expired overrides

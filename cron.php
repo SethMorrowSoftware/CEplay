@@ -185,3 +185,12 @@ try {
 } finally {
     Scheduler::releaseLock();
 }
+
+// One-time MSSQL historical backfills (guest ledger + per-game play history).
+// Runs AFTER the scheduler lock is released — they only widen analytics tables
+// and race nothing — and only on a night the main plan above succeeded (so the
+// game cache is fresh and the rollup cutoff reflects the feed's coverage; the
+// catch exits first on failure). Each is flag-guarded and retried until it
+// succeeds; the same call backs run_backfills.php / update.sh for an on-demand
+// run right after a deploy.
+Scheduler::runPendingBackfills(function ($m) { echo "[" . date('c') . "] " . $m . "\n"; });
