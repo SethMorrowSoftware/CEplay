@@ -271,6 +271,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/labor.php';
                 handleLabor($method, $parts, $input);
                 break;
+            case 'explorer':
+                require_once __DIR__ . '/api/explorer.php';
+                handleExplorer($method, $parts, $input);
+                break;
             case 'health':
                 handleHealthCheck();
                 break;
@@ -509,5 +513,6 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= assetUrl($basePath, '/public/js/performance.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/readers.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/labor.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/explorer.js') ?>"></script>
 </body>
 </html>

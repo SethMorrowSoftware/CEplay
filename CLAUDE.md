@@ -24,7 +24,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, logs, users, capabilities)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, labor, explorer, logs, users, capabilities)
 lib/          — 7 core libraries
 public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, logs, settings)
 public/css/   — Dark/light theme stylesheet
@@ -89,6 +89,18 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   view_revenue (nav key view_revenue); config gate: settings. The
   sandbox/test env has no MSSQL driver — the live connection test happens
   on the venue server via the page's Test connection button.
+- Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
+  into the CenterEdge MSSQL database (shares the Labor page's connection)
+  for finding where metrics live: table browser (columns/types, date-column
+  freshness MIN→MAX, sample rows), "Find a metric" grouped totals over a
+  date range (the generalized DivNo-808 probe), and a free-form guarded
+  SELECT with CSV export. Gate: settings (admin). Builder identifiers are
+  validated against INFORMATION_SCHEMA then bracket-quoted; free SQL goes
+  through MssqlClient::assertReadOnly; rows are capped (500) and cells
+  clamped; aggregate/query runs are audit-logged to action_log. Row counts
+  come from sys.partitions when readable (COUNT(*) on a years-deep Sales
+  table is never run). SQL errors return structured `{error}` (HTTP 200) —
+  they're the expected failure mode while exploring.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.
