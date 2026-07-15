@@ -48,12 +48,25 @@ const LABOR_DEFAULT_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ShiftDate, 12
 // One (day, total) row per day with wages.
 const LABOR_DEFAULT_LABOR_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day, COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0) AS total\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ClockInDate, 120)";
 
-// NOTE: an hour-of-day wages/sales panel shipped briefly, driven by raw
-// punch rows and per-day estimates. It was removed on request — the POS
-// books kart money once per day and the punch-derived split wasn't
-// trustworthy, so the page shows only LIVE database dollars (daily) and
-// real feed swipes (hourly) until a genuine hourly source is found in
-// the CenterEdge schema.
+// HOURLY MONEY: an earlier hour-of-day wages/sales panel was removed because
+// the Sales table books kart money once per day and the split was an estimate.
+// A genuine hourly source has since been found: the card ledger
+// (PlayerCardTrans) records every kart swipe with a TRUE clock time
+// (TransDateTime) and the REAL dollars deducted (DollarAmount), under the same
+// DivNo 808 the daily posting reconciles to. Wages-by-hour are equally real:
+// each punch has clock-in/out times and a PayRate, so PHP splits PayRate
+// across the wall-clock hours the punch spans. Both feed the "money vs wages
+// by the hour" panel and the weekday × hour heatmap below — no estimates.
+//
+// Hourly kart revenue: one row per (local day, local hour) with real dollars
+// and swipe count. TransDateTime is the POS's venue-local clock.
+const LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), TransDateTime, 120) AS day,\n       DATEPART(HOUR, TransDateTime) AS hour,\n       SUM(DollarAmount) AS dollars,\n       COUNT(*) AS plays\nFROM [CenterEdge].[dbo].[PlayerCardTrans]\nWHERE TransType = 1  /* plays: value deducted at a reader */\n  AND DivNo = 808    /* \"Go Kart Readers\" division — same bucket the daily sales query reads */\n  AND TransDateTime >= :from\n  AND TransDateTime < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), TransDateTime, 120), DATEPART(HOUR, TransDateTime)";
+
+// Raw kart-crew punches for the range: one row per punch with local dates and
+// wall-clock times (CONVERT(...,108) = 'HH:MM:SS', uniform across drivers).
+// An unclosed punch returns NULL day_out/time_out; PHP applies the same
+// convention as the daily wages query (accrues to now only when opened today).
+const LABOR_DEFAULT_PUNCHES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day,\n       CONVERT(VARCHAR(8), CAST(ClockInTime AS TIME), 108) AS time_in,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(10), ClockOutDate, 120) END AS day_out,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(8), CAST(ClockOutTime AS TIME), 108) END AS time_out,\n       PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
 
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
@@ -76,8 +89,10 @@ function handleLabor(string $method, array $parts, ?array $input): void {
 
 function laborQueries(): array {
     return [
-        'sales_range_sql' => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
-        'labor_range_sql' => DB::getConfig('labor_labor_range_sql') ?: LABOR_DEFAULT_LABOR_RANGE_SQL,
+        'sales_range_sql'        => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
+        'labor_range_sql'        => DB::getConfig('labor_labor_range_sql') ?: LABOR_DEFAULT_LABOR_RANGE_SQL,
+        'hourly_sales_range_sql' => DB::getConfig('labor_hourly_sales_range_sql') ?: LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL,
+        'punches_range_sql'      => DB::getConfig('labor_punches_range_sql') ?: LABOR_DEFAULT_PUNCHES_RANGE_SQL,
     ];
 }
 
@@ -188,8 +203,10 @@ function laborGetSettings(): void {
     $out += laborRideConfig();
     $out['configured'] = MssqlClient::isConfigured();
     $out['defaults'] = [
-        'sales_range_sql' => LABOR_DEFAULT_SALES_RANGE_SQL,
-        'labor_range_sql' => LABOR_DEFAULT_LABOR_RANGE_SQL,
+        'sales_range_sql'        => LABOR_DEFAULT_SALES_RANGE_SQL,
+        'labor_range_sql'        => LABOR_DEFAULT_LABOR_RANGE_SQL,
+        'hourly_sales_range_sql' => LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL,
+        'punches_range_sql'      => LABOR_DEFAULT_PUNCHES_RANGE_SQL,
     ];
     // For the "value rides from this area" dropdown — read directly so the
     // settings gate alone suffices. Members ship per group so the per-track
@@ -225,6 +242,19 @@ function laborPutSettings(array $input): void {
     MssqlClient::assertReadOnly($laborRangeSql);
     MssqlClient::bindRange($salesRangeSql, '2000-01-01', '2000-01-02');
     MssqlClient::bindRange($laborRangeSql, '2000-01-01', '2000-01-02');
+
+    // Hourly-money queries: validated the same way, but optional in the payload
+    // (absent = leave the stored value alone) so an older client can't blank them.
+    $hourlyQueryUpdates = [];
+    foreach (['hourly_sales_range_sql' => 'labor_hourly_sales_range_sql',
+              'punches_range_sql'      => 'labor_punches_range_sql'] as $inKey => $cfgKey) {
+        if (array_key_exists($inKey, $input)) {
+            $sql = Validator::requireString($input, $inKey, 4000);
+            MssqlClient::assertReadOnly($sql);
+            MssqlClient::bindRange($sql, '2000-01-01', '2000-01-02');
+            $hourlyQueryUpdates[$cfgKey] = $sql;
+        }
+    }
 
 
 
@@ -280,6 +310,9 @@ function laborPutSettings(array $input): void {
     }
     DB::setConfig('labor_sales_range_sql', $salesRangeSql);
     DB::setConfig('labor_labor_range_sql', $laborRangeSql);
+    foreach ($hourlyQueryUpdates as $cfgKey => $sql) {
+        DB::setConfig($cfgKey, $sql);
+    }
     if ($groupIdToStore !== null) DB::setConfig('labor_reader_group_id', $groupIdToStore);
     if ($priceToStore !== null) DB::setConfig('labor_price_per_ride', $priceToStore);
     if (array_key_exists('add_ride_value', $input)) {
@@ -354,6 +387,29 @@ function laborTest(?array $input = null): void {
             }, $rows);
         } catch (Exception $e) {
             $diag['top_categories_' . $probeDate] = 'error: ' . $e->getMessage();
+        }
+
+        // --- Hourly-money reconciliation: the hourly panel is only trustworthy
+        // if the card-ledger swipes (PlayerCardTrans) tie out to the POS's own
+        // daily DivNo-808 posting. Total the hourly query for the probe day and
+        // print it beside the daily sales query's figure so a mismatch is
+        // obvious at a glance. Punch count sanity-checks the wages side.
+        try {
+            $hb = laborMoneyBucketsFromRows(
+                $client->rows(MssqlClient::bindRange($q['hourly_sales_range_sql'], $probeDate, $probeDate), 5000));
+            $hTot = 0.0; $hPlays = 0; $hoursSeen = [];
+            foreach ($hb as $b) { $hTot += $b['dollars']; $hPlays += $b['plays']; $hoursSeen[$b['hour']] = true; }
+            $dailyProbe = laborSalesMapFromRows(
+                $client->rows(MssqlClient::bindRange($q['sales_range_sql'], $probeDate, $probeDate), 10));
+            $dTot = $dailyProbe[$probeDate] ?? 0.0;
+            $diag['hourly_vs_daily_' . $probeDate] =
+                'ledger hourly: $' . round($hTot, 2) . ' (' . $hPlays . ' swipes across ' . count($hoursSeen)
+                . ' hours) vs daily sales query: $' . round($dTot, 2)
+                . ' — delta $' . round($hTot - $dTot, 2);
+            $punches = $client->rows(MssqlClient::bindRange($q['punches_range_sql'], $probeDate, $probeDate), 2000);
+            $diag['punches_' . $probeDate] = count($punches) . ' kart-crew punches returned';
+        } catch (Exception $e) {
+            $diag['hourly_money'] = 'error: ' . $e->getMessage();
         }
 
         // --- Schema-aware name discovery: resolve category NUMBERS to their
@@ -600,7 +656,7 @@ function laborRate(): void {
     // Nothing to report until the connection exists — skip the feed work
     // too; the page shows its "Not connected yet" card either way.
     if (!MssqlClient::isConfigured()) {
-        echo json_encode($base + ['days' => [], 'hourly' => null]);
+        echo json_encode($base + ['days' => [], 'hourly' => null, 'money' => null]);
         return;
     }
 
@@ -647,12 +703,27 @@ function laborRate(): void {
                 $client->rows(MssqlClient::bindRange($q['labor_range_sql'], $a, $b), 500));
         }
     } catch (Exception $e) {
-        echo json_encode($base + ['error' => $e->getMessage(), 'days' => []]);
+        echo json_encode($base + ['error' => $e->getMessage(), 'days' => [], 'money' => null]);
         return;
     }
     $result = laborComposeResults($dates, $salesMap, $laborMap, $rideStats, $hourRows, $coverage, $ride);
 
-    echo json_encode($base + ['days' => $result['days'], 'hourly' => $result['hourly']]);
+    // ---- Hourly money: REAL ledger dollars per hour + punch-split wages ----
+    // Best-effort and self-contained: a failure here (e.g. a hand-edited hourly
+    // query with a typo) reports itself on the panel but never takes down the
+    // daily figures above. Skipped on the legacy dates= path, whose callers may
+    // spread dates years apart.
+    $money = null;
+    if ($legacyDates === null) {
+        try {
+            $money = laborHourlyMoney($client, $q, $from, $to, $dates, $tz);
+        } catch (Exception $e) {
+            $money = ['error' => $e->getMessage(), 'hours' => null, 'heatmap' => null, 'totals' => null];
+            error_log('labor hourly money failed: ' . $e->getMessage());
+        }
+    }
+
+    echo json_encode($base + ['days' => $result['days'], 'hourly' => $result['hourly'], 'money' => $money]);
 }
 
 /**
@@ -734,4 +805,223 @@ function laborDateSpan(string $from, string $to): int {
     $b = DateTime::createFromFormat('!Y-m-d', $to, new DateTimeZone('UTC'));
     if (!$a || !$b || $b < $a) return 0;
     return (int)round(($b->getTimestamp() - $a->getTimestamp()) / 86400) + 1;
+}
+
+// ---------------------------------------------------------------------------
+// Hourly money: real kart revenue per hour (card ledger) vs punch-split wages
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize the hourly sales query's rows into (day, hour, dollars, plays),
+ * tolerant of column naming (named keys any case, else positional) so a
+ * hand-edited query still lands in the right columns.
+ *
+ * @return array<int,array{day:string,hour:int,dollars:float,plays:int}>
+ */
+function laborMoneyBucketsFromRows(array $rows): array {
+    $out = [];
+    foreach ($rows as $row) {
+        $vals = array_values($row);
+        $get = function (array $row, array $vals, string $name, int $pos) {
+            foreach ($row as $k => $v) {
+                if (strcasecmp((string)$k, $name) === 0) return $v;
+            }
+            return $vals[$pos] ?? null;
+        };
+        $rawDay = trim((string)$get($row, $vals, 'day', 0));
+        $day = substr($rawDay, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) {
+            $ts = strtotime($rawDay);
+            if ($ts === false) continue;
+            $day = date('Y-m-d', $ts);
+        }
+        $hour = (int)$get($row, $vals, 'hour', 1);
+        if ($hour < 0 || $hour > 23) continue;
+        $out[] = [
+            'day'     => $day,
+            'hour'    => $hour,
+            'dollars' => (float)$get($row, $vals, 'dollars', 2),
+            'plays'   => (int)$get($row, $vals, 'plays', 3),
+        ];
+    }
+    return $out;
+}
+
+/** Weekday index 0=Sun..6=Sat for an ISO date (calendar-fixed, tz-independent). */
+function laborWeekday(string $iso): int {
+    $d = DateTime::createFromFormat('!Y-m-d', $iso, new DateTimeZone('UTC'));
+    return $d ? (int)$d->format('w') : 0;
+}
+
+/**
+ * Split raw punches into wage dollars per (local day, local hour): each punch
+ * accrues PayRate × the fraction of each wall-clock hour it overlaps. This is
+ * exactly how wages accrue in reality — no estimate. Conventions match the
+ * proven daily wages query: an unclosed punch accrues to NOW only when it was
+ * opened today; an unclosed punch on a PAST day is broken data and counts zero.
+ * Times are the venue's wall clock, so arithmetic is done naively (no timezone
+ * conversion) — the same convention the DATEDIFF in the daily query uses.
+ *
+ * Pure — testable without a connection.
+ *
+ * @param array $punchRows rows with day/time_in/day_out/time_out/pay_rate
+ *                         (named keys any case, else positional 0..4)
+ * @param string $todayStr venue-local 'Y-m-d'
+ * @param string $nowTs    venue-local 'Y-m-d H:i:s'
+ * @return array<string,float> "Y-m-d|H" => wage dollars
+ */
+function laborPunchWageHours(array $punchRows, string $todayStr, string $nowTs): array {
+    $wages = [];
+    foreach ($punchRows as $row) {
+        $vals = array_values($row);
+        $get = function (array $row, array $vals, string $name, int $pos) {
+            foreach ($row as $k => $v) {
+                if (strcasecmp((string)$k, $name) === 0) return $v;
+            }
+            return $vals[$pos] ?? null;
+        };
+        $day     = substr(trim((string)$get($row, $vals, 'day', 0)), 0, 10);
+        $timeIn  = trim((string)$get($row, $vals, 'time_in', 1));
+        $dayOut  = substr(trim((string)($get($row, $vals, 'day_out', 2) ?? '')), 0, 10);
+        $timeOut = trim((string)($get($row, $vals, 'time_out', 3) ?? ''));
+        $rate    = (float)$get($row, $vals, 'pay_rate', 4);
+        if ($rate <= 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)
+            || !preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $timeIn)) {
+            continue;
+        }
+
+        $inTs = strtotime($day . ' ' . $timeIn);
+        if ($inTs === false) continue;
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dayOut) && preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $timeOut)) {
+            $outTs = strtotime($dayOut . ' ' . $timeOut);
+        } elseif ($day === $todayStr) {
+            $outTs = strtotime($nowTs); // still on the clock right now
+        } else {
+            continue; // unclosed punch on a past day: broken data — zero hours
+        }
+        if ($outTs === false || $outTs <= $inTs) continue;
+        // Garbage guard: a punch "spanning" more than 3 days would smear junk
+        // across the heatmap; the daily query's totals expose it for fixing.
+        if ($outTs - $inTs > 3 * 86400) continue;
+
+        $cursor = $inTs;
+        $guard = 0;
+        while ($cursor < $outTs && $guard++ < 128) {
+            $hourEnd = (int)(floor($cursor / 3600) + 1) * 3600;
+            $segEnd  = min($hourEnd, $outTs);
+            $key = date('Y-m-d', $cursor) . '|' . (int)date('G', $cursor);
+            $wages[$key] = ($wages[$key] ?? 0.0) + $rate * ($segEnd - $cursor) / 3600.0;
+            $cursor = $segEnd;
+        }
+    }
+    return $wages;
+}
+
+/**
+ * Fetch + compose the hourly-money block for [$from,$to]: revenue per hour from
+ * the card ledger, wages per hour from punch splitting, and the weekday × hour
+ * heatmap. One round-trip per query regardless of span.
+ */
+function laborHourlyMoney(MssqlClient $client, array $q, string $from, string $to, array $dates, DateTimeZone $tz): array {
+    $buckets = laborMoneyBucketsFromRows(
+        $client->rows(MssqlClient::bindRange($q['hourly_sales_range_sql'], $from, $to), 20000));
+    $punches = $client->rows(MssqlClient::bindRange($q['punches_range_sql'], $from, $to), 20000);
+    $now = new DateTime('now', $tz);
+    $wageMap = laborPunchWageHours($punches, $now->format('Y-m-d'), $now->format('Y-m-d H:i:s'));
+    return laborMoneyCompose($dates, $buckets, $wageMap);
+}
+
+/**
+ * Compose the hour-of-day money rows, the weekday × hour heatmap, and totals.
+ * Pure — directly testable without a connection.
+ *
+ * Averages: hours[].dollars_avg / wages_avg are per DAY in the window (a
+ * typical day's curve); heatmap cells are per OCCURRENCE of that weekday (all
+ * Saturdays' 2 PM averaged — the staffing view, same convention as Card Loads).
+ * rate = wages ÷ dollars, computed on the cell/hour TOTALS so hours with more
+ * money weigh more (never an average of ratios).
+ *
+ * @param string[] $dates every ISO date in the window, ascending
+ * @param array $buckets laborMoneyBucketsFromRows() output
+ * @param array<string,float> $wageMap laborPunchWageHours() output
+ * @return array{hours:array,heatmap:array,totals:array,error:null}
+ */
+function laborMoneyCompose(array $dates, array $buckets, array $wageMap): array {
+    $numDays = max(1, count($dates));
+    $daySet = array_flip($dates);
+    $dowOcc = array_fill(0, 7, 0);
+    foreach ($dates as $d) $dowOcc[laborWeekday($d)]++;
+
+    $dolH = array_fill(0, 24, 0.0);
+    $wagH = array_fill(0, 24, 0.0);
+    $plyH = array_fill(0, 24, 0);
+    $dolCell = []; $wagCell = [];
+    for ($w = 0; $w < 7; $w++) { $dolCell[$w] = array_fill(0, 24, 0.0); $wagCell[$w] = array_fill(0, 24, 0.0); }
+    $totDol = 0.0; $totWag = 0.0; $totPly = 0;
+
+    foreach ($buckets as $b) {
+        if (!isset($daySet[$b['day']])) continue; // only days we asked for
+        $h = $b['hour']; $w = laborWeekday($b['day']);
+        $dolH[$h] += $b['dollars']; $plyH[$h] += $b['plays'];
+        $dolCell[$w][$h] += $b['dollars'];
+        $totDol += $b['dollars']; $totPly += $b['plays'];
+    }
+    foreach ($wageMap as $key => $amt) {
+        $parts = explode('|', $key);
+        if (count($parts) !== 2) continue;
+        [$d, $h] = $parts;
+        $h = (int)$h;
+        if (!isset($daySet[$d]) || $h < 0 || $h > 23) continue;
+        $w = laborWeekday($d);
+        $wagH[$h] += $amt;
+        $wagCell[$w][$h] += $amt;
+        $totWag += $amt;
+    }
+
+    $hours = [];
+    for ($h = 0; $h < 24; $h++) {
+        $hours[] = [
+            'hour'        => $h,
+            'dollars'     => round($dolH[$h], 2),
+            'wages'       => round($wagH[$h], 2),
+            'plays'       => $plyH[$h],
+            'dollars_avg' => round($dolH[$h] / $numDays, 2),
+            'wages_avg'   => round($wagH[$h] / $numDays, 2),
+            'rate'        => $dolH[$h] > 0 ? round($wagH[$h] / $dolH[$h], 4) : null,
+        ];
+    }
+
+    $dowNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    $rows = [];
+    $maxDol = 0.0; $maxWag = 0.0;
+    for ($w = 0; $w < 7; $w++) {
+        $occ = $dowOcc[$w];
+        $cells = [];
+        for ($h = 0; $h < 24; $h++) {
+            $dAvg = $occ > 0 ? $dolCell[$w][$h] / $occ : 0.0;
+            $wAvg = $occ > 0 ? $wagCell[$w][$h] / $occ : 0.0;
+            if ($dAvg > $maxDol) $maxDol = $dAvg;
+            if ($wAvg > $maxWag) $maxWag = $wAvg;
+            $cells[] = [
+                'hour'        => $h,
+                'dollars_avg' => round($dAvg, 2),
+                'wages_avg'   => round($wAvg, 2),
+                'rate'        => $dolCell[$w][$h] > 0 ? round($wagCell[$w][$h] / $dolCell[$w][$h], 4) : null,
+            ];
+        }
+        $rows[] = ['dow' => $w, 'label' => $dowNames[$w], 'occurrences' => $occ, 'cells' => $cells];
+    }
+
+    return [
+        'hours'   => $hours,
+        'heatmap' => ['rows' => $rows, 'max_dollars_avg' => round($maxDol, 2), 'max_wages_avg' => round($maxWag, 2)],
+        'totals'  => [
+            'dollars' => round($totDol, 2),
+            'wages'   => round($totWag, 2),
+            'plays'   => $totPly,
+            'rate'    => $totDol > 0 ? round($totWag / $totDol, 4) : null,
+        ],
+        'error'   => null,
+    ];
 }
