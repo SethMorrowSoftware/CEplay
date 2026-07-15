@@ -76,15 +76,77 @@ function explorerJson(array $payload): void {
     echo json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE);
 }
 
-/** Clamp a cell for transport: scalars only, bounded length. */
+/**
+ * Format 16 raw uniqueidentifier bytes the way SQL Server prints the GUID.
+ * MSSQL stores the first three fields little-endian, so the byte order is
+ * [3 2 1 0]-[5 4]-[7 6]-[8 9]-[10..15].
+ */
+function explorerGuidFromBinary(string $bin): string {
+    $h = strtoupper(bin2hex($bin)); // 32 hex chars
+    $b = str_split($h, 2);
+    return $b[3] . $b[2] . $b[1] . $b[0]
+        . '-' . $b[5] . $b[4]
+        . '-' . $b[7] . $b[6]
+        . '-' . $b[8] . $b[9]
+        . '-' . $b[10] . $b[11] . $b[12] . $b[13] . $b[14] . $b[15];
+}
+
+/**
+ * Clamp a cell for transport: scalars only, bounded length. Raw binary
+ * (dblib hands uniqueidentifier/varbinary columns back as bytes) renders
+ * as a GUID (16 bytes) or 0x-hex instead of mojibake.
+ */
 function explorerCell($v) {
     if ($v === null) return null;
     if (!is_scalar($v)) return '[binary]';
     $s = (string)$v;
+    // Control bytes / invalid UTF-8 ⇒ this "string" is really binary.
+    if ($s !== '' && (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $s) || !mb_check_encoding($s, 'UTF-8'))) {
+        if (strlen($s) === 16) {
+            return explorerGuidFromBinary($s);
+        }
+        $hex = '0x' . strtoupper(bin2hex(substr($s, 0, 32)));
+        return strlen($s) > 32 ? $hex . '… (' . strlen($s) . ' bytes)' : $hex;
+    }
     if (strlen($s) > EXPLORER_CELL_CHARS) {
         $s = substr($s, 0, EXPLORER_CELL_CHARS) . '…';
     }
     return $s;
+}
+
+/** Column types the driver returns as raw bytes or refuses to render. */
+function explorerSelectExpr(string $name, string $type): string {
+    $c = explorerIdent($name);
+    switch ($type) {
+        case 'uniqueidentifier':
+            return 'CONVERT(VARCHAR(36), ' . $c . ') AS ' . $c;
+        case 'binary':
+        case 'varbinary':
+        case 'timestamp':
+        case 'rowversion':
+            // Style 1 = '0x…' hex; clamp the bytes first so a blob column
+            // can't flood the response.
+            return 'CONVERT(VARCHAR(66), CAST(' . $c . ' AS VARBINARY(32)), 1) AS ' . $c;
+        case 'image':
+            return 'CONVERT(VARCHAR(66), CAST(CAST(' . $c . ' AS VARBINARY(MAX)) AS VARBINARY(32)), 1) AS ' . $c;
+        case 'text':
+            return 'CAST(CAST(' . $c . ' AS VARCHAR(MAX)) AS VARCHAR(200)) AS ' . $c;
+        case 'ntext':
+            return 'CAST(CAST(' . $c . ' AS NVARCHAR(MAX)) AS NVARCHAR(200)) AS ' . $c;
+        case 'xml':
+            return 'LEFT(CAST(' . $c . ' AS NVARCHAR(MAX)), 200) AS ' . $c;
+        case 'sql_variant':
+            return 'CONVERT(NVARCHAR(200), ' . $c . ') AS ' . $c;
+        default:
+            return $c;
+    }
+}
+
+/** Full select list for a sample: every column, decode-safe. */
+function explorerSampleSelectList(array $cols): string {
+    return implode(', ', array_map(function ($c) {
+        return explorerSelectExpr($c['name'], $c['type']);
+    }, $cols));
 }
 
 /**
@@ -242,10 +304,11 @@ function explorerTableDetail(): void {
         foreach ($cols as $c) {
             if (explorerIsDateType($c['type'])) { $sampleOrder = $c['name']; break; }
         }
+        $selectList = explorerSampleSelectList($cols);
         foreach ([true, false] as $useOrder) {
             if ($useOrder && $sampleOrder === null) continue;
             try {
-                $sql = 'SELECT TOP ' . EXPLORER_SAMPLE_ROWS . ' * FROM ' . $qualified
+                $sql = 'SELECT TOP ' . EXPLORER_SAMPLE_ROWS . ' ' . $selectList . ' FROM ' . $qualified
                      . ($useOrder ? ' ORDER BY ' . explorerIdent($sampleOrder) . ' DESC' : '');
                 foreach ($client->rows($sql, EXPLORER_SAMPLE_ROWS) as $r) {
                     if (!$sampleCols) $sampleCols = array_map('strval', array_keys($r));
@@ -336,10 +399,18 @@ function explorerSearch(): void {
  * Build the grouped-total SQL from ALREADY-VALIDATED identifiers. Pure —
  * unit-testable without a connection.
  */
-function explorerAggregateSql(string $schema, string $table, string $groupBy, ?string $sumCol, ?string $dateCol, ?string $from, ?string $to): string {
+function explorerAggregateSql(string $schema, string $table, string $groupBy, ?string $sumCol, ?string $dateCol, ?string $from, ?string $to, string $groupType = ''): string {
     $qualified = explorerIdent($schema) . '.' . explorerIdent($table);
     $g = explorerIdent($groupBy);
-    $select = 'SELECT TOP 100 ' . $g . ' AS grp, COUNT(*) AS lines';
+    // GUID/binary group columns must be decoded server-side or the driver
+    // hands back raw bytes; grouping stays on the raw column.
+    $gSelect = $g;
+    if ($groupType === 'uniqueidentifier') {
+        $gSelect = 'CONVERT(VARCHAR(36), ' . $g . ')';
+    } elseif (in_array($groupType, ['binary', 'varbinary', 'timestamp', 'rowversion'], true)) {
+        $gSelect = 'CONVERT(VARCHAR(66), CAST(' . $g . ' AS VARBINARY(32)), 1)';
+    }
+    $select = 'SELECT TOP 100 ' . $gSelect . ' AS grp, COUNT(*) AS lines';
     $order = 'lines';
     if ($sumCol !== null) {
         $select .= ', SUM(' . explorerIdent($sumCol) . ') AS total';
@@ -371,6 +442,10 @@ function explorerAggregate(array $input): void {
         $client = new MssqlClient();
         list($schema, $table, $cols) = explorerResolveTable($client, $tableIn);
         $groupBy = explorerRequireColumn($cols, $groupIn, 'group-by');
+        $groupType = '';
+        foreach ($cols as $c) {
+            if (strcasecmp($c['name'], $groupBy) === 0) { $groupType = $c['type']; break; }
+        }
         $sumCol  = $sumIn !== '' ? explorerRequireColumn($cols, $sumIn, 'sum') : null;
         $dateCol = null;
         if ($dateIn !== '') {
@@ -386,7 +461,7 @@ function explorerAggregate(array $input): void {
         }
 
         $sql = explorerAggregateSql($schema, $table, $groupBy, $sumCol, $dateCol,
-            $dateCol !== null ? $from : null, $dateCol !== null ? $to : null);
+            $dateCol !== null ? $from : null, $dateCol !== null ? $to : null, $groupType);
         explorerAudit('aggregate', $sql);
 
         $t0 = microtime(true);
