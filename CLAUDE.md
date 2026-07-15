@@ -67,18 +67,21 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   window params + semantics as Performance via `perfResolveWindow`; Year
   renders month rows client-side). Sales = the POS's own "Go Kart Readers"
   division dollars (Sales, DivNo 808 — time passes never post money there);
-  labor = raw TimeClock_Weekly punches ('Go-Karts' job join) costed in PHP
-  (`laborWagesFromPunches`: PayRate × seconds, wages belong to the clock-IN
-  day, an unclosed punch accrues to now only when opened today, zero on
-  past days). Any range costs exactly TWO MSSQL round-trips: an
-  admin-editable sales-by-day query and a punches query, each with required
-  `:from`/`:to` placeholders, guarded to a single SELECT
-  (MssqlClient::assertReadOnly; the legacy per-day `:date` pair remains for
-  the `dates=` compat path). The same punches feed the hour-of-day panels:
-  swipes/hour come from the app's own reader feed (readerHourlyRows stitch,
-  coverage-aware), wages/hour from the punch split, and hourly SALES are an
-  estimate — each day's real dollars spread across its hours by paid-swipe
-  share (`sales_spread_pct` reports how much could be placed). Optional
+  labor = the DB-computed wage total per day (the proven DATEDIFF
+  expression — PayRate × seconds, unclosed punch accrues only when opened
+  today — GROUP BY clock-in day). ALL dollar figures come live from these
+  two admin-editable range queries (required `:from`/`:to` placeholders,
+  single-SELECT guarded via MssqlClient::assertReadOnly; the legacy
+  per-day `:date` pair remains for the `dates=` compat path). A third
+  OPTIONAL punches query powers only the hour-of-day wage split: each
+  day's punch-derived hourly SHAPE is rescaled to that day's SQL total
+  (`laborScaledHourly`), so punch parsing can never change a dollar —
+  blank/failed punches just hide the hourly wage bars
+  (`wages_spread_pct` null). Hour-of-day panels: swipes/hour come from
+  the app's own reader feed (readerHourlyRows stitch, coverage-aware);
+  hourly SALES are an estimate — each day's real dollars spread across
+  its hours by paid-swipe share (`sales_spread_pct` reports how much
+  could be placed). Optional
   estimate mode (`labor_add_ride_value`, default OFF) adds paid rides ×
   per-track price to sales instead. Test connection runs both live queries
   and prints a fingerprint (server, DB, freshness, category/division dumps,
