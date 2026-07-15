@@ -82,13 +82,19 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   two admin-editable range queries (required `:from`/`:to` placeholders,
   single-SELECT guarded via MssqlClient::assertReadOnly; the legacy
   `dates=` param still works — each requested day is fetched alone, so
-  year-over-year date lists never scan the span between them). The only
-  hour-of-day panel is Swipes by the hour — REAL counts from the app's
-  own reader feed (readerHourlyRows stitch, coverage-aware). An hourly
-  wages/sales panel (punch-split wages + per-day sales estimates)
-  shipped briefly and was REMOVED on request: the POS books kart money
-  once per day and the estimates weren't trustworthy — revisit only if
-  a genuine hourly source turns up in the CenterEdge schema. Optional
+  year-over-year date lists never scan the span between them). Hour-of-day
+  panels: Swipes by the hour (REAL counts from the app's own reader feed,
+  readerHourlyRows stitch, coverage-aware) AND "Money in vs wages out, by the
+  hour" + a weekday×hour heatmap (Money/Wages/Rate toggle, numbers in cells).
+  The hourly money is REAL, not estimated — a genuine hourly source turned up:
+  `PlayerCardTrans` TransType 1 / DivNo 808 carries every kart swipe's true
+  clock time + dollars (`labor_hourly_sales_range_sql`), and wages-per-hour
+  split each punch's PayRate across the wall-clock hours actually worked
+  (`labor_punches_range_sql` + `laborPunchWageHours`; unclosed past-day punch =
+  zero, today's accrues to now — same conventions as the daily query). Both are
+  admin-editable range queries; Test reconciles the hourly ledger total against
+  the daily DivNo-808 posting. (An earlier ESTIMATED hourly panel was removed;
+  this one replaced it with ledger data.) Optional
   estimate mode (`labor_add_ride_value`, default OFF) adds paid rides ×
   per-track price to sales instead. Test connection runs both live queries
   and prints a fingerprint (server, DB, freshness, category/division dumps)

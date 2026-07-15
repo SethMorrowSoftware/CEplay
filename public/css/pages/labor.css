@@ -116,3 +116,40 @@
 }
 .labor-admin-details[open] > summary.labor-admin-summary::before { content: '▾ '; }
 .labor-admin-details[open] > summary.labor-admin-summary { border-bottom: 1px solid var(--border); }
+
+/* --- Money-vs-wages hourly panel: two thin stacked bars per hour on one
+   shared scale (blue = real ledger revenue, red = punch-split wages), plus a
+   compact labor-rate chip. The weekday × hour heatmap reuses the shared
+   .cardloads-heat* grid classes. */
+.labor-money-track {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.labor-money-bar {
+    height: 7px;
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    overflow: hidden;
+}
+.labor-money-fill-rev {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+.labor-money-fill-wag {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: #e05d5d;
+    transition: width 0.3s ease;
+}
+.labor-rate-chip {
+    min-width: 4.5rem;
+    text-align: right;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+}

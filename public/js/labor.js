@@ -19,6 +19,7 @@
         offset: 0,
         custom: { from: '', to: '' },
         includeTimePlays: true, // toggle: count time-pass swipes in ride counts
+        moneyHeatMetric: 'money', // heatmap metric: money | wages | rate
         data: null,      // last /labor/rate payload
         settings: null   // /labor/settings payload (admins only)
     };
@@ -30,6 +31,11 @@
     function fmtMoney(v) {
         if (v == null) return '—';
         return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function fmtMoney0(v) {
+        if (v == null) return '—';
+        return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
     }
 
     function fmtPct(v) {
@@ -291,9 +297,24 @@
                 'across ' + sumRides.toLocaleString()
                     + (excludePass ? ' paid rides (passes hidden)' : ' rides (passes included)')));
         }
+        // Peak money hour — from the REAL hourly ledger dollars, when available.
+        var mny = data.money;
+        if (mny && mny.hours && mny.totals && mny.totals.dollars > 0) {
+            var peak = null;
+            mny.hours.forEach(function(h) {
+                if (!peak || (h.dollars_avg || 0) > (peak.dollars_avg || 0)) peak = h;
+            });
+            if (peak && peak.dollars_avg > 0) {
+                cards.push(insightCard('💵', 'insight-accent', 'Peak money hour',
+                    hourLabel(peak.hour) + ' — ' + fmtMoney0(peak.dollars_avg),
+                    'avg taken that hour · ' + fmtMoney0(peak.wages_avg) + ' wages'
+                        + (peak.rate != null ? ' · ' + fmtPct(peak.rate) + ' labor rate' : '')));
+            }
+        }
         if (cards.length) box.appendChild(App.el('div', { className: 'insight-row' }, cards));
 
         // ---- Hour-of-day panels ----
+        buildMoneyPanels(box, data);
         buildHourlyCards(box, data);
 
         // ---- Per-day (or per-month) table ----
@@ -425,6 +446,165 @@
             m.rate = m.sales > 0 ? m.labor / m.sales : null;
             return m;
         });
+    }
+
+    // ------------------------------------------------------------------
+    // Money vs wages by the hour — REAL dollars from the card ledger vs
+    // punch-split wages — plus the weekday × hour heatmap (numbers in cells,
+    // Card Loads style) with a Money / Wages / Labor-rate toggle.
+    // ------------------------------------------------------------------
+    function buildMoneyPanels(box, data) {
+        var m = data.money;
+        if (!m) return;
+        if (m.error) {
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent:
+                        '⚠ Hourly money panel unavailable: ' + m.error
+                        + ' (check the hourly queries in the admin section below).' })
+                ])
+            ]));
+            return;
+        }
+        if (!m.hours) return;
+
+        // Trim to the venue's active window: hours with any money or wages.
+        var lo = -1, hi = -1;
+        m.hours.forEach(function(h, i) {
+            if ((h.dollars || 0) > 0 || (h.wages || 0) > 0) { if (lo === -1) lo = i; hi = i; }
+        });
+        if (lo === -1) return;
+        var slice = m.hours.slice(lo, hi + 1);
+        var maxDol = slice.reduce(function(x, h) { return Math.max(x, h.dollars_avg || 0); }, 0);
+        var maxWag = slice.reduce(function(x, h) { return Math.max(x, h.wages_avg || 0); }, 0);
+        if (maxDol <= 0 && maxWag <= 0) return;
+
+        // ---- Money vs wages by the hour (avg per day in the window) ----
+        var rows = slice.map(function(h) {
+            var dW = maxDol > 0 ? Math.max((h.dollars_avg || 0) > 0 ? 1 : 0, Math.round((h.dollars_avg || 0) / maxDol * 100)) : 0;
+            var wW = maxDol > 0 ? Math.max((h.wages_avg || 0) > 0 ? 1 : 0, Math.round((h.wages_avg || 0) / maxDol * 100)) : 0; // same scale: wages vs money visually comparable
+            var rateClass = h.rate == null ? '' : (h.rate <= 0.25 ? 'labor-rate-good' : (h.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
+            var tip = fmtMoney(h.dollars_avg) + ' avg taken · ' + fmtMoney(h.wages_avg) + ' avg wages'
+                + (h.rate != null ? ' · ' + fmtPct(h.rate) + ' of revenue' : '')
+                + ' · ≈' + Math.round((h.plays || 0) / Math.max(1, (data.days || []).length)) + ' swipes on an average day';
+            return App.el('div', { className: 'labor-hour-row', title: tip }, [
+                App.el('span', { className: 'labor-hour-label', textContent: hourLabel(h.hour) }),
+                App.el('span', { className: 'labor-money-track' }, [
+                    App.el('span', { className: 'labor-money-bar' }, [
+                        App.el('span', { className: 'labor-money-fill-rev', style: { width: dW + '%' } })
+                    ]),
+                    App.el('span', { className: 'labor-money-bar' }, [
+                        App.el('span', { className: 'labor-money-fill-wag', style: { width: Math.min(100, wW) + '%' } })
+                    ])
+                ]),
+                App.el('span', { className: 'labor-hour-val', textContent: fmtMoney0(h.dollars_avg) + ' / ' + fmtMoney0(h.wages_avg) }),
+                App.el('span', { className: 'labor-rate-chip ' + rateClass, textContent: h.rate != null ? fmtPct(h.rate) : '—' })
+            ]);
+        });
+        box.appendChild(App.el('div', { className: 'card' }, [
+            App.el('div', { className: 'card-header' }, [
+                App.el('h3', { textContent: 'Money in vs wages out, by the hour' })
+            ]),
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'labor-hour-list' }, rows),
+                App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
+                    'Average dollars on a typical day in this period. Blue = real money deducted at the kart readers (card ledger, true clock times); red = wages, each punch split across the hours actually worked. The % chip is wages ÷ revenue for that hour.' })
+            ])
+        ]));
+
+        // ---- Weekday × hour heatmap with metric toggle ----
+        buildMoneyHeatmap(box, m);
+    }
+
+    function buildMoneyHeatmap(box, m) {
+        var hm = m.heatmap;
+        if (!hm || !hm.rows || !hm.rows.length) return;
+        if (!(hm.max_dollars_avg > 0) && !(hm.max_wages_avg > 0)) return;
+
+        // Active hour columns: any weekday with money or wages in that hour.
+        var lo = 24, hi = -1;
+        hm.rows.forEach(function(r) {
+            r.cells.forEach(function(c) {
+                if ((c.dollars_avg || 0) > 0 || (c.wages_avg || 0) > 0) {
+                    if (c.hour < lo) lo = c.hour;
+                    if (c.hour > hi) hi = c.hour;
+                }
+            });
+        });
+        if (hi < 0) return;
+
+        var metric = state.moneyHeatMetric;
+        var METRICS = [
+            { key: 'money', label: 'Money in' },
+            { key: 'wages', label: 'Wages' },
+            { key: 'rate',  label: 'Labor rate' }
+        ];
+        var toggle = App.el('div', { className: 'flex gap-sm' }, METRICS.map(function(mt) {
+            return App.el('button', {
+                className: 'btn btn-sm ' + (mt.key === metric ? 'btn-primary' : 'btn-ghost'),
+                textContent: mt.label,
+                onClick: function() {
+                    if (state.moneyHeatMetric === mt.key) return;
+                    state.moneyHeatMetric = mt.key;
+                    if (state.data) renderResults(state.data);
+                }
+            });
+        }));
+
+        var headCells = [App.el('th', { className: 'cardloads-heat-corner', textContent: '' })];
+        for (var h = lo; h <= hi; h++) {
+            headCells.push(App.el('th', { className: 'cardloads-heat-hhead', textContent: hourLabel(h).replace(' ', '') }));
+        }
+        var bodyRows = hm.rows.map(function(r) {
+            var tds = [App.el('th', { className: 'cardloads-heat-dow', textContent: r.label })];
+            for (var h = lo; h <= hi; h++) {
+                var c = r.cells[h] || {};
+                var text = '', bg = 'transparent', fg = 'inherit', intensity = 0;
+                if (metric === 'money') {
+                    var v = c.dollars_avg || 0;
+                    intensity = hm.max_dollars_avg > 0 ? v / hm.max_dollars_avg : 0;
+                    if (v > 0) { bg = 'rgba(91, 141, 239, ' + (0.12 + intensity * 0.78).toFixed(3) + ')'; text = v >= 1 ? fmtMoney0(v) : ''; }
+                } else if (metric === 'wages') {
+                    var w = c.wages_avg || 0;
+                    intensity = hm.max_wages_avg > 0 ? w / hm.max_wages_avg : 0;
+                    if (w > 0) { bg = 'rgba(224, 93, 93, ' + (0.12 + intensity * 0.78).toFixed(3) + ')'; text = w >= 1 ? fmtMoney0(w) : ''; }
+                } else { // rate: red = costly (wages eating revenue)
+                    if (c.rate != null) {
+                        intensity = Math.min(1, c.rate / 0.6);
+                        bg = 'rgba(224, 93, 93, ' + (0.10 + intensity * 0.8).toFixed(3) + ')';
+                        text = Math.round(c.rate * 100) + '%';
+                    } else if ((c.wages_avg || 0) > 0) {
+                        text = '—'; // wages with zero revenue that hour
+                    }
+                }
+                var tip = r.label + ' ' + hourLabel(h) + ' — ' + fmtMoney(c.dollars_avg || 0) + ' avg in, '
+                    + fmtMoney(c.wages_avg || 0) + ' avg wages'
+                    + (c.rate != null ? ', ' + fmtPct(c.rate) + ' labor rate' : '')
+                    + (r.occurrences ? ' (' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ')' : '');
+                tds.push(App.el('td', {
+                    className: 'cardloads-heat-cell',
+                    style: { backgroundColor: bg, color: intensity > 0.55 ? '#fff' : fg },
+                    title: tip,
+                    textContent: text
+                }));
+            }
+            return App.el('tr', {}, tds);
+        });
+        var table = App.el('table', { className: 'cardloads-heatmap' }, [
+            App.el('thead', {}, [App.el('tr', {}, headCells)]),
+            App.el('tbody', {}, bodyRows)
+        ]);
+
+        box.appendChild(App.el('div', { className: 'card' }, [
+            App.el('div', { className: 'card-header', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' } }, [
+                App.el('h3', { textContent: 'When the karts earn — day of week × hour' }),
+                toggle
+            ]),
+            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+                App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
+                    'Each cell is the average for that weekday/hour slot across every occurrence in the period. Money and wages are real (card ledger + punches); labor rate = wages ÷ money for the slot — red cells are hours where staffing eats the revenue.' })
+            ])
+        ]));
     }
 
     // ------------------------------------------------------------------
@@ -567,6 +747,10 @@
         salesTa.value = s.sales_range_sql || '';
         var laborTa = App.el('textarea', { className: 'form-input labor-sql', rows: 10 });
         laborTa.value = s.labor_range_sql || '';
+        var hourlyTa = App.el('textarea', { className: 'form-input labor-sql', rows: 8 });
+        hourlyTa.value = s.hourly_sales_range_sql || '';
+        var punchesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 8 });
+        punchesTa.value = s.punches_range_sql || '';
 
         var statusEl = App.el('span', { className: 'text-sm text-secondary' });
 
@@ -578,6 +762,7 @@
                         host: hostIn.value.trim(), port: parseInt(portIn.value, 10) || 1433,
                         database: dbIn.value.trim(), username: userIn.value.trim(),
                         sales_range_sql: salesTa.value, labor_range_sql: laborTa.value,
+                        hourly_sales_range_sql: hourlyTa.value, punches_range_sql: punchesTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
                         add_ride_value: addValueCb.checked,
                         ride_prices: (function() {
@@ -611,6 +796,8 @@
                 if (!s.defaults) return;
                 salesTa.value = s.defaults.sales_range_sql || salesTa.value;
                 laborTa.value = s.defaults.labor_range_sql || laborTa.value;
+                hourlyTa.value = s.defaults.hourly_sales_range_sql || hourlyTa.value;
+                punchesTa.value = s.defaults.punches_range_sql || punchesTa.value;
                 statusEl.textContent = 'Defaults restored — review, then Save settings.';
             } });
 
@@ -677,6 +864,8 @@
                 trackPricesBox,
                 field('Kart sales by day (:from … :to) — one (day, total) row per day', salesTa),
                 field('Kart wages by day (:from … :to) — one (day, total) row per day; the database computes the dollars', laborTa),
+                field('Kart revenue by HOUR (:from … :to) — one (day, hour, dollars, plays) row; real card-ledger swipes, drives the hourly money panel + heatmap', hourlyTa),
+                field('Kart-crew punches (:from … :to) — one row per punch (day, time_in, day_out, time_out, pay_rate); wages are split across the hours actually worked', punchesTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Queries must be a single SELECT and contain :from and :to. They run with this SQL account’s privileges — use a read-only login. The password is stored encrypted.' }),
                 App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
