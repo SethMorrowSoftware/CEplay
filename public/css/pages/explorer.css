@@ -28,11 +28,24 @@
     gap: 2px;
 }
 
+.explorer-list-controls { display: flex; gap: 0.5rem; align-items: center; }
+.explorer-list-controls .form-input { flex: 1; min-width: 0; }
+.explorer-sort { display: flex; gap: 0.25rem; flex-shrink: 0; }
+
+.explorer-list-label {
+    margin: 0.65rem 0 0.25rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
 .explorer-table-item {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.1rem;
     width: 100%;
     padding: 0.35rem 0.55rem;
     border: none;
@@ -46,8 +59,34 @@
 .explorer-table-item:hover { background: var(--bg-hover); }
 .explorer-table-item.active { background: var(--accent-soft, rgba(91, 141, 239, 0.12)); color: var(--accent); }
 
+.explorer-table-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
 .explorer-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-table-rows { color: var(--text-muted); font-size: 0.72rem; white-space: nowrap; }
+
+/* Matched column names under a column-search hit. */
+.explorer-table-hitcols {
+    color: var(--accent);
+    font-size: 0.72rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Column rows open the top-values probe. */
+.explorer-col-row { cursor: pointer; }
+.explorer-col-row:hover td { background: var(--bg-hover); }
+
+/* Sortable result headers. */
+.explorer-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.explorer-sortable:hover { color: var(--accent); }
+
+.explorer-history { max-width: 16rem; }
 
 /* Wide result sets scroll inside their card, never the page. */
 .explorer-scroll { overflow-x: auto; max-height: 26rem; overflow-y: auto; }
