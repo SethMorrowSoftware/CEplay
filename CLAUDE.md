@@ -119,6 +119,19 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   (nav key view_revenue); config gate: settings. The Test button reconciles a
   probe day and dumps the day's TransType breakdown. Like Labor, the live query
   only runs on the venue server (the sandbox has no MSSQL driver).
+- Ticket Trends (`#/tickets`, `/api/tickets/*`, `api/tickets.php`) reports
+  redemption tickets earned by AREA (division) over Day/Week/Month/Year/Custom
+  (same `perfResolveWindow` model), with a tickets-by-day trend + a per-division
+  breakdown + prior-period delta. Tickets attribute to a `DivNo` (area) but NEVER
+  a reader/game — every `PlayerCardTrans` ValueNo-3 (ticket) credit has `rdrkey`
+  0 — so the division is the finest grain the POS supports (this is also why the
+  per-game backfill leaves `tickets` 0). Source: MSSQL `PlayerCardTrans` ValueNo
+  3, `Amount` = ticket-unit count (no dollar value). One admin-editable range
+  query (`tickets_range_sql`, required `:from`/`:to`, single-SELECT guarded)
+  returns per-(day, DivNo) buckets; PHP rolls up the trend + breakdown. DivNo→
+  name is a best-effort INFORMATION_SCHEMA lookup (like Labor). Shares the Labor
+  page's MSSQL connection; gold `--tickets` theme. View gate: analytics +
+  view_revenue; config gate: settings. Venue server only (no sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column
