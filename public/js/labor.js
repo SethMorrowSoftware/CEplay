@@ -22,6 +22,10 @@
         settings: null   // /labor/settings payload (admins only)
     };
 
+    // Monotonic load token: MSSQL round-trips can take seconds, so a rapid
+    // ‹ ‹ click must not let the older response paint over the newer one.
+    var loadSeq = 0;
+
     function fmtMoney(v) {
         if (v == null) return '—';
         return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -163,6 +167,7 @@
     async function load() {
         var box = document.getElementById('labor-results');
         if (!box) return;
+        var seq = ++loadSeq;
         box.innerHTML = '';
         box.appendChild(App.loading());
 
@@ -182,9 +187,11 @@
 
         try {
             var data = await API.get('labor/rate?' + qs);
+            if (seq !== loadSeq) return; // a newer load superseded this one
             state.data = data;
             renderResults(data);
         } catch (err) {
+            if (seq !== loadSeq) return;
             box.innerHTML = '';
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-body' }, [
@@ -224,7 +231,7 @@
             return;
         }
 
-        var days = (data.days || []).filter(function(d) { return !d.error; });
+        var days = data.days || [];
 
         // ---- Plain-language summary ----
         var sumSales = 0, sumLabor = 0, sumRides = 0, haveRides = false;
@@ -519,7 +526,6 @@
                         database: dbIn.value.trim(), username: userIn.value.trim(),
                         sales_range_sql: salesTa.value, labor_range_sql: laborTa.value,
                         reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
-                        price_per_ride: parseFloat(priceIn.value) || 0,
                         add_ride_value: addValueCb.checked,
                         ride_prices: (function() {
                             var map = {};
@@ -531,6 +537,10 @@
                         })()
                     };
                     if (passIn.value !== '') payload.password = passIn.value;
+                    // A blank/invalid price is "leave it alone", never $0 —
+                    // an accidental $0 would silently zero estimate-mode sales.
+                    var priceVal = parseFloat(priceIn.value);
+                    if (priceIn.value !== '' && isFinite(priceVal)) payload.price_per_ride = priceVal;
                     await API.put('labor/settings', payload);
                     statusEl.textContent = 'Saved.';
                     App.toast('Labor settings saved.', 'success');
