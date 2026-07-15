@@ -5,8 +5,9 @@
  * version of the fingerprint probing that located the go-kart money under
  * DivNo 808 "Go Kart Readers").
  *
- *   GET  /api/explorer/tables       — every base table (+ row counts where readable)
- *   GET  /api/explorer/table?name=X — columns/types, date-column freshness, sample rows
+ *   GET  /api/explorer/tables       — every base table (+ row/column counts where readable)
+ *   GET  /api/explorer/table?name=X — columns/types, date-column freshness, sample rows (newest first)
+ *   GET  /api/explorer/search?q=X   — find tables BY COLUMN NAME across the whole schema
  *   POST /api/explorer/aggregate    — grouped totals: {table, group_by, sum_col?, date_col?, from?, to?}
  *   POST /api/explorer/query        — free-form guarded SELECT: {sql, limit?}
  *
@@ -37,6 +38,9 @@ function handleExplorer(string $method, array $parts, ?array $input): void {
         case 'table':
             if ($method === 'GET') { explorerTableDetail(); return; }
             break;
+        case 'search':
+            if ($method === 'GET') { explorerSearch(); return; }
+            break;
         case 'aggregate':
             if ($method === 'POST') { explorerAggregate($input ?? []); return; }
             break;
@@ -56,6 +60,14 @@ function explorerIdent(string $name): string {
 /** Single-quoted SQL string literal. */
 function explorerLit(string $v): string {
     return "'" . str_replace("'", "''", $v) . "'";
+}
+
+/**
+ * Escape a user term for use inside a LIKE '%…%' pattern (ESCAPE '\'):
+ * backslash first, then the wildcard metacharacters. Pure — unit-tested.
+ */
+function explorerLikeEscape(string $term): string {
+    return str_replace(['\\', '%', '_', '['], ['\\\\', '\\%', '\\_', '\\['], $term);
 }
 
 function explorerJson(array $payload): void {
@@ -114,6 +126,21 @@ function explorerTables(): void {
         } catch (Exception $e) {
             // sys.* not readable with this login — counts stay null.
         }
+        // Column counts give a feel for a table's width at a glance.
+        try {
+            $colCounts = [];
+            foreach ($client->rows(
+                "SELECT TABLE_NAME, COUNT(*) AS cols FROM INFORMATION_SCHEMA.COLUMNS GROUP BY TABLE_NAME", 500) as $c) {
+                $vals = array_values($c);
+                $colCounts[strtolower((string)($c['TABLE_NAME'] ?? $vals[0] ?? ''))] = (int)($c['cols'] ?? $vals[1] ?? 0);
+            }
+            foreach ($tables as &$t) {
+                $t['cols'] = $colCounts[strtolower($t['name'])] ?? null;
+            }
+            unset($t);
+        } catch (Exception $e) {
+            // Optional context — absence is fine.
+        }
         explorerJson(['configured' => true, 'tables' => $tables, 'driver' => $client->driver()]);
     } catch (Exception $e) {
         explorerJson(['configured' => MssqlClient::isConfigured(), 'error' => $e->getMessage(), 'tables' => []]);
@@ -142,9 +169,10 @@ function explorerResolveTable(MssqlClient $client, string $requested): array {
     $schema = (string)($rows[0]['TABLE_SCHEMA'] ?? $vals[0] ?? 'dbo');
     $name   = (string)($rows[0]['TABLE_NAME'] ?? $vals[1] ?? $requested);
 
+    // Schema-qualified: same-named tables in two schemas must not merge.
     $cols = [];
     foreach ($client->rows(
-        "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = " . explorerLit($name) . " ORDER BY ORDINAL_POSITION", 300) as $c) {
+        "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = " . explorerLit($schema) . " AND TABLE_NAME = " . explorerLit($name) . " ORDER BY ORDINAL_POSITION", 300) as $c) {
         $cvals = array_values($c);
         $cols[] = [
             'name'     => (string)($c['COLUMN_NAME'] ?? $cvals[0] ?? ''),
@@ -205,15 +233,31 @@ function explorerTableDetail(): void {
             }
         }
 
+        // Sample NEWEST rows when a date column exists — an unordered TOP
+        // returns allocation order, which on a years-deep table means 2019
+        // rows and tells you nothing about what the data looks like today.
         $sample = [];
         $sampleCols = [];
-        try {
-            foreach ($client->rows('SELECT TOP ' . EXPLORER_SAMPLE_ROWS . ' * FROM ' . $qualified, EXPLORER_SAMPLE_ROWS) as $r) {
-                if (!$sampleCols) $sampleCols = array_map('strval', array_keys($r));
-                $sample[] = array_map('explorerCell', array_values($r));
+        $sampleOrder = null;
+        foreach ($cols as $c) {
+            if (explorerIsDateType($c['type'])) { $sampleOrder = $c['name']; break; }
+        }
+        foreach ([true, false] as $useOrder) {
+            if ($useOrder && $sampleOrder === null) continue;
+            try {
+                $sql = 'SELECT TOP ' . EXPLORER_SAMPLE_ROWS . ' * FROM ' . $qualified
+                     . ($useOrder ? ' ORDER BY ' . explorerIdent($sampleOrder) . ' DESC' : '');
+                foreach ($client->rows($sql, EXPLORER_SAMPLE_ROWS) as $r) {
+                    if (!$sampleCols) $sampleCols = array_map('strval', array_keys($r));
+                    $sample[] = array_map('explorerCell', array_values($r));
+                }
+                break; // got rows (or an empty table) — done
+            } catch (Exception $e) {
+                // Ordered probe can fail on exotic types — fall through to
+                // the unordered fallback.
+                $sample = [];
+                $sampleCols = [];
             }
-        } catch (Exception $e) {
-            // Sample is best-effort (permissions, exotic types).
         }
 
         explorerJson([
@@ -223,11 +267,68 @@ function explorerTableDetail(): void {
             'freshness' => $freshness,
             'sample_columns' => $sampleCols,
             'sample' => $sample,
+            // Which column (if any) the sample is sorted newest-first by.
+            'sample_order' => ($sample && $sampleOrder !== null) ? $sampleOrder : null,
         ]);
     } catch (RuntimeException $e) {
         throw $e; // → 422 with message
     } catch (Exception $e) {
         explorerJson(['error' => $e->getMessage()]);
+    }
+}
+
+/**
+ * Column-name search across the whole schema: "which tables have a column
+ * like 'hour' / 'amt' / 'ticket'?" — THE question when hunting where a
+ * metric lives. One INFORMATION_SCHEMA query, grouped by table.
+ */
+function explorerSearch(): void {
+    $q = trim((string)($_GET['q'] ?? ''));
+    if (strlen($q) < 2) {
+        throw new RuntimeException('Search needs at least 2 characters.');
+    }
+    if (strlen($q) > 100) {
+        throw new RuntimeException('Search term is too long.');
+    }
+    try {
+        $client = new MssqlClient();
+        $like = explorerLit('%' . explorerLikeEscape($q) . '%');
+        $rows = $client->rows(
+            "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE"
+            . " FROM INFORMATION_SCHEMA.COLUMNS c"
+            . " JOIN INFORMATION_SCHEMA.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME AND t.TABLE_TYPE = 'BASE TABLE'"
+            . " WHERE c.COLUMN_NAME LIKE " . $like . " ESCAPE '\\'"
+            . " ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION", 300);
+        $byTable = [];
+        $order = [];
+        foreach ($rows as $r) {
+            $vals = array_values($r);
+            $tbl = (string)($r['TABLE_NAME'] ?? $vals[1] ?? '');
+            if ($tbl === '') continue;
+            if (!isset($byTable[$tbl])) {
+                $byTable[$tbl] = [
+                    'schema' => (string)($r['TABLE_SCHEMA'] ?? $vals[0] ?? 'dbo'),
+                    'table' => $tbl,
+                    'columns' => [],
+                ];
+                $order[] = $tbl;
+            }
+            $byTable[$tbl]['columns'][] = [
+                'name' => (string)($r['COLUMN_NAME'] ?? $vals[2] ?? ''),
+                'type' => strtolower((string)($r['DATA_TYPE'] ?? $vals[3] ?? '')),
+            ];
+        }
+        $matches = [];
+        foreach ($order as $tbl) $matches[] = $byTable[$tbl];
+        explorerJson([
+            'q' => $q,
+            'matches' => $matches,
+            'truncated' => count($rows) >= 300,
+        ]);
+    } catch (RuntimeException $e) {
+        throw $e;
+    } catch (Exception $e) {
+        explorerJson(['q' => $q, 'matches' => [], 'error' => $e->getMessage()]);
     }
 }
 
@@ -306,6 +407,8 @@ function explorerAggregate(array $input): void {
             'sql' => $sql,
             'rows' => $out,
             'has_total' => $sumCol !== null,
+            // Exactly at the TOP cap ⇒ more groups exist than are shown.
+            'truncated' => count($out) >= 100,
             'elapsed_ms' => (int)round((microtime(true) - $t0) * 1000),
         ]);
     } catch (RuntimeException $e) {
