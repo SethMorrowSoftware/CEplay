@@ -89,6 +89,28 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   view_revenue (nav key view_revenue); config gate: settings. The
   sandbox/test env has no MSSQL driver — the live connection test happens
   on the venue server via the page's Test connection button.
+- Card Loads (`#/cardloads`, `/api/cardloads/*`, `api/cardloads.php`) reports
+  the money guests ADD to their cards, by Day/Week/Month/Year/Custom (same
+  `perfResolveWindow` window model as Performance/Labor), plus a money-loaded-
+  by-hour curve and a day-of-week × hour heatmap (per-occurrence averages, for
+  staffing). This venue DEFERS card value (`ApplicationInfo.DeferValuePlayerCards
+  = 1`), so a load is stored value — NOT a POS sale — and never appears in the
+  `Sales` table; it lives only in the card ledger. Source: MSSQL
+  `PlayerCardTrans` TransType 3 ("add value"); `DollarAmount` = real dollars
+  paid, `TransDateTime` = a TRUE clock time (unlike `Sales.ShiftDate`, which is
+  midnight-only — that's why hour-of-day is real here, not estimated). TransType
+  1 = plays (deductions at readers, which reconcile to the Sales "Reader Sales"
+  category). Paid loads and comped/bonus value (value adds with no DollarAmount,
+  estimated from card value-units at ~100/$) are shown SEPARATELY. One
+  admin-editable range query (`cardloads_range_sql`, required `:from`/`:to`,
+  single-SELECT guarded via `MssqlClient::assertReadOnly`) returns per-(day,
+  hour) buckets with paid_*/bonus_* columns; PHP rolls up daily/hourly/
+  weekday×hour/summary, so a Year view costs the same one round-trip as a Day.
+  Shares the Go-Kart Labor page's MSSQL connection (`lib/mssql_client.php`);
+  the connection itself is configured there. View gate: analytics + view_revenue
+  (nav key view_revenue); config gate: settings. The Test button reconciles a
+  probe day and dumps the day's TransType breakdown. Like Labor, the live query
+  only runs on the venue server (the sandbox has no MSSQL driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column
