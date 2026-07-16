@@ -161,6 +161,30 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   view_revenue; config gate: settings. The Test button reconciles a probe day
   and dumps that day's revenue-by-category breakdown. Venue server only (no
   sandbox driver).
+- Redemption Economics (`#/redemption`, `/api/redemption/*`, `api/redemption.php`)
+  is the redemption half of the ticket economy — Ticket Trends reports tickets
+  EARNED, this reports tickets SPENT for prizes, so together they give the
+  redemption RATE (redeemed ÷ earned) and the period's net change in outstanding
+  ticket liability. Over Day/Week/Month/Year/Custom (same `perfResolveWindow`
+  model): a tickets-redeemed-by-day trend, a redemptions-by-hour curve, a
+  weekday×hour heatmap (counter staffing), redemption %, period net float, and a
+  per-prize mix. Source: MSSQL `RedeemReceipts` `RecType = 3` rows (the
+  redemption record; `TotalTickets` = tickets spent, `RecTime` = a TRUE clock
+  time — `RedeemDateTime` is sometimes null/anomalous, so `RecTime` drives day +
+  hour), plus `RedeemRecItems` (per-prize line items: `InvNo`, `NumberTickets`,
+  `Qty`) for the prize breakdown. Prize MARGIN is NOT available — RedeemRecItems
+  has no cost column — so the prize panel is a MIX (tickets/qty), not COGS; a
+  prize-cost source would be needed for margin. All-time outstanding ticket
+  float would come from `EmbedBalance.ETickets` (a candidate table); this report
+  shows the PERIOD net (earned − redeemed). Two admin-editable range queries
+  (`redemption_range_sql` + `redemption_items_sql`, required `:from`/`:to`,
+  single-SELECT guarded); the redemption RATE reuses the Ticket Trends earned
+  query (`ticketsRangeSql`) as the denominator. Prize names via best-effort
+  INFORMATION_SCHEMA lookup (Inventory/Merch/Prize table). Violet `--redemption`
+  theme; heatmap reuses the `cardloads-heat*` classes. View gate: analytics +
+  view_revenue; config gate: settings; Test gate: data_explorer. The Test button
+  dumps a RecType breakdown + reconciles line-item vs receipt-header ticket
+  totals. Venue server only (no sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column

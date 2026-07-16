@@ -1,0 +1,35 @@
+/* ============================================
+   Redemption Economics page
+   ============================================
+   Tickets redeemed for prizes, by day/hour/week/month/year.
+
+   Reuses the Card Loads / Labor primitives for the hour bars, the weekday×hour
+   heatmap (.cardloads-heat*, cell colours set inline in redemption.js on a
+   violet intensity scale), and the admin query editor (.labor-*). This file
+   only adds the violet fill for the trend/prize bars and the ticket-count
+   colour. Theme-aware via design tokens.
+   ============================================ */
+
+:root {
+    --redemption: #8b5cf6;          /* Violet — distinct from the other reports */
+}
+:root[data-theme="light"] {
+    --redemption: #7c3aed;
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --redemption: #7c3aed; }
+}
+
+.redemption-amount {
+    color: var(--redemption);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.redemption-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--redemption) 0%, color-mix(in srgb, var(--redemption) 70%, var(--accent)) 100%);
+    transition: width 0.3s ease;
+}
