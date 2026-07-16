@@ -180,9 +180,10 @@ to fix it. Fix the issue and re-run — the script is safe to re-run.
 - Creates the data directory
 - Generates a random encryption key (saved to `/var/persist/pause-groups/.env`)
 - Pulls the PHP-FPM container image from Docker Hub, then builds the
-  MSSQL-enabled overlay on top of it (adds the `pdo_dblib` driver the
-  Go-Kart Labor report needs) and saves it under `/var/persist` so it
-  survives OS rebuilds
+  MSSQL-enabled overlay on top of it (adds the `pdo_dblib` driver the whole
+  MSSQL reporting stack needs — Go-Kart Labor, Card Loads, Ticket Trends,
+  Revenue Mix, the Database Explorer, and the one-time historical backfills)
+  and saves it under `/var/persist` so it survives OS rebuilds
 
 > **The image pull (step 4) takes 2–5 minutes** on first run — the image is
 > about 450 MB. You'll see download progress bars. This is normal.
@@ -408,15 +409,18 @@ A healthy response looks like:
 ```json
 {
     "status": "ok",
-    "database": "ok",
-    "cron_heartbeat": "ok",
-    "watchdog_heartbeat": "degraded"
+    "cron": { "last_run": "2026-07-16T00:05:00+00:00", "age_seconds": 3600, "healthy": true },
+    "watchdog": { "last_run": "2026-07-16T04:59:00+00:00", "age_seconds": 30, "healthy": true },
+    "database": true
 }
 ```
 
-> `watchdog_heartbeat` will show as `degraded` until the watchdog timer has fired
-> at least once (within the first minute). Refresh after a minute and it should
-> show `ok`.
+> `status` is the overall roll-up (`ok` or `degraded`); `database` is a boolean;
+> `cron.healthy` is true when the cron heartbeat is under 25 hours old and
+> `watchdog.healthy` when the watchdog heartbeat is under 3 minutes old. The
+> whole response is `degraded` (HTTP 503) if any of those is unhealthy.
+> `watchdog.healthy` stays `false` until the watchdog timer fires at least once
+> (within the first minute) — refresh after a minute and it flips to `true`.
 
 ### Step 4.3 — Open the app in a browser
 
@@ -626,14 +630,26 @@ sudo tail -20 /var/persist/pause-groups/data/watchdog.log
 
 ### I need to update the app to a newer version
 
+Prefer `update.sh` — it is the idempotent updater: it pulls, rebuilds the
+MSSQL driver overlay if needed, restarts the service, AND runs any pending
+one-time MSSQL backfills so the deep guest/performance/ticket history is seeded
+immediately (rather than waiting for the next nightly cron).
+
 ```bash
-# Pull the latest code
 cd /var/persist/pause-groups-src
 sudo git pull
+sudo bash update.sh            # pull-safe: rebuilds driver, restarts, runs pending backfills
+```
 
-# Re-run the setup script (safe to re-run — won't wipe your database)
+If you instead re-run `setup-fcos.sh` (also safe, won't wipe your database),
+note it does NOT run the backfills — the history will fill in at the next
+nightly `cron.php` run, or run them now with
+`sudo podman exec pause-groups-fpm php run_backfills.php`.
+
+```bash
+# Alternative: full re-provision (no backfill step)
+cd /var/persist/pause-groups-src
+sudo git pull
 sudo bash setup-fcos.sh
-
-# Restart PHP-FPM to pick up the new files
 sudo systemctl restart pause-groups-fpm
 ```

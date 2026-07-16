@@ -86,18 +86,24 @@ This document is intended for two audiences:
 | Games | `/games/{gameId}/performAction` | POST | `performGameAction` | yes — `performGameAction()` |
 | Games | `/games/transactions` | GET | `getGameTransactions` | yes — `getGameTransactions()` / `pollGameTransactions()` |
 | Games | `/games/categories` | GET | `getGameCategories` | yes — `getCategories()` |
-| Privileges | `/privilegeGroups` | GET | `getPrivilegeGroups` | **no** |
-| Time Play | `/timePlayGroups` | GET | `getTimePlayGroups` | **no** |
-| System | `/system/transactions` | GET | `getSystemTransactions` | **no** |
+| Privileges | `/privilegeGroups` | GET | `getPrivilegeGroups` | yes — `getPrivilegeGroups()` / `getPrivilegeGroupsCached()` (used by `api/cards.php`) |
+| Time Play | `/timePlayGroups` | GET | `getTimePlayGroups` | yes — `getTimePlayGroups()` / `getTimePlayGroupsCached()` (used by `api/cards.php`) |
+| System | `/system/transactions` | GET | `getSystemTransactions` | yes — `getSystemTransactions()` / `pollSystemTransactions()` (watchdog, every minute) |
 | Kiosks (out-of-spec extension) | `/kiosks` | GET | — | yes — `getKiosks()` / `getAllKiosks()` |
 | Kiosks (extension) | `/kiosks/{id}` | GET | — | yes — `getKiosk()` |
 | Kiosks (extension) | `/kiosks` | PATCH | — | yes — `patchKiosks()` |
 | Kiosks (extension) | `/kiosks/{id}/performAction` | POST | — | yes — `performKioskAction()` |
 
-> **17 paths** are in the OpenAPI 1.8.0 spec; we use **9** of them. The
-> kiosk endpoints (4 more) are an out-of-spec extension implemented by
-> some vendors and present in our client; they do not appear in this
-> version of the YAML.
+> **17 paths** are in the OpenAPI 1.8.0 spec; we now use **12** of them
+> (`privilegeGroups`, `timePlayGroups`, and `system/transactions` were wired
+> up after this doc's first draft). Plus multi-feed play polling —
+> `capabilities.games.transactionFeedNames` is read and every advertised feed
+> is polled (`getTransactionFeedNames()` / `pollAllGameTransactionFeeds()`).
+> The remaining unused paths are all card-administration WRITES (create/wipe/
+> combine/bulkIssue/adjust cards) plus `cardNumberFormats` and single-
+> transaction lookup — see Coverage Gaps. The kiosk endpoints (4 more) are an
+> out-of-spec extension implemented by some vendors and present in our client;
+> they do not appear in this version of the YAML.
 
 ---
 
@@ -176,11 +182,13 @@ How we could use it: capabilities currently drives kiosk UI affordances
 only. We could extend that pattern across the board so the SPA hides
 features the connected vendor doesn't support — for example, hide the
 "reboot" game action when `games.supportedActions` is empty, or hide
-the time-play / privilege panes if the vendor doesn't support them. The
-`games.transactionFeedNames` array is also actionable: today
-`pollGameTransactions()` only polls the `default` feed; a multi-feed
-vendor (e.g. one with a separate `creditCard` feed) would silently drop
-transactions until we iterate over every reported feed name.
+the time-play / privilege panes if the vendor doesn't support them.
+
+`games.transactionFeedNames` is now consumed: `getTransactionFeedNames()` +
+`pollAllGameTransactionFeeds()` read every advertised feed with independent
+cursors (the watchdog calls the multi-feed poller). A vendor with a separate
+`creditCard` feed is no longer silently dropped — this was previously a
+`default`-only risk and is now resolved.
 
 ### `GET /cardNumberFormats?skip=N&take=N`
 
@@ -481,15 +489,15 @@ code) MUST be present.
 Used by: `getGameTransactions()` (low-level page fetch) and
 `pollGameTransactions()` (cursor-checkpointed, multi-page). The cursor
 is persisted as `app_config.game_tx_last_id_<feed>`; each call walks up
-to 20 pages of 200 records before yielding. The watchdog cron triggers
-this every minute.
+to 20 pages of 200 records before yielding. The watchdog cron polls
+**every advertised feed** each minute via `pollAllGameTransactionFeeds()`
+(which wraps `pollGameTransactions()` per feed).
 
-How we could use it: the watchdog only polls one feed (`default`).
-Once we read `capabilities.games.transactionFeedNames` and iterate
-across each feed, we'd capture credit-card plays from vendors that
-isolate them into a separate feed. The cursor model also lets us add
-parallel "rebuild from N" jobs for analytics backfills without
-disturbing the live cursor.
+Multi-feed is now implemented: `capabilities.games.transactionFeedNames` is
+read and each feed is polled with its own cursor, so credit-card plays from
+vendors that isolate them into a separate feed are captured (previously only
+`default` was polled). The cursor model still leaves room for parallel
+"rebuild from N" backfill jobs without disturbing the live cursor.
 
 ### `GET /games/categories?skip=N&take=N`
 
@@ -516,12 +524,9 @@ arcade game"). Per group: `{ id, name }`. The card system decides what
 each group means; CenterEdge just lets the operator pick one when
 configuring a privilege product.
 
-Used by: **not currently called**.
-
-How we could use it: the cards page surfaces existing privileges on
-each card already (via `Card.privileges[].groupId`). Showing the
-human-readable group name (rather than the bare integer ID) requires
-fetching this list once and caching the id→name map.
+Used by: `getPrivilegeGroups()` / `getPrivilegeGroupsCached()`, consumed by
+`api/cards.php` — the cards page shows the human-readable group name beside
+each `Card.privileges[].groupId` from the cached id→name map.
 
 ---
 
@@ -533,11 +538,10 @@ Same shape and pattern as privilege groups — `{ id, name }`. Time-play
 groups gate which games a time play is valid on (e.g. "All Games" vs
 "Non-redemption Games" vs "VR Only").
 
-Used by: **not currently called**.
-
-How we could use it: same as privileges — shows the human-readable name
-on the cards page beside `Card.timePlays[].groupId`. Would also feed a
-future "issue time play" workflow at the POS.
+Used by: `getTimePlayGroups()` / `getTimePlayGroupsCached()`, consumed by
+`api/cards.php` — shows the human-readable name on the cards page beside
+`Card.timePlays[].groupId`. (An "issue time play at POS" workflow remains
+unbuilt.)
 
 ---
 
@@ -565,14 +569,13 @@ Only enabled when `capabilities.systemTransactionReporting.isSupported`
 is true; the supported subtypes are listed in
 `capabilities.systemTransactionReporting.transactionTypes`.
 
-Used by: **not currently called**.
-
-How we could use it: this is the "deferred revenue accounting" feed.
-CenterEdge Advantage uses it to recognise card balances that expired or
-merged outside Advantage as revenue. We don't currently surface
-deferred-revenue numbers in the analytics page, but a future ledger
-view would need to poll this feed using the same cursor pattern as the
-play feed (`pollGameTransactions()` is the model).
+Used by: `getSystemTransactions()` / `pollSystemTransactions()` — the watchdog
+polls this every minute (cursor pattern, like the play feed) into the local
+`system_transactions` table (~400-day retention). This is the "deferred revenue
+accounting" feed (card balances that expired or merged outside Advantage). The
+events are stored and surface as breakage KPIs in the analytics overview; a
+dedicated deferred-revenue ledger page with dollarization is the remaining
+future work.
 
 ---
 
@@ -648,35 +651,37 @@ the YAML. The most-used ones at a glance:
 
 ## Coverage Gaps Worth Acting On
 
-Looking at the index above, the endpoints we have **never called** but
-that the upstream supports cluster around three product opportunities:
+**Already closed since the first draft** (do NOT re-propose): the
+privilege/time-play group name caches (`getPrivilegeGroupsCached` /
+`getTimePlayGroupsCached`, shown on the cards page), the deferred-revenue
+`system/transactions` polling (`pollSystemTransactions`, into
+`system_transactions`), and multi-feed play polling
+(`pollAllGameTransactionFeeds`). What remains genuinely unused is the
+card-administration WRITE surface:
 
 1. **Card administration at the redemption counter.** `POST
     /cards/{n}` (create empty), `DELETE /cards/{n}` (wipe), `POST
     /cards/{n}/combine` (merge), `POST /cards/{n}/transactions` (manual
     adjust). These would let the SPA replace a separate counter tool —
     every operation captures an `Operator` block, which we already
-    synthesise from the logged-in user for the existing RPC actions.
+    synthesise from the logged-in user for the existing RPC actions. The
+    highest daily-utility one is the manual adjustment (goodwill comps,
+    malfunction credits, ticket corrections).
 2. **Bulk issue.** `POST /cards/bulkIssue` enables prepaid voucher
     batches, group sales, and pre-loaded summer-camp wristbands. The
     `Operator` capture pattern is the same; the new wrinkle is letting
     the operator pick from `/games/categories` and / or
     `/privilegeGroups` / `/timePlayGroups` in the adjustment builder.
-3. **Deferred-revenue / system events.** `GET /system/transactions` is
-    the analytics complement to the existing play feed — it captures
-    expirations and merges that didn't go through Advantage. Polling it
-    on the same cursor model as the play feed and surfacing the totals
-    in the analytics page would let us account for "value that left the
-    system" without a separate report.
+3. **Deferred-revenue PRESENTATION.** `system/transactions` is already
+    polled/stored (see above); the remaining gap is a dedicated
+    deferred-revenue ledger page that DOLLARIZES the expirations/merges,
+    rather than the points/tickets counts currently in the overview.
 
-Two smaller wins are also tractable today:
+One smaller win is still tractable today:
 
 - **Card-number format pre-validation** (`GET /cardNumberFormats`)
   would catch malformed card numbers in the SPA before round-tripping
   to the upstream.
-- **Privilege / time-play group name caches** (`GET /privilegeGroups`,
-  `GET /timePlayGroups`) would let the cards page show
-  `"All Games (id 0)"` instead of bare integer IDs.
 
 All five rely on patterns we already use (capability-gating, paginated
 fetch-all, encrypted token reuse) — they are mostly UI work plus thin

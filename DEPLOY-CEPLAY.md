@@ -63,7 +63,7 @@ location ~ ^/ceplay/api/.+\.php$ {
     deny all;
     return 404;
 }
-location ~ ^/ceplay/(\.env|config\.php|cron\.php|cron_watchdog\.php|run_action\.php|install\.php|fresh_install\.php)$ {
+location ~ ^/ceplay/(\.env|config\.php|cron\.php|cron_watchdog\.php|run_action\.php|run_backfills\.php|backfill_card_activity\.php|install\.php|fresh_install\.php)$ {
     deny all;
     return 404;
 }

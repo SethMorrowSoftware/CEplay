@@ -1,9 +1,19 @@
 # Castle Fun Center - Pause Group Automation
 
-A self-hosted automation tool for the CenterEdge Card System: pause groups,
-schedule recurring active-hours, run one-off overrides, and now also pause
-kiosks alongside games. Built with PHP and vanilla JavaScript — no frameworks,
-no external dependencies.
+A self-hosted automation **and reporting** tool for the CenterEdge Card System.
+Two halves:
+
+- **Automation** — pause groups, recurring active-hour schedules, one-off
+  overrides, and kiosk pausing alongside games, enforced by a multi-tier
+  scheduler (`at` jobs + per-minute watchdog + per-request safety nets).
+- **Reporting** — a suite of analytics pages built on the local play feed and a
+  READ-ONLY connection to the venue's CenterEdge **MSSQL / SQL Server** database:
+  Analytics, Performance, Reader Groups, Go-Kart Labor, Card Loads, Ticket
+  Trends, Revenue Mix, and a Database Explorer. History from before the app was
+  installed is one-time backfilled from the POS `PlayerCardTrans` ledger.
+
+Built with PHP and vanilla JavaScript — no frameworks, no build step, no
+external dependencies.
 
 ## Requirements
 
@@ -17,6 +27,7 @@ no external dependencies.
 | Linux `at` + `atrm` (optional) | Native per-action job queueing; fallback mode works without these |
 | Apache or Nginx | Web server (with PHP-FPM or mod_php) |
 | Cron daemon (recommended) | Daily planning + per-minute watchdog execution |
+| MSSQL PDO driver — `pdo_sqlsrv`, `pdo_dblib`, or ODBC (optional) | Only for the MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue Mix, Database Explorer) and the historical backfills. The venue server needs one; the rest of the app runs without it. See `docs/MSSQL_DRIVER.md`. |
 
 No Composer, no npm, no external PHP packages. Everything uses the PHP standard library.
 
@@ -57,31 +68,89 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
 - Read-only proxy for floor staff: card balance, time plays, privileges,
   transaction history, and PIN probe/validate (rate-limited and audit-logged).
 
+### Reader Groups (`#/readers`)
+- Analytics-only groupings of games/readers into "areas" (a game may be in many
+  groups; groups never pause anything). Compares every area — totals, plays per
+  day, busiest weekday/hour, prior-period deltas — plus a per-group day-of-week ×
+  hour heatmap, trend, and per-game breakdown for staffing.
+
+### Go-Kart Labor (`#/labor`)
+- Go-kart sales vs staff wages by Day/Week/Month/Year/Custom, from the venue's
+  CenterEdge **MSSQL** database. Sales = the POS "Go Kart Readers" division
+  (DivNo 808); labor = wages computed from the time-clock punches. Includes
+  swipes-by-hour, a real money-in-vs-wages-out hourly curve, and a weekday×hour
+  heatmap (Money / Wages / Rate).
+
+### Card Loads (`#/cardloads`)
+- How much money guests ADD to their cards, by Day/Week/Month/Year/Custom, plus
+  a money-loaded-by-hour curve and a weekday×hour heatmap. This venue defers card
+  value, so a load is stored value (not a POS sale) and lives only in the card
+  ledger — source is MSSQL `PlayerCardTrans` add-value transactions. Paid loads
+  and comped/bonus value are shown separately.
+
+### Ticket Trends (`#/tickets`)
+- Redemption tickets earned by AREA (division) over Day/Week/Month/Year/Custom,
+  with a tickets-by-day trend + per-division breakdown + prior-period delta.
+  Tickets attribute to a division but never a game (the POS records no reader on
+  a ticket credit). Source: MSSQL `PlayerCardTrans` ticket credits.
+
+### Revenue Mix (`#/revenue`)
+- The P&L-lite roll-up: sales dollars by CATEGORY (attractions vs food vs groups
+  vs card fees) over Day/Week/Month/Year/Custom, with the mix shift over time,
+  discount rate per category, and prior-period delta. Source: MSSQL `Sales`
+  grouped by category. Day grain only (ShiftDate is midnight-stamped).
+
+### Database Explorer (`#/explorer`)
+- A READ-ONLY window into the CenterEdge MSSQL database for finding where metrics
+  live: table browser (columns/types, date-column freshness, sample rows), a
+  "find a metric" grouped-totals builder, and a guarded free-form `SELECT` with
+  CSV export. Every query is single-`SELECT` guarded and audit-logged.
+
+> The five MSSQL pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue Mix,
+> Database Explorer) all share **one** encrypted MSSQL connection, configured on
+> the Go-Kart Labor page. Each report runs one admin-editable, read-only range
+> query. See [MSSQL Reporting](#mssql-reporting-centeredge-sql-server) below.
+
 ### Roles & Permissions (custom RBAC)
 Access is controlled by **roles**, which are data — create and edit them in
 **Settings → Roles & Permissions**. Each role grants a set of permissions
 from a fixed catalog:
 
+The catalog has **18** keys. The six `view_*` keys control page/section
+VISIBILITY (unticking one hides the nav item, bounces the route, and closes its
+read APIs); the rest gate features and data.
+
 | Permission | Grants |
 |------------|--------|
-| `analytics` | Analytics & Performance pages (plays/tickets) |
-| `view_revenue` | Cash/revenue figures in all reporting (scrubbed otherwise) |
+| `view_dashboard` | See the Dashboard page |
+| `view_games` | See the Games page |
+| `view_groups` | See the Pause Groups page |
+| `view_kiosks` | See the Kiosks page |
+| `view_schedules` | See the Schedules page |
+| `view_overrides` | See the Overrides page |
+| `analytics` | Analytics, Performance, and Reader Groups pages (plays/tickets) |
+| `view_revenue` | Cash/revenue figures in reporting AND visibility of the four MSSQL money pages (Labor, Card Loads, Ticket Trends, Revenue Mix) |
 | `cards` | Card lookup: balances, transactions, PIN checks |
 | `manual_control` | Pause/unpause groups, kiosk & game actions, force syncs |
 | `overrides_manage` | Create/delete schedule overrides |
 | `groups_manage` | Create/edit/delete pause groups |
+| `reader_groups_manage` | Create/edit/delete reader groups (analytics areas) |
 | `schedules_manage` | Create/edit/delete schedules |
-| `settings` | CenterEdge API credentials, timezone |
+| `settings` | System settings: CenterEdge API credentials, timezone |
+| `data_explorer` | Database Explorer + the MSSQL report **Test** buttons (raw POS data, incl. dollar & card figures) — separate from `settings`, admin-only by default |
 | `users` | User management (admin accounts always excluded) |
+| `view_logs` | View the Action Log / audit trail |
 
-Anything not in the catalog (dashboard, game/kiosk status views, action log)
-is open to every signed-in user.
-
-Three **system roles** are seeded and match the classic behavior: `admin`
-(everything — locked, cannot be edited or deleted), `manager` (all floor +
-reporting, no settings/users), `tech` (operations + settings/users, no sales
-data or structural editing). Manager/tech permissions can be tuned; custom
-roles (e.g. a view-only "Front Desk") can be added freely.
+Four **seeded roles** ship: `admin` (everything — locked, cannot be edited or
+deleted; holds every permission incl. `data_explorer`), `manager` (all floor +
+reporting incl. `view_revenue`, no settings/users/`data_explorer`), `tech`
+(operations + `settings`/`users`, but **no** `view_revenue`, `cards`,
+`view_logs`, or `data_explorer` — so a technician can configure CenterEdge
+credentials/timezone yet cannot reach money/card data or the DB Explorer), and
+**`viewer`** (a read-only role — all pages + analytics + `view_revenue` + cards
++ logs, no operate/manage/settings keys — seeded once as a normal, fully
+editable/deletable custom role). Every role's permissions can be tuned, and
+custom roles can be added freely.
 
 Safety rails: only admins manage roles and admin accounts; the last active
 admin can never be demoted, deactivated, or deleted; non-admin users can only
@@ -167,8 +236,10 @@ Add the following to your crontab (`crontab -e`), replacing the path:
 5 0 * * * /usr/bin/php /path/to/pause-groups/cron.php >> /path/to/pause-groups/data/cron.log 2>&1
 ```
 
-- **`cron_watchdog.php`** (every minute) — executes missed actions, enforces desired game states, re-queues broken `at` jobs, writes a watchdog heartbeat.
-- **`cron.php`** (daily at 00:05) — syncs the game list from CenterEdge, plans all actions for the day, queues `at` jobs, purges old data, rotates log files, writes a cron heartbeat.
+- **`cron_watchdog.php`** (every minute) — executes missed actions, enforces desired game states, re-queues broken `at` jobs, polls the CenterEdge play/system transaction feeds, writes a watchdog heartbeat.
+- **`cron.php`** (daily at 00:05) — syncs the game list from CenterEdge, plans all actions for the day, queues `at` jobs, rolls up the raw feed into the permanent per-game daily **and hourly** stats, backs up the SQLite DB (`data/backups/`, `VACUUM INTO`, keep 14), purges old data, rotates log files, runs any pending one-time MSSQL backfills (guest history + per-game play history), and writes a cron heartbeat.
+
+Nothing about the MSSQL reporting or the backfills needs a CLI step — `cron.php` runs the backfills automatically (once, flag-guarded) as soon as it runs with an MSSQL connection configured, and `update.sh` runs them on deploy so history appears immediately.
 
 If `at`/`atrm` are not installed, keep the watchdog cron running every minute. In that mode, due actions are picked up and executed by the watchdog within one minute of their scheduled time.
 
@@ -188,41 +259,59 @@ pause-groups/
   cron_watchdog.php        # Per-minute watchdog: missed actions, state enforcement,
                            #   at-job requeue, heartbeat
   run_action.php           # Single-action executor invoked by at jobs
+  run_backfills.php        # Runs any pending one-time MSSQL backfills on demand
+  backfill_card_activity.php # Optional manual runner for the guest-ledger backfill
+  update.sh                # Deploy script (pull, rebuild, run pending backfills)
 
   api/                     # API endpoint handlers (all require auth except /api/health)
     auth.php               #   Login, logout, session status
     settings.php           #   CenterEdge API config + timezone management
     games.php              #   Game list, categories, sync
+    cards.php              #   Card lookup proxy (balance, history, PIN checks)
     groups.php             #   Pause group CRUD, manual pause/unpause, state enforcement
+    kiosks.php             #   Kiosk list, pause/unpause/out-of-service, RPC actions
     schedules.php          #   Recurring schedule CRUD (bulk creation supported)
     overrides.php          #   Temporary override CRUD with immediate execution
+    reader_groups.php      #   Analytics-area (reader group) CRUD
+    analytics.php          #   Analytics/Performance/Reader-Group reporting + the perf window model
+    labor.php              #   Go-Kart Labor (MSSQL: sales vs wages)
+    cardloads.php          #   Card Loads (MSSQL: money added to cards)
+    tickets.php            #   Ticket Trends (MSSQL: tickets earned by division)
+    revenue.php            #   Revenue Mix (MSSQL: sales by category)
+    explorer.php           #   Database Explorer (read-only MSSQL window)
     logs.php               #   Paginated, filterable action log
     users.php              #   Admin user management
+    roles.php              #   Role CRUD + permission catalog
+    capabilities.php       #   CenterEdge capability flags
 
   lib/                     # Core libraries
     db.php                 #   SQLite singleton, schema initialization, query helpers
-    auth.php               #   Session management (HttpOnly, SameSite=Strict, brute-force delay)
+    auth.php               #   Session management (HttpOnly, SameSite=Strict, brute-force delay, RBAC)
     csrf.php               #   CSRF token generation + timing-safe validation
     crypto.php             #   AES-256-CBC encrypt-then-MAC (HMAC-SHA256), backward-compatible
     validator.php          #   Input validation (strings, ints, dates, times, enums, arrays, URLs, pagination)
-    centeredge_client.php  #   CenterEdge API client (SHA-1 auth, token caching, pagination, retry)
-    scheduler.php          #   Scheduling engine (planning, execution, enforcement, purge)
+    centeredge_client.php  #   CenterEdge REST API client (SHA-1 auth, token caching, pagination, retry)
+    mssql_client.php       #   READ-ONLY CenterEdge MSSQL client (single-SELECT guard, range binding, driver detection)
+    reporting.php          #   Shared reporting helpers (redemption game-id set)
+    scheduler.php          #   Scheduling engine (planning, execution, enforcement, rollups, backfills, purge)
 
   public/                  # Frontend assets
-    css/style.css          #   Stylesheet (dark and light themes)
+    css/style.css          #   Stylesheet entry (modular @imports; page styles under css/pages/)
     js/
       api.js               #   HTTP client with CSRF header injection
       app.js               #   SPA router and navigation (hash-based)
       login.js             #   Login form
       dashboard.js         #   Dashboard with live group states, auto-refresh
-      groups.js            #   Pause group management UI
-      schedules.js         #   Schedule editor
-      overrides.js         #   Override management
-      logs.js              #   Action log viewer with filters
-      settings.js          #   CenterEdge API config + admin user management
+      games.js  cards.js  kiosks.js        #   Games / Card Lookup / Kiosks pages
+      groups.js  schedules.js  overrides.js #   Automation editors
+      analytics.js  performance.js  readers.js #   Analytics / Performance / Reader Groups
+      labor.js  cardloads.js  tickets.js  revenue.js #   MSSQL report pages
+      explorer.js            #   Database Explorer
+      logs.js  settings.js    #   Action log / Settings (API config + users + roles)
 
   data/                    # Runtime data (created by installer)
     pause_groups.db        #   SQLite database (+ WAL/SHM journal files)
+    backups/               #   Nightly VACUUM INTO snapshots (keep 14)
     .scheduler.lock        #   Concurrency lock file
     .heartbeat_cron        #   Cron heartbeat (ISO 8601 timestamp)
     .heartbeat_watchdog    #   Watchdog heartbeat (ISO 8601 timestamp)
@@ -232,6 +321,9 @@ pause-groups/
 
   docs/                    # Internal documentation (not user-facing)
     AUDIT.md               #   Security audit notes and findings
+    CENTEREDGE_API.md      #   CenterEdge REST API reference + which endpoints the app uses
+    MSSQL_DRIVER.md        #   Installing an MSSQL driver on the venue server
+    INCIDENT-*.md          #   Post-incident write-ups
     api-reference/         #   CenterEdge Card System API specification (OpenAPI 3.0)
 ```
 
@@ -282,10 +374,12 @@ The daily cron job (`cron.php`, recommended at 00:05) performs:
 2. **Missed-action catch-up** — executes any overdue actions from earlier.
 3. **Day planning** — merges recurring schedules with active overrides to compute all transition points for the day. Override transitions suppress conflicting schedule transitions. At each time slot, the highest-priority source wins. Past times are skipped.
 4. **At-job queueing** — queues each planned action as a Linux `at` job (or skips if `at` is unavailable).
-5. **Daily stats rollup** — aggregates the raw play feed into the permanent per-game, per-day `game_daily_stats` table (recomputing a trailing ~28-day window). This runs BEFORE the purge; if it fails, the raw-feed purge is skipped so no un-rolled-up data is ever lost.
-6. **Data purge** — removes action log entries older than 90 days, executed scheduled actions older than 30 days, expired overrides older than 90 days, and raw game-play transactions older than 30 days (long-range reporting is preserved by the rollup).
-7. **Log rotation** — rotates `cron.log` and `watchdog.log` when they exceed 500KB (keeps last 256KB).
-8. **Heartbeat** — writes an ISO 8601 timestamp to `.heartbeat_cron`.
+5. **Stats rollup** — aggregates the raw play feed into the permanent per-game, per-day `game_daily_stats` **and** per-game, per-local-hour `game_hourly_stats` tables (recomputing a trailing ~28-day window; hourly retained ~400 days). Runs BEFORE the purge; if it fails, the raw-feed purge is skipped so no un-rolled-up data is ever lost. The guest ledger (`card_activity`, new-vs-returning) is rolled up here too.
+6. **DB backup** — `VACUUM INTO` a compact snapshot in `data/backups/`, keeping the last 14.
+7. **Data purge** — removes action log entries older than 90 days, executed scheduled actions older than 30 days, expired overrides older than 90 days, and raw game-play transactions older than 30 days (long-range reporting is preserved by the rollups, which are never purged).
+8. **One-time MSSQL backfills** — if an MSSQL connection is configured, seeds the deep history once (flag-guarded): the guest ledger and per-game daily/hourly stats from the POS `PlayerCardTrans` ledger, reaching back ~2 decades. Shared runner `Scheduler::runPendingBackfills()` (also invoked by `run_backfills.php` / `update.sh`).
+9. **Log rotation** — rotates `cron.log` and `watchdog.log` when they exceed 500KB (keeps last 256KB).
+10. **Heartbeat** — writes an ISO 8601 timestamp to `.heartbeat_cron`.
 
 ### Execution Model
 
@@ -361,7 +455,7 @@ SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
 
 | Table | Purpose |
 |-------|---------|
-| `admin_users` | Admin accounts (username, bcrypt hash, display name, role: admin/manager/tech, active flag) |
+| `admin_users` | Admin accounts (username, bcrypt hash, display name, role slug, active flag). The `role` is a slug into the `roles` table (admin/manager/tech/viewer or any custom role) — not a fixed enum. |
 | `api_config` | Key-value config store (base URL, credentials, timezone, bearer token). Sensitive values stored encrypted. |
 | `pause_groups` | Named game collections with active/inactive flag |
 | `pause_group_categories` | Category memberships for groups |
@@ -375,8 +469,13 @@ SQLite with WAL journaling, foreign keys enabled, 30-second busy timeout.
 | `pause_group_kiosks` | Kiosk memberships for pause groups (paused/unpaused alongside the group's games) |
 | `login_attempts` | Login rate-limiting state by IP (failed attempt counter + lockout window). |
 | `game_play_transactions` | Rolling ~30-day cache of the CenterEdge play feed (per-play card, game, tickets, points, cash). Powers the live feed, hourly reporting, and recent-day stats. |
-| `roles` | Role definitions (slug, name, description, JSON permission list, system flag). Seeded with admin/manager/tech. |
-| `game_daily_stats` | Permanent per-game, per-day rollup (plays, tickets, cash, points, unique cards). Written nightly by cron before the purge; powers month/year reporting. |
+| `system_transactions` | ~400-day cache of the CenterEdge system-transaction feed (deferred-value events: expirations, merges), polled by the watchdog. |
+| `roles` | Role definitions (slug, name, description, JSON permission list, system flag). Seeded with admin/manager/tech + a read-only `viewer` role. |
+| `user_permission_overrides` | Per-user grant/deny overrides layered on top of the user's role (edited in Settings). |
+| `game_daily_stats` | Permanent per-game, per-day rollup (plays, tickets, cash, points, unique cards). Written nightly before the purge; powers month/year reporting. Never purged. |
+| `game_hourly_stats` | Permanent per-game, per-local-hour rollup (~400-day retention) so hour-of-day history outlives the raw feed. |
+| `card_activity` | Guest ledger — first_seen/last_seen per card (monotonic UPSERT). Powers new-vs-returning; backfilled ~2 decades from MSSQL `PlayerCardTrans`. |
+| `reader_groups` / `reader_group_games` | Analytics-only "area" groupings of games/readers (never pause anything; a game may be in many groups). |
 | `action_retries` | Pending pause/unpause retries for games/kiosks that failed transiently (e.g. in use); re-attempted by the watchdog up to a cap. |
 
 **Execution status codes** in `scheduled_actions.executed`:
@@ -456,6 +555,41 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 | `/api/overrides` | POST | Create override. If active now, executes immediately. Triggers replan. Tracks creating user. |
 | `/api/overrides/{id}` | DELETE | Delete override. If it was active, immediately enforces the correct post-deletion state. |
 
+### Card Lookup
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/cards/{number}` | GET | Card balance, time plays, privileges (named via cached lookups), and recent transactions. Gate: `cards`. |
+| `/api/cards/{number}/pin` | POST | PIN probe/validate (rate-limited 15/10min per user, audit-logged). Gate: `cards`. |
+
+### Analytics & Reporting (local play feed)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/analytics/overview` | GET | Venue KPIs, trend deltas, time-bucket series, leaderboards, automation-activity breakdown. `range`/`from`/`to`. Gate: `analytics` (dollars scrubbed without `view_revenue`). |
+| `/api/analytics/games` | GET | Per-game leaderboard over Day/Week/Month/Year/Custom (rollup + raw stitch). Powers Performance. |
+| `/api/analytics/game` | GET | Single-game drill-down (trend + hourly). |
+| `/api/analytics/reader-groups` | GET | Per-area comparison (totals, averages, busiest weekday/hour, deltas). |
+| `/api/analytics/reader-group` | GET | One area: heatmap, trend, per-game breakdown. |
+| `/api/reader-groups` | GET/POST/PUT/DELETE | Reader-group CRUD. Read gate `analytics`; write gate `reader_groups_manage`. |
+| `/api/capabilities` | GET | CenterEdge capability flags (drives kiosk controls, card-admin UI). |
+
+### MSSQL Reports (Labor / Card Loads / Ticket Trends / Revenue Mix)
+
+All four share one shape (`{resource}` ∈ `labor`, `cardloads`, `tickets`, `revenue`) and one shared, encrypted MSSQL connection configured on the Labor page.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/{resource}/data` | GET | The report payload over Day/Week/Month/Year/Custom. Gate: `analytics` + `view_revenue`. |
+| `/api/{resource}/settings` | GET/PUT | Read/save the admin-editable range SQL + connection info. Gate: `settings`. |
+| `/api/{resource}/test` | POST | Run the query for a probe range and reconcile. Gate: `data_explorer`. |
+
+### Database Explorer
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/explorer/tables`, `/table`, `/search`, `/aggregate`, `/query` | GET/POST | Read-only MSSQL browse + guarded free-form `SELECT` (single-SELECT enforced, rows capped, audit-logged). Gate: `data_explorer` (admin-only by default). |
+
 ### Users
 
 | Endpoint | Method | Description |
@@ -523,6 +657,47 @@ CenterEdge games have three `operationStatus` values:
 | `paused` | Temporarily disabled | Set by pause actions |
 | `outOfService` | Permanently offline | **Never touched** by automation (always skipped) |
 
+### MSSQL Reporting (CenterEdge SQL Server)
+
+CenterEdge exposes **no reporting API**, so the reporting pages read the venue's
+CenterEdge **MSSQL / SQL Server** database directly, READ-ONLY, through
+`lib/mssql_client.php`:
+
+- **One shared connection**, configured (and connection-tested) on the Go-Kart
+  Labor page and stored encrypted in `api_config`. Labor, Card Loads, Ticket
+  Trends, Revenue Mix, and the Database Explorer all use it.
+- **Driver:** PDO `sqlsrv` → `dblib` → ODBC (first available). The venue server
+  needs one installed (see `docs/MSSQL_DRIVER.md`); the rest of the app runs
+  without it, and the pages degrade to a "not connected" state.
+- **Read-only guard:** every query is a single `SELECT`
+  (`MssqlClient::assertReadOnly` — no `;`, no DML/DDL keywords), with
+  regex-validated `:from`/`:to`/`:date` binding. Each report ships an
+  admin-editable default range query; the Database Explorer's free-form SQL runs
+  through the same guard, caps rows, and is audit-logged.
+- **Key data sources** (all `[CenterEdge].[dbo].*`): `PlayerCardTrans` (the card
+  ledger — plays/deductions, card loads, and tickets-earned, with a real clock
+  time), `Sales` (POS sales by category/division, business-day grain), and
+  `ReaderDevices` (reader→game mapping). This venue **defers card value**, so
+  card loads are stored value in the ledger, not `Sales` rows. See `CLAUDE.md`
+  for the full schema reference.
+
+### Historical Backfills (one-time)
+
+The local rollups only start accumulating once the app is running. To get deep
+history immediately, two one-time backfills seed it from the POS ledger:
+
+- **Guest ledger** — MIN/MAX transaction time per card from `PlayerCardTrans`
+  into `card_activity`, so "new vs returning" reaches back ~2 decades.
+- **Per-game history** — plays/value/unique-cards per game/day/hour from
+  `PlayerCardTrans` (mapped `rdrkey`→game via `ReaderDevices`) into
+  `game_daily_stats` / `game_hourly_stats`, for days before the live rollup's
+  coverage.
+
+Both are **idempotent and flag-guarded**. They run automatically — `cron.php`
+(nightly) and `update.sh` (on deploy, via the `pdo_dblib` overlay image) both
+call `Scheduler::runPendingBackfills()`; `run_backfills.php` runs them on demand.
+No CLI step is required.
+
 ## Security
 
 ### Authentication & Sessions
@@ -531,7 +706,11 @@ CenterEdge games have three `operationStatus` values:
 - Session cookies: **HttpOnly**, **SameSite=Strict**, **Secure** (when HTTPS detected). Strict session mode enabled.
 - 2-hour session timeout with sliding window (activity refreshes the timer).
 - Session ID regenerated on login to prevent session fixation.
-- 1-second delay on failed login attempts (brute-force mitigation).
+- Failed logins: progressive delay + a per-IP lockout (10 tries). The client IP
+  is derived by `getClientIp()`, which trusts `X-Forwarded-For` only from a
+  loopback reverse proxy and then takes the **rightmost** (proxy-appended) hop —
+  the client-supplied leftmost entries are never trusted, so the lockout can't be
+  bypassed by rotating a spoofed IP.
 
 ### CSRF Protection
 
@@ -553,9 +732,10 @@ CenterEdge games have three `operationStatus` values:
 - All SQL queries use parameterized statements (`:p0`, `:p1`, ... positional binding).
 - Input validation on all API endpoints via the `Validator` class (type checking, length limits, format validation, enum enforcement).
 - Security headers on all responses: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
-- CLI-only guards on `cron.php`, `cron_watchdog.php`, and `run_action.php` prevent web execution.
+- CLI-only guards on `cron.php`, `cron_watchdog.php`, `run_action.php`, `run_backfills.php`, and `backfill_card_activity.php` prevent web execution.
 - Static file serving restricted to the `public/` directory with path traversal protection.
 - `install.php` web mode locks itself after the first admin user is created.
+- RBAC is server-enforced on every request (client hides what it can't use, server re-checks). Raw POS data — the Database Explorer and the MSSQL report **Test** buttons — sits behind its own `data_explorer` permission (admin-only by default), separate from the `settings` permission a technician holds for CenterEdge/timezone config, so `tech` cannot reach money/card data. All MSSQL queries are single-`SELECT` guarded (`assertReadOnly`).
 
 ### Production Deployment Checklist
 
@@ -590,7 +770,7 @@ Start a local server:
 php -S localhost:8000
 ```
 
-Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing (`#/dashboard`, `#/games`, `#/performance`, `#/cards`, `#/groups`, `#/kiosks`, `#/schedules`, `#/overrides`, `#/analytics`, `#/logs`, `#/settings`).
+Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing: `#/dashboard`, `#/games`, `#/performance`, `#/cards`, `#/groups`, `#/kiosks`, `#/schedules`, `#/overrides`, `#/analytics`, `#/readers`, `#/labor`, `#/cardloads`, `#/tickets`, `#/revenue`, `#/explorer`, `#/logs`, `#/settings`. (Each page's visibility follows the role's permissions — hidden sections are removed from the nav and their routes bounce.)
 
 The frontend is a SPA with dark and light themes (toggled via a button in the navigation bar, persisted to localStorage) using the Inter font family. All JavaScript modules are loaded as plain `<script>` tags (no bundler). The `api.js` module handles all HTTP communication and automatically injects the CSRF token header.
 

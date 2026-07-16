@@ -23,15 +23,17 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 - `lib/csrf.php` — CSRF token generation + timing-safe validation
 - `lib/crypto.php` — AES-256-CBC encrypt-then-MAC (HMAC-SHA256, backward-compatible)
 - `lib/validator.php` — Input validation (strings, ints, dates, times, enums, arrays)
+- `lib/mssql_client.php` — READ-ONLY CenterEdge MSSQL client for the reporting pages (Labor/Card Loads/Ticket Trends/Revenue Mix + the Database Explorer). Single-SELECT guard (`assertReadOnly`), regex-validated `:from`/`:to` / `:date` range binding, driver detection (pdo sqlsrv → dblib → odbc), settable timeout. Connection config lives encrypted in `api_config`
+- `lib/reporting.php` — `Reporting` class: the set of game IDs that count as "redemption" for payout math (`redemptionGameIds`, resolved from games/categories), shared across the analytics/games endpoints. NOTE: the Day/Week/Month/Year/Custom window model (`perfResolveWindow`/`perfRangeMeta`/`perfTimezone`) lives in `api/analytics.php`, which the MSSQL report handlers `require_once` and reuse
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, labor, explorer, logs, users, capabilities)
-lib/          — 7 core libraries
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, logs, settings)
-public/css/   — Dark/light theme stylesheet
-data/         — Runtime: SQLite DB, locks, heartbeats, logs (gitignored)
-docs/         — Internal docs: security audit, CenterEdge API reference (HTML + OpenAPI YAML)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, explorer, logs, users, roles, capabilities)
+lib/          — 9 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, labor, cardloads, tickets, revenue, explorer, logs, settings)
+public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
+data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
+docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
 ```
 
 ## Development Notes
@@ -187,6 +189,82 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   View gate `analytics`; create/edit/delete gate `reader_groups_manage`
   (its own catalog key — a one-time migration granted it to roles that held
   `groups_manage` when the key split).
+
+### CenterEdge MSSQL Database (schema reference)
+Everything the reporting features read lives in the venue's CenterEdge POS
+database (MSSQL, `[CenterEdge].[dbo].*`), accessed READ-ONLY through
+`lib/mssql_client.php` (single-SELECT guarded, admin-editable `:from`/`:to`
+range queries). CenterEdge exposes NO reporting API, so all aggregation is
+local. The live queries run ONLY on the venue server (the sandbox has no MSSQL
+driver). This section records what we've verified about the schema so future
+work doesn't re-discover it. **CONFIRMED** = referenced by shipped code and/or
+reconciled on the venue via the page Test buttons / Database Explorer.
+**CANDIDATE** = seen only in a schema browse (row counts approximate, columns
+NOT yet verified live) — treat as a starting point, confirm with the Explorer
+before building.
+
+- **Deferred-value model (CONFIRMED, architectural):** `ApplicationInfo.
+  DeferValuePlayerCards = 1`. Card value is STORED VALUE, not a POS sale — a
+  card load is booked to the card ledger as a liability, NOT to the `Sales`
+  table. This is why Card Loads reads the ledger (not Sales), and why per-game
+  "cash" is 0 on reader rows in Performance (deferred plays don't post cash to
+  `Sales`).
+- **`PlayerCardTrans` — the card ledger (CONFIRMED), the single most-used
+  source.** One row per card transaction; `TransDateTime` is a TRUE venue-local
+  clock time (so hour-of-day is REAL for anything sourced here). Discriminators:
+  - `TransType = 1` — plays / deductions at a reader. Carries `rdrkey` (the
+    reader) and `DollarAmount` (value spent). Powers the Go-Kart hourly money
+    panel and the per-game play-history backfill. `rdrkey` maps to a game via
+    `ReaderDevices` (name join — see `Scheduler::backfillGameStatsFromMssql`).
+  - `TransType = 3` — "add value" (a card LOAD). `DollarAmount` = real dollars
+    paid; value adds with no `DollarAmount` are comped/bonus value (estimated
+    from card value-units at ~100/$). Source for Card Loads.
+  - `ValueNo = 3` — redemption tickets EARNED. `Amount` = ticket-unit count (no
+    dollar value). Attributes to a `DivNo` (area) but **NEVER a reader/game —
+    every ValueNo-3 credit has `rdrkey` 0** (confirmed by Explorer; this is why
+    Ticket Trends is by-division and the per-game backfill leaves `tickets` 0).
+  - Also present: `CardNumber`, `EmpNo` (cashier/employee), `DivNo`. MIN/MAX
+    `TransDateTime` per card seeds the guest "new vs returning" ledger
+    (`Scheduler::backfillCardActivityFromMssql`), reaching back ~2 decades.
+- **`Sales` — POS sales lines (CONFIRMED).** `ShiftDate` is a business DAY
+  stamped at MIDNIGHT (not a clock time), so Sales-sourced reports are honest at
+  day grain only — no real hour-of-day (that's why Revenue Mix / the go-kart
+  cash figure have no heatmap). Columns in use: `AmtSold` (dollars), `QtySold`,
+  `Discounts`, `CostSold`, `NumberTickets`, `CatNo` (category/area),
+  `SubCatNo`, `DivNo`. Confirmed codes on this install: **`CatNo 108` = Go
+  Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
+  cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
+  aggregated daily dollars spent at the kart readers — the go-kart sales figure
+  on the Labor page). Category/division NAMES are discovered live via
+  `INFORMATION_SCHEMA` (a `%Cat%`/`%Div%` table with an int No column + a text
+  Name column), because the lookup table's name varies by install.
+- **`ReaderDevices` (CONFIRMED):** maps `rdrkey` → reader/game by name. The join
+  used to attribute `PlayerCardTrans` TransType-1 plays and the reader feed to
+  games (`normReaderName` in the scheduler backfill).
+- **Ticket attribution gotcha (CONFIRMED):** tickets exist ONLY at the division
+  grain. We checked exhaustively — there is no per-game ticket source anywhere
+  in the DB (every ticket credit's `rdrkey` is 0).
+
+- **CANDIDATE tables — high-value sources for reports not yet built** (row
+  counts from a one-time schema browse; confirm columns via the Explorer first):
+  - `EmbedBalance` (~563K) — current stored-value balances per card
+    (`Card_Barcode`, `Cash_Balance`, `Bonus_Balance`, `ETickets`). Aged by
+    last-activity → outstanding liability + breakage. (Snapshot, not a range.)
+  - `RedeemReceipts` (~609K, `TotalTickets`, `RedeemDateTime` = real clock) +
+    `RedeemRecItems` (~1.38M, per-prize line items) — tickets REDEEMED, prize
+    COGS/margin, redemption %. Pairs with Ticket Trends (tickets earned).
+  - `CreditCardTrans` (~1.2M, `TransDateTime` real clock, `Amount`,
+    `ShortAcctNumber`, `CardType`) — real card-tender dollars + brand mix.
+  - `GroupSales` (~105K) / `GroupBirthdays` (~24K) / `GroupArrivals` (~32K) —
+    parties/birthdays revenue + forward booking pipeline.
+  - `Customers` (~131K) / `CustPasses` (~70K) / `CustVisits` (~173K) /
+    `CustSales` (~545K) — the durable NAMED-customer dimension (membership /
+    season-pass / RFM) the card-number Guest Insights can't reach.
+  - `CashierSales` (~3.2M) / `PlayerCardTrans.EmpNo` — per-employee productivity.
+  - `ReaderSales` (~20.9M, `rdrKey`, `ShiftDate` real clock, `DivNo`,
+    `SaleAmount`) — an alternate per-game revenue source (vs PlayerCardTrans
+    TransType-1); `TimeSales` (~6.6M) timed-attraction sales; `SubCatSales`
+    (~1.4M) F&B sub-category drill-down; `TicketTrans` (~17K) printed vouchers.
 
 ### API Pattern
 - API handlers are loaded via `require_once` from `index.php` which pre-loads `db.php`, `auth.php`, `csrf.php`, `crypto.php`
