@@ -1,9 +1,22 @@
-# Installing the MSSQL PHP driver (Go-Kart Labor report)
+# Installing the MSSQL PHP driver (reporting stack)
 
-The Go-Kart Labor page queries the CenterEdge MSSQL database directly, which
-needs one PHP extension the stock runtime doesn't ship: `pdo_dblib`
-(FreeTDS), `pdo_sqlsrv` (Microsoft), or `pdo_odbc`. The page's **Test
-connection** button tells you whether one is present.
+The MSSQL reporting features query the CenterEdge SQL Server database directly
+through `lib/mssql_client.php`, which needs one PHP extension the stock runtime
+doesn't ship: `pdo_dblib` (FreeTDS), `pdo_sqlsrv` (Microsoft), or `pdo_odbc`.
+
+**Everything that needs the driver** (all share one connection, configured on
+the Go-Kart Labor page):
+
+- **Go-Kart Labor** — sales vs wages.
+- **Card Loads** — money added to cards.
+- **Ticket Trends** — tickets earned by division.
+- **Revenue Mix** — sales by category.
+- **Database Explorer** — read-only MSSQL browse + guarded free-form SELECT.
+- **One-time historical backfills** — guest ledger + per-game play history
+  (`run_backfills.php` / `cron.php` / `update.sh`).
+
+Any report page's **Test connection / Test** button tells you whether a driver
+is present.
 
 ## This repo's FCOS install (setup-fcos.sh) — automatic
 
@@ -28,8 +41,10 @@ During step 4 the script now:
 4. points the `pause-groups-fpm` service at the overlay image.
 
 If the overlay build fails (typically: no route to the Debian package
-mirrors), the script says so and falls back to the stock image — everything
-except the Go-Kart Labor report keeps working. Fix the issue and re-run.
+mirrors), the script says so and falls back to the stock image — the whole
+app keeps working EXCEPT the MSSQL stack (Labor, Card Loads, Ticket Trends,
+Revenue Mix, Database Explorer, and the historical backfills). Fix the issue
+and re-run.
 
 Verify after the restart:
 
@@ -100,5 +115,13 @@ RUN set -eux; \
 Everything else happens on the Go-Kart Labor page as an admin: enter the
 server/database/username/password (stored encrypted), add your go-kart
 department filters to the two pre-filled queries, **Test connection**, done.
-Use a read-only SQL login if possible — the app refuses to run anything but
-a single SELECT, but least-privilege is cheaper than trust.
+That one connection is then shared by all the MSSQL pages (Card Loads, Ticket
+Trends, Revenue Mix, Database Explorer) — configure it once here.
+
+Use a read-only SQL login if possible — the app refuses to run anything but a
+single SELECT, but least-privilege is cheaper than trust.
+
+Note: the **Test** buttons (and the Database Explorer) run live queries that
+return dollar/card figures, so they are gated by the `data_explorer`
+permission — held by admins by default, and NOT by the `tech` role. Saving a
+report's query and configuring the connection stay under `settings`.

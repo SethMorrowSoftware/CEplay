@@ -46,9 +46,13 @@ Latest beta sweep updates:
 
 2. ~~**No explicit brute-force throttling strategy for login endpoint beyond fixed sleep(1).**~~ **RESOLVED.**
    - Login now uses progressive delays: 1s (attempts 3-5), 3s (attempts 6-8), 5s (attempts 9-10), then full lockout (10+ attempts within 15-minute window). `Retry-After` header included in 429 responses.
+   - **Follow-up (spoofable-source-IP bypass) — RESOLVED.** The rate-limiter/lockout keys off `getClientIp()` (`api/auth.php`). It previously trusted the *leftmost* `X-Forwarded-For` value behind the loopback reverse proxy, which is client-supplied (nginx's `proxy_add_x_forwarded_for` appends the real peer on the right) — so an attacker rotating a fake IP per request never tripped the lockout, and the audit IP was spoofable. `getClientIp()` now takes the **rightmost** (proxy-attested) hop and only trusts XFF when `REMOTE_ADDR` is loopback, closing the bypass.
 
 3. ~~**No enforced deployment guardrails for install endpoint.**~~ **RESOLVED.**
    - `install.php` web mode now returns 403 immediately when any admin user exists (before rendering any HTML). Health endpoint and dashboard display warnings when `install.php` or `fresh_install.php` remain on disk.
+
+4. ~~**Technician role could reach POS money/card data via the settings surface.**~~ **RESOLVED.**
+   - The `tech` role holds `settings` (for CenterEdge credentials + timezone), which also unlocked the Database Explorer (arbitrary POS `SELECT`s) and the MSSQL report **Test** buttons (dollar figures) — contradicting the role's "no payment figures, card lookup." A dedicated `data_explorer` permission (`lib/auth.php` `PERMISSIONS`) now gates the Database Explorer (`api/explorer.php`) and all four report Test endpoints (`api/{labor,cardloads,tickets,revenue}.php`), admin-only by default. The report *config* (save-query) endpoints stay on `settings`, so `tech` keeps its legitimate config access but can no longer read POS money/card data.
 
 ### Medium Priority
 
