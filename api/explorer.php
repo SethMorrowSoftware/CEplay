@@ -28,7 +28,10 @@ const EXPLORER_SAMPLE_ROWS = 25;
 const EXPLORER_CELL_CHARS = 160;
 
 function handleExplorer(string $method, array $parts, ?array $input): void {
-    Auth::requireAccess('settings');
+    // Raw POS-database access (schema + rows, incl. dollar/card figures) —
+    // gated on data_explorer, not general settings, so a technician who holds
+    // settings for CenterEdge/timezone config cannot reach the POS data here.
+    Auth::requireAccess('data_explorer');
     $action = $parts[0] ?? '';
 
     switch ($action) {

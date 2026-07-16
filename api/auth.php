@@ -91,14 +91,29 @@ function handleAuth(string $method, array $parts, ?array $input): void {
 }
 
 /**
- * Get the real client IP, respecting X-Forwarded-For behind trusted proxies.
+ * Get the real client IP, respecting X-Forwarded-For behind a local proxy.
+ *
+ * Security: the login rate-limiter and progressive delay key off this value, so
+ * it MUST NOT be client-forgeable. We trust X-Forwarded-For only when the
+ * request actually arrived from a loopback reverse proxy (REMOTE_ADDR is
+ * 127.0.0.1/::1), and even then we take the RIGHTMOST entry — the hop the proxy
+ * itself appended. The documented deployment runs nginx/Caddy on the same host
+ * with the default `proxy_add_x_forwarded_for`, which APPENDS the real TCP peer
+ * to the right of whatever the client sent. The leftmost entries are therefore
+ * attacker-supplied: trusting them let a client rotate a fresh fake IP on every
+ * request, so the 10-try lockout never tripped and staff passwords could be
+ * brute-forced (and the audit IP was spoofable). The rightmost entry is the
+ * peer the proxy observed and cannot be forged by the client.
  */
 function getClientIp(): string {
-    // Trust X-Forwarded-For only when behind a local reverse proxy
     if (isset($_SERVER['HTTP_X_FORWARDED_FOR']) && in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
-        // Take the leftmost (original client) IP
-        $ips = array_map('trim', explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']));
-        return $ips[0] ?: ($_SERVER['REMOTE_ADDR'] ?? '');
+        $ips = array_values(array_filter(
+            array_map('trim', explode(',', (string)$_SERVER['HTTP_X_FORWARDED_FOR'])),
+            function ($v) { return $v !== ''; }
+        ));
+        if ($ips) {
+            return end($ips); // rightmost = proxy-attested peer, not client-controlled
+        }
     }
     return $_SERVER['REMOTE_ADDR'] ?? '';
 }
