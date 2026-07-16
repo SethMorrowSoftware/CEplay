@@ -18,10 +18,14 @@
  * change in outstanding ticket liability.
  *
  * Data model (confirmed live from the venue's Explorer, July 2026):
- *   RedeemReceipts — one row per receipt line. RecType 3 is the redemption
- *     record (carries TotalTickets and a real RecTime clock); RecType 1 is a
- *     header with 0 tickets. RecTime is present and reliable on every row
- *     (RedeemDateTime is sometimes null/anomalous), so it drives day + hour.
+ *   RedeemReceipts — one row per redemption. `RecType` marks the redemption
+ *     record, but the value DEPENDS ON THE CARD SYSTEM: the current CenterEdge/
+ *     Kiosoft readers (live since ~end of April 2026) use `RecType = 1`
+ *     (verified: July rows at the redemption counter carry TotalTickets); the
+ *     legacy Embed system used `RecType = 3`. The default below filters
+ *     `RecType = 1 AND TotalTickets > 0`. `TotalTickets` = tickets spent;
+ *     `RecTime` is a real clock time on every row (`RedeemDateTime` is sometimes
+ *     null/anomalous), so it drives day + hour.
  *   RedeemRecItems — per-prize line items (InvNo = prize SKU, NumberTickets =
  *     ticket cost, Qty). There is NO cost/COGS column and no prize name here,
  *     so this yields prize MIX (tickets/qty), not margin — a prize-cost source
@@ -40,15 +44,17 @@ require_once __DIR__ . '/analytics.php';
 // redemption-rate denominator.
 require_once __DIR__ . '/tickets.php';
 
-// Per (local day, local hour) redeemed tickets + receipt count. RecType 3 =
-// the redemption record; RecTime is the true clock time (the hour-of-day and
-// weekday×hour views are real, not estimated).
-const REDEMPTION_DEFAULT_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), RecTime, 120) AS day,\n       DATEPART(HOUR, RecTime) AS hour,\n       SUM(TotalTickets) AS tickets,\n       COUNT(*) AS receipts\nFROM [CenterEdge].[dbo].[RedeemReceipts]\nWHERE RecType = 3  /* redemption record: tickets spent for prizes */\n  AND RecTime >= :from\n  AND RecTime < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), RecTime, 120), DATEPART(HOUR, RecTime)";
+// Per (local day, local hour) redeemed tickets + receipt count. RecType 1 is
+// the redemption record on the current CenterEdge/Kiosoft system (the legacy
+// Embed system used RecType 3 — adjust here if querying pre-cutover data);
+// TotalTickets > 0 skips void/header rows. RecTime is the true clock time (the
+// hour-of-day and weekday×hour views are real, not estimated).
+const REDEMPTION_DEFAULT_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), RecTime, 120) AS day,\n       DATEPART(HOUR, RecTime) AS hour,\n       SUM(TotalTickets) AS tickets,\n       COUNT(*) AS receipts\nFROM [CenterEdge].[dbo].[RedeemReceipts]\nWHERE RecType = 1  /* CenterEdge/Kiosoft redemption record (legacy Embed used RecType 3) */\n  AND TotalTickets > 0\n  AND RecTime >= :from\n  AND RecTime < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), RecTime, 120), DATEPART(HOUR, RecTime)";
 
 // Per prize (InvNo): total ticket cost and quantity. Joined to RedeemReceipts
 // for the date filter. NumberTickets is the line's ticket price; line cost =
 // NumberTickets × Qty (Test reconciles this against the receipt header total).
-const REDEMPTION_DEFAULT_ITEMS_SQL = "SELECT i.InvNo AS inv,\n       SUM(i.NumberTickets * i.Qty) AS tickets,\n       SUM(i.Qty) AS qty\nFROM [CenterEdge].[dbo].[RedeemRecItems] i\nJOIN [CenterEdge].[dbo].[RedeemReceipts] r ON r.RecNo = i.RecNo\nWHERE r.RecType = 3\n  AND r.RecTime >= :from\n  AND r.RecTime < DATEADD(DAY, 1, :to)\nGROUP BY i.InvNo";
+const REDEMPTION_DEFAULT_ITEMS_SQL = "SELECT i.InvNo AS inv,\n       SUM(i.NumberTickets * i.Qty) AS tickets,\n       SUM(i.Qty) AS qty\nFROM [CenterEdge].[dbo].[RedeemRecItems] i\nJOIN [CenterEdge].[dbo].[RedeemReceipts] r ON r.RecNo = i.RecNo\nWHERE r.RecType = 1\n  AND r.RecTime >= :from\n  AND r.RecTime < DATEADD(DAY, 1, :to)\nGROUP BY i.InvNo";
 
 function handleRedemption(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
@@ -255,8 +261,9 @@ function redemptionTest(?array $input = null): void {
         $probe('server',   'SELECT @@SERVERNAME');
         $probe('database', 'SELECT DB_NAME()');
         $probe('redeemreceipts_latest', 'SELECT CONVERT(VARCHAR(19), MAX(RecTime), 120) FROM [CenterEdge].[dbo].[RedeemReceipts]');
-        // RecType breakdown for the probe day, so "RecType 3 = redemption" stays
-        // verifiable and any other ticket-bearing type can be spotted.
+        // RecType breakdown for the probe day, so the redemption RecType stays
+        // verifiable (RecType 1 on CenterEdge/Kiosoft; RecType 3 on legacy
+        // Embed) and any other ticket-bearing type can be spotted.
         try {
             $rows = $client->rows(MssqlClient::bindDate(
                 "SELECT RecType, COUNT(*) AS lines, SUM(TotalTickets) AS tickets"
