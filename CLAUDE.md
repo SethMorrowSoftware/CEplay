@@ -139,6 +139,26 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   name is a best-effort INFORMATION_SCHEMA lookup (like Labor). Shares the Labor
   page's MSSQL connection; gold `--tickets` theme. View gate: analytics +
   view_revenue; config gate: settings. Venue server only (no sandbox driver).
+- Revenue Mix (`#/revenue`, `/api/revenue/*`, `api/revenue.php`) is the
+  P&L-lite roll-up the app was missing: sales dollars by CATEGORY (CatNo /
+  area) over Day/Week/Month/Year/Custom (same `perfResolveWindow` model), with
+  a revenue-by-day trend + a per-category breakdown (revenue, mix share,
+  discount rate, units) + prior-period delta. It frames every other money
+  report — attractions vs food vs groups vs card fees, and the mix shift over
+  time. Grain is DAY, not hour: `Sales.ShiftDate` is a business day at midnight
+  (no real clock time), so there is no hour-of-day/heatmap here (same honesty as
+  Ticket Trends). Source: MSSQL `Sales` — `SUM(AmtSold)` (dollars),
+  `SUM(Discounts)`, `SUM(QtySold)` grouped by `CatNo` (all confirmed columns —
+  the Labor diagnostics sum them live). Discount rate = discount dollars ÷ gross
+  (revenue + discounts), flagged when >10%. One admin-editable range query
+  (`revenue_range_sql`, required `:from`/`:to`, single-SELECT guarded via
+  `MssqlClient::assertReadOnly`) returns per-(day, CatNo) buckets; PHP rolls up
+  the trend + breakdown in `revenueCompose` (pure/testable). CatNo→name is a
+  best-effort INFORMATION_SCHEMA lookup (like Labor/Tickets). Shares the Labor
+  page's MSSQL connection; money-green `--revenue` theme. View gate: analytics +
+  view_revenue; config gate: settings. The Test button reconciles a probe day
+  and dumps that day's revenue-by-category breakdown. Venue server only (no
+  sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column

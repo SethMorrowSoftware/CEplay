@@ -1,0 +1,45 @@
+/* ============================================
+   Revenue Mix page
+   ============================================
+   Sales dollars by category (area/department), by day/week/month/year.
+
+   The page reuses the Go-Kart Labor / Ticket Trends primitives for its bars
+   and admin query editor (.labor-hour-*, .labor-bar-*, .labor-sql,
+   .labor-diagnostics, .labor-admin-details) and the shared .insight-* /
+   .perf-* controls — so this file only styles what is unique to it: the
+   money-green fill for the trend + breakdown bars, the amount colour, and the
+   elevated-discount flag. Theme-aware via design tokens.
+   ============================================ */
+
+:root {
+    --revenue: #2fae7a;          /* Money green for revenue */
+}
+:root[data-theme="light"] {
+    --revenue: #1f8f61;          /* Deeper green for contrast on light */
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --revenue: #1f8f61; }
+}
+
+.revenue-amount {
+    color: var(--revenue);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Elevated discount rate (>10% of gross) — flag it in the warning colour. */
+.revenue-discount-hot {
+    color: var(--warning);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Green fill for the by-day and by-category bars, riding the shared
+   .labor-hour-track / .labor-bar-track rails (Ticket Trends / Card Loads
+   pattern). */
+.revenue-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--revenue) 0%, color-mix(in srgb, var(--revenue) 70%, var(--accent)) 100%);
+    transition: width 0.3s ease;
+}
