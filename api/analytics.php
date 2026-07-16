@@ -1753,28 +1753,43 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
     $rawBefore = (new DateTime($rawCoverStart))->modify('-1 day')->format('Y-m-d');
 
     $rows = [];
+    $memberIds = array_keys($memberSet);
 
     $rollupTo = ($toDate < $rawBefore) ? $toDate : $rawBefore;
     if ($fromDate <= $rollupTo) {
-        foreach (DB::query(
-            'SELECT stat_date, hour, game_id, plays, tickets, cash, time_plays
-             FROM game_hourly_stats
-             WHERE stat_date >= :p0 AND stat_date <= :p1',
-            [$fromDate, $rollupTo]
-        ) as $r) {
-            $gid = (string)$r['game_id'];
-            if (!isset($memberSet[$gid])) continue;
-            $plays = (int)$r['plays'];
-            $timePlays = (int)$r['time_plays'];
-            $rows[] = [
-                'date'       => (string)$r['stat_date'],
-                'hour'       => (int)$r['hour'],
-                'game_id'    => $gid,
-                'plays'      => $excludeTimePlays ? max(0, $plays - $timePlays) : $plays,
-                'tickets'    => (float)$r['tickets'],
-                'cash'       => (float)$r['cash'],
-                'time_plays' => $timePlays,
-            ];
+        // Filter to member games IN SQL (chunked IN-lists) rather than loading
+        // the whole venue's hourly rows and discarding non-members in PHP.
+        // game_hourly_stats is retained ~400 days, so a Year view over every
+        // game would materialize on the order of 10^6 rows here and exhaust
+        // memory — the same failure mode as the guest-insights read above.
+        // idx_ghs_game_date makes each chunk a game_id seek + date range-scan.
+        foreach (array_chunk($memberIds, 400) as $chunk) {
+            $ph = [];
+            $params = [];
+            foreach ($chunk as $i => $gid) { $ph[] = ':p' . $i; $params[] = (string)$gid; }
+            $n = count($chunk);
+            $params[] = $fromDate;
+            $params[] = $rollupTo;
+            foreach (DB::query(
+                'SELECT stat_date, hour, game_id, plays, tickets, cash, time_plays
+                 FROM game_hourly_stats
+                 WHERE game_id IN (' . implode(',', $ph) . ')
+                   AND stat_date >= :p' . $n . ' AND stat_date <= :p' . ($n + 1),
+                $params
+            ) as $r) {
+                $gid = (string)$r['game_id'];
+                $plays = (int)$r['plays'];
+                $timePlays = (int)$r['time_plays'];
+                $rows[] = [
+                    'date'       => (string)$r['stat_date'],
+                    'hour'       => (int)$r['hour'],
+                    'game_id'    => $gid,
+                    'plays'      => $excludeTimePlays ? max(0, $plays - $timePlays) : $plays,
+                    'tickets'    => (float)$r['tickets'],
+                    'cash'       => (float)$r['cash'],
+                    'time_plays' => $timePlays,
+                ];
+            }
         }
     }
 
@@ -1789,38 +1804,47 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
         $hi = (clone $endExcl)->setTimezone($utc)->modify('+1 day')->format('Y-m-d\TH:i:s\Z');
 
         $agg = [];
-        foreach (DB::query(
-            'SELECT transaction_time, game_id, redemption_tickets,
-                    (cash_amount + credit_card_amount) AS cash_amount, used_time_play
-             FROM game_play_transactions
-             WHERE transaction_time >= :p0 AND transaction_time < :p1',
-            [$lo, $hi]
-        ) as $r) {
-            $gid = (string)($r['game_id'] ?? '');
-            if ($gid === '' || !isset($memberSet[$gid])) continue;
-            $tt = $r['transaction_time'] ?? '';
-            if ($tt === '') continue;
-            try {
-                $d = new DateTime($tt);
-            } catch (Exception $e) {
-                continue;
+        foreach (array_chunk($memberIds, 400) as $chunk) {
+            $ph = [];
+            $params = [];
+            foreach ($chunk as $i => $gid) { $ph[] = ':p' . $i; $params[] = (string)$gid; }
+            $n = count($chunk);
+            $params[] = $lo;
+            $params[] = $hi;
+            foreach (DB::query(
+                'SELECT transaction_time, game_id, redemption_tickets,
+                        (cash_amount + credit_card_amount) AS cash_amount, used_time_play
+                 FROM game_play_transactions
+                 WHERE game_id IN (' . implode(',', $ph) . ')
+                   AND transaction_time >= :p' . $n . ' AND transaction_time < :p' . ($n + 1),
+                $params
+            ) as $r) {
+                $gid = (string)($r['game_id'] ?? '');
+                if ($gid === '') continue;
+                $tt = $r['transaction_time'] ?? '';
+                if ($tt === '') continue;
+                try {
+                    $d = new DateTime($tt);
+                } catch (Exception $e) {
+                    continue;
+                }
+                $d->setTimezone($tz);
+                $date = $d->format('Y-m-d');
+                if ($date < $rawFrom || $date > $toDate) continue;
+                $hour = (int)$d->format('G');
+                $k = $date . "\0" . $hour . "\0" . $gid;
+                if (!isset($agg[$k])) {
+                    $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
+                                'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
+                }
+                $isTimePlay = ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+                if (!($excludeTimePlays && $isTimePlay)) {
+                    $agg[$k]['plays'] += 1;
+                }
+                $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
+                $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
+                $agg[$k]['time_plays'] += $isTimePlay;
             }
-            $d->setTimezone($tz);
-            $date = $d->format('Y-m-d');
-            if ($date < $rawFrom || $date > $toDate) continue;
-            $hour = (int)$d->format('G');
-            $k = $date . "\0" . $hour . "\0" . $gid;
-            if (!isset($agg[$k])) {
-                $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
-                            'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
-            }
-            $isTimePlay = ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
-            if (!($excludeTimePlays && $isTimePlay)) {
-                $agg[$k]['plays'] += 1;
-            }
-            $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
-            $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
-            $agg[$k]['time_plays'] += $isTimePlay;
         }
         foreach ($agg as $a) $rows[] = $a;
     }

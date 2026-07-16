@@ -279,6 +279,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/tickets.php';
                 handleTickets($method, $parts, $input);
                 break;
+            case 'revenue':
+                require_once __DIR__ . '/api/revenue.php';
+                handleRevenue($method, $parts, $input);
+                break;
             case 'explorer':
                 require_once __DIR__ . '/api/explorer.php';
                 handleExplorer($method, $parts, $input);
@@ -523,6 +527,7 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= assetUrl($basePath, '/public/js/labor.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/cardloads.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/tickets.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/revenue.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/explorer.js') ?>"></script>
 </body>
 </html>

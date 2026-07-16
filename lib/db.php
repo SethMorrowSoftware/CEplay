@@ -230,24 +230,32 @@ class DB {
         // resurrecting bad queries. This overwrites the stored pair exactly
         // once so a plain update.sh makes the page correct with no UI steps;
         // admin edits AFTER this migration are respected forever.
+        // NOTE: v1-v7 below seed/repair the LEGACY config keys `labor_sales_sql`
+        // / `labor_labor_sql`, which the live Labor page no longer reads
+        // (laborQueries() uses `labor_sales_range_sql` / `labor_labor_range_sql`).
+        // They are kept only for historical idempotence on the venue install.
+        // The default values come from LABOR_DEFAULT_*_RANGE_SQL in api/labor.php;
+        // referencing a non-existent constant here throws an Error (not an
+        // Exception) on PHP 8, so every block catches Throwable to keep a config
+        // slip from ever bricking initSchema().
         try {
             $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v1'");
             if (!$flag) {
                 require_once __DIR__ . '/../api/labor.php';
                 self::execute(
                     "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                    [LABOR_DEFAULT_SALES_SQL]
+                    [LABOR_DEFAULT_SALES_RANGE_SQL]
                 );
                 self::execute(
                     "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_labor_sql', :p0, 0)",
-                    [LABOR_DEFAULT_LABOR_SQL]
+                    [LABOR_DEFAULT_LABOR_RANGE_SQL]
                 );
                 self::execute(
                     "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v1', :p0, 0)",
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query migration skipped: ' . $e->getMessage());
         }
 
@@ -265,7 +273,7 @@ class DB {
                 if ($stored && trim((string)$stored['value']) === trim($v1Sales)) {
                     self::execute(
                         "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                        [LABOR_DEFAULT_SALES_SQL]
+                        [LABOR_DEFAULT_SALES_RANGE_SQL]
                     );
                 }
                 self::execute(
@@ -273,7 +281,7 @@ class DB {
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v2 migration skipped: ' . $e->getMessage());
         }
 
@@ -295,7 +303,7 @@ class DB {
                 if ($stored && in_array(trim((string)$stored['value']), array_map('trim', $shipped108), true)) {
                     self::execute(
                         "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                        [LABOR_DEFAULT_SALES_SQL]
+                        [LABOR_DEFAULT_SALES_RANGE_SQL]
                     );
                 }
                 self::execute(
@@ -303,7 +311,7 @@ class DB {
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v3 migration skipped: ' . $e->getMessage());
         }
 
@@ -323,7 +331,7 @@ class DB {
                 if ($stored && trim((string)$stored['value']) === trim($v3Sales)) {
                     self::execute(
                         "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                        [LABOR_DEFAULT_SALES_SQL]
+                        [LABOR_DEFAULT_SALES_RANGE_SQL]
                     );
                 }
                 self::execute(
@@ -331,7 +339,7 @@ class DB {
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v4 migration skipped: ' . $e->getMessage());
         }
 
@@ -350,7 +358,7 @@ class DB {
                 if ($stored && trim((string)$stored['value']) === trim($v4Sales)) {
                     self::execute(
                         "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                        [LABOR_DEFAULT_SALES_SQL]
+                        [LABOR_DEFAULT_SALES_RANGE_SQL]
                     );
                 }
                 self::execute(
@@ -358,7 +366,7 @@ class DB {
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v5 migration skipped: ' . $e->getMessage());
         }
 
@@ -378,7 +386,7 @@ class DB {
                 if ($stored && trim((string)$stored['value']) === trim($v5Sales)) {
                     self::execute(
                         "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                        [LABOR_DEFAULT_SALES_SQL]
+                        [LABOR_DEFAULT_SALES_RANGE_SQL]
                     );
                 }
                 self::execute(
@@ -386,7 +394,7 @@ class DB {
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v6 migration skipped: ' . $e->getMessage());
         }
 
@@ -407,14 +415,14 @@ class DB {
                 require_once __DIR__ . '/../api/labor.php';
                 self::execute(
                     "INSERT OR REPLACE INTO api_config (key, value, encrypted) VALUES ('labor_sales_sql', :p0, 0)",
-                    [LABOR_DEFAULT_SALES_SQL]
+                    [LABOR_DEFAULT_SALES_RANGE_SQL]
                 );
                 self::execute(
                     "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_karting_v7', :p0, 0)",
                     [gmdate('c')]
                 );
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('labor query v7 migration skipped: ' . $e->getMessage());
         }
 
@@ -836,6 +844,11 @@ class DB {
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_date ON game_hourly_stats(stat_date)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_game ON game_hourly_stats(game_id)');
+        // Composite for readerHourlyRows(): filters a small set of member
+        // game_ids over a date range (a Year covers the full ~400-day rollup),
+        // so seek by game_id then range-scan stat_date instead of scanning the
+        // whole venue's hourly rows and discarding non-members in PHP.
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_game_date ON game_hourly_stats(game_id, stat_date)');
 
         // Reader groups: operator-defined groupings of games/readers used
         // ONLY for analytics (staffing heatmaps, per-area play averages).
