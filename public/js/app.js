@@ -69,7 +69,7 @@ const App = {
         'view_kiosks', 'view_schedules', 'view_overrides',
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'reader_groups_manage',
-        'schedules_manage', 'settings', 'users', 'view_logs'
+        'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'
     ],
 
     /**
@@ -79,7 +79,7 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'settings', 'users', 'view_logs'],
+        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
         manager: ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs'],
         tech:    ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
     },
@@ -106,7 +106,7 @@ const App = {
         '#/overrides':   'view_overrides',
         '#/analytics':   'analytics',
         '#/logs':        'view_logs',
-        '#/explorer':    'settings',
+        '#/explorer':    'data_explorer',
         '#/settings':    'settings'
     },
 

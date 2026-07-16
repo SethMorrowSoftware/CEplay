@@ -334,7 +334,10 @@ function laborPutSettings(array $input): void {
 }
 
 function laborTest(?array $input = null): void {
-    Auth::requireAccess('settings');
+    // Runs the live MSSQL queries and returns wage/dollar figures + a
+    // division-dollar fingerprint — gate on data_explorer (raw POS data),
+    // not settings.
+    Auth::requireAccess('data_explorer');
     $client = new MssqlClient();
     $tz = new DateTimeZone(DB::getConfig('timezone') ?: DEFAULT_TIMEZONE);
     $today = (new DateTime('now', $tz))->format('Y-m-d');

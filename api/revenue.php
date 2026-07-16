@@ -170,7 +170,9 @@ function revenuePutSettings(array $input): void {
 }
 
 function revenueTest(?array $input = null): void {
-    Auth::requireAccess('settings');
+    // Runs the live MSSQL query and returns dollar figures — gate on
+    // data_explorer (raw POS data), not settings.
+    Auth::requireAccess('data_explorer');
     $client = new MssqlClient();
     $tz = new DateTimeZone(DB::getConfig('timezone') ?: DEFAULT_TIMEZONE);
     $probeDate = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');

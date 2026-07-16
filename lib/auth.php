@@ -52,6 +52,7 @@ class Auth {
         'reader_groups_manage' => 'Create, edit, and delete reader groups (the analytics areas)',
         'schedules_manage' => 'Create, edit, and delete recurring schedules',
         'settings'         => 'System settings: CenterEdge API credentials, timezone',
+        'data_explorer'    => 'Database Explorer + MSSQL report Test buttons (raw POS data, incl. dollar & card figures)',
         'users'            => 'Manage user accounts (admin accounts always excluded)',
         'view_logs'        => 'View the Action Log / audit trail (card numbers, logins, IP addresses)',
     ];

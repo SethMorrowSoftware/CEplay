@@ -19,7 +19,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 - `lib/scheduler.php` — Core scheduling engine (plan, execute, enforce, resolve conflicts)
 - `lib/centeredge_client.php` — CenterEdge API client (auth, games, kiosks, capabilities, pagination, retry)
 - `lib/db.php` — SQLite singleton, schema init, query helpers (`:p0` positional params)
-- `lib/auth.php` — Session management (bcrypt, HttpOnly, SameSite, 2h timeout, rate limiting)
+- `lib/auth.php` — Session management (bcrypt, HttpOnly, SameSite, 2h timeout, rate limiting). Login rate-limit/audit key off `getClientIp()` (`api/auth.php`), which trusts `X-Forwarded-For` only from a loopback reverse proxy and then takes the RIGHTMOST (proxy-appended) hop — the client-supplied leftmost entries are never trusted, so the lockout can't be bypassed by rotating a spoofed IP.
 - `lib/csrf.php` — CSRF token generation + timing-safe validation
 - `lib/crypto.php` — AES-256-CBC encrypt-then-MAC (HMAC-SHA256, backward-compatible)
 - `lib/validator.php` — Input validation (strings, ints, dates, times, enums, arrays)
@@ -164,7 +164,11 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
   for finding where metrics live: table browser (columns/types, date-column
   freshness MIN→MAX, sample rows), "Find a metric" grouped totals over a
   date range (the generalized DivNo-808 probe), and a free-form guarded
-  SELECT with CSV export. Gate: settings (admin). Builder identifiers are
+  SELECT with CSV export. Gate: `data_explorer` (admin-only by default — a
+  dedicated permission separate from `settings`, so a technician who holds
+  `settings` for CenterEdge/timezone config cannot reach raw POS data here; the
+  same key also gates the MSSQL report Test buttons on Labor/Card Loads/Ticket
+  Trends/Revenue Mix). Builder identifiers are
   validated against INFORMATION_SCHEMA then bracket-quoted; free SQL goes
   through MssqlClient::assertReadOnly; rows are capped (500) and cells
   clamped; aggregate/query runs are audit-logged to action_log. Row counts
@@ -220,8 +224,9 @@ docs/         — Internal docs: security audit, CenterEdge API reference (HTML 
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 17 keys incl.
-  view_revenue, manual_control, reader_groups_manage). A read-only "Viewer"
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 18 keys incl.
+  view_revenue, manual_control, reader_groups_manage, data_explorer). A
+  read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.
   Mutation buttons are also hidden client-side for roles lacking the
