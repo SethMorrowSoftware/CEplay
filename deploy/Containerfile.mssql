@@ -38,3 +38,20 @@ RUN set -eux; \
     fi; \
     docker-php-ext-install pdo_dblib; \
     php -m | grep -i pdo_dblib
+
+# Raise the PHP-FPM worker pool. The stock php:fpm image ships
+# pm.max_children = 5, which a handful of slow MSSQL report queries can
+# saturate — once all five workers are blocked, the whole app stops answering
+# (even the SQLite-only core pages). This box has RAM to spare; give it real
+# headroom and recycle workers periodically. A zz-*.conf drop-in loads last, so
+# its [www] settings override the image default. Baked into the image, so it
+# survives FCOS OS rebuilds (the saved image tar is reloaded intact).
+RUN { \
+        echo '[www]'; \
+        echo 'pm = dynamic'; \
+        echo 'pm.max_children = 24'; \
+        echo 'pm.start_servers = 4'; \
+        echo 'pm.min_spare_servers = 2'; \
+        echo 'pm.max_spare_servers = 8'; \
+        echo 'pm.max_requests = 500'; \
+    } > /usr/local/etc/php-fpm.d/zz-pause-groups.conf
