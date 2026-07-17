@@ -26,8 +26,16 @@ class MssqlClient
         'mssql_password' => true,
     ];
 
-    /** Seconds before a connect or query attempt gives up. */
+    /** Seconds before a CONNECT/login attempt gives up (fail fast if SQL is down). */
     private const TIMEOUT = 8;
+
+    /**
+     * Default per-query timeout (seconds) for interactive report/probe queries.
+     * Generous enough for a legitimate year-range GROUP BY, but bounded so a
+     * slow/contended query fails fast instead of holding a PHP-FPM worker (five
+     * of those saturate the default pool and the whole app stops answering).
+     */
+    private const QUERY_TIMEOUT = 20;
 
     /** @var PDO|null */
     private $pdo = null;
@@ -36,12 +44,13 @@ class MssqlClient
     private $driver = '';
 
     /**
-     * Per-instance query timeout (seconds). Defaults to the tight TIMEOUT that
-     * suits interactive report/probe queries; a long-running maintenance job
-     * (e.g. the one-time card_activity backfill's per-year GROUP BY over
-     * PlayerCardTrans) can raise it via setTimeout() BEFORE the first query.
+     * Per-instance query timeout (seconds). Defaults to QUERY_TIMEOUT for
+     * interactive report/probe queries; a long-running maintenance job (e.g. the
+     * one-time card_activity backfill's per-year GROUP BY over PlayerCardTrans,
+     * which runs from cron — not a web worker) can raise it via setTimeout()
+     * BEFORE the first query. It is enforced as a real query timeout at connect.
      */
-    private $timeout = self::TIMEOUT;
+    private $timeout = self::QUERY_TIMEOUT;
 
     /**
      * Which usable PDO MSSQL drivers this PHP build offers, in preference
@@ -180,10 +189,29 @@ class MssqlClient
         $lastError = '';
         foreach ($candidates as [$driver, $dsn]) {
             try {
-                $pdo = new PDO($dsn, $s['username'], $password, [
+                // ATTR_TIMEOUT is only a CONNECT/login timeout on most drivers,
+                // NOT a query timeout — a slow SELECT can otherwise run for
+                // minutes and wedge a PHP-FPM worker (a handful of those and the
+                // whole app stops answering). Set the driver-specific *query*
+                // timeout too, so any query fails fast instead. Guarded by
+                // defined() because the constants exist only for their driver.
+                $opts = [
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_TIMEOUT => $this->timeout,
-                ]);
+                    PDO::ATTR_TIMEOUT => self::TIMEOUT, // connect/login: fail fast if SQL is down
+                ];
+                if ($driver === 'dblib' && defined('PDO::DBLIB_ATTR_QUERY_TIMEOUT')) {
+                    $opts[PDO::DBLIB_ATTR_QUERY_TIMEOUT] = $this->timeout;
+                } elseif ($driver === 'sqlsrv' && defined('PDO::SQLSRV_ATTR_QUERY_TIMEOUT')) {
+                    $opts[PDO::SQLSRV_ATTR_QUERY_TIMEOUT] = $this->timeout;
+                }
+                $pdo = new PDO($dsn, $s['username'], $password, $opts);
+                // Belt-and-suspenders: also set it post-connect where the driver
+                // accepts it as a settable attribute (ignored if it doesn't).
+                if ($driver === 'dblib' && defined('PDO::DBLIB_ATTR_QUERY_TIMEOUT')) {
+                    try { $pdo->setAttribute(PDO::DBLIB_ATTR_QUERY_TIMEOUT, $this->timeout); } catch (Exception $e) {}
+                } elseif ($driver === 'sqlsrv' && defined('PDO::SQLSRV_ATTR_QUERY_TIMEOUT')) {
+                    try { $pdo->setAttribute(PDO::SQLSRV_ATTR_QUERY_TIMEOUT, $this->timeout); } catch (Exception $e) {}
+                }
                 $this->pdo = $pdo;
                 $this->driver = $driver;
                 return;

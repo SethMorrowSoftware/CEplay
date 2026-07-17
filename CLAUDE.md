@@ -168,9 +168,12 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   ticket liability. Over Day/Week/Month/Year/Custom (same `perfResolveWindow`
   model): a tickets-redeemed-by-day trend, a redemptions-by-hour curve, a
   weekday×hour heatmap (counter staffing), redemption %, period net float, and a
-  per-prize mix. Source: MSSQL `RedeemReceipts` `RecType = 3` rows (the
-  redemption record; `TotalTickets` = tickets spent, `RecTime` = a TRUE clock
-  time — `RedeemDateTime` is sometimes null/anomalous, so `RecTime` drives day +
+  per-prize mix. Source: MSSQL `RedeemReceipts` — the redemption RecType
+  DEPENDS ON THE CARD SYSTEM: the current CenterEdge/Kiosoft readers (live since
+  ~end of April 2026) write `RecType = 1`; the legacy Embed system used
+  `RecType = 3`. Default filters `RecType = 1 AND TotalTickets > 0`.
+  `TotalTickets` = tickets spent, `RecTime` = a TRUE clock time
+  (`RedeemDateTime` is sometimes null/anomalous, so `RecTime` drives day +
   hour), plus `RedeemRecItems` (per-prize line items: `InvNo`, `NumberTickets`,
   `Qty`) for the prize breakdown. Prize MARGIN is NOT available — RedeemRecItems
   has no cost column — so the prize panel is a MIX (tickets/qty), not COGS; a
@@ -269,14 +272,21 @@ before building.
   grain. We checked exhaustively — there is no per-game ticket source anywhere
   in the DB (every ticket credit's `rdrkey` is 0).
 
+- **CARD-SYSTEM CUTOVER (important):** the venue switched from the **Embed**
+  card system to **CenterEdge/Kiosoft** readers ~end of April 2026. Table
+  CONVENTIONS can differ across that boundary — e.g. `RedeemReceipts` uses
+  `RecType = 1` for redemptions on the new system but `RecType = 3` on legacy
+  Embed data (this bit the Redemption report — it shipped filtering RecType 3
+  and read zeros until the default was corrected to RecType 1). Any table with
+  "Embed" in its name, or any pre-May-2026 assumption, must be re-confirmed
+  against recent rows before use.
 - **CANDIDATE tables — high-value sources for reports not yet built** (row
   counts from a one-time schema browse; confirm columns via the Explorer first):
-  - `EmbedBalance` (~563K) — current stored-value balances per card
-    (`Card_Barcode`, `Cash_Balance`, `Bonus_Balance`, `ETickets`). Aged by
-    last-activity → outstanding liability + breakage. (Snapshot, not a range.)
-  - `RedeemReceipts` (~609K, `TotalTickets`, `RedeemDateTime` = real clock) +
-    `RedeemRecItems` (~1.38M, per-prize line items) — tickets REDEEMED, prize
-    COGS/margin, redemption %. Pairs with Ticket Trends (tickets earned).
+  - `EmbedBalance` (~563K) — stored-value balances per card (`Card_Barcode`,
+    `Cash_Balance`, `Bonus_Balance`, `ETickets`). Aged by last-activity →
+    outstanding liability + breakage. (Snapshot, not a range.) NOTE the
+    "Embed" name + cutover above — confirm it still populates post-April before
+    building on it.
   - `CreditCardTrans` (~1.2M, `TransDateTime` real clock, `Amount`,
     `ShortAcctNumber`, `CardType`) — real card-tender dollars + brand mix.
   - `GroupSales` (~105K) / `GroupBirthdays` (~24K) / `GroupArrivals` (~32K) —
