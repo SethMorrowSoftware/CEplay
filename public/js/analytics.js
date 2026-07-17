@@ -282,7 +282,11 @@
     function renderTimePlayNote(data) {
         var note = document.getElementById('analytics-timeplay-note');
         if (!note) return;
-        if (!data.exclude_time_plays) {
+        // Deep-history numbers come straight from the venue ledger rollup, which
+        // has no time-pass concept — the toggle can't and doesn't filter them.
+        // Suppress the "time-pass plays excluded" banner so it never asserts a
+        // false claim over deep totals (the deep-history note explains the view).
+        if (isDeep(data) || !data.exclude_time_plays) {
             note.style.display = 'none';
             return;
         }

@@ -10,6 +10,17 @@ require_once __DIR__ . '/centeredge_client.php';
 
 class Scheduler {
     /**
+     * Version stamp for the venue-wide daily rollup backfill. When the SQL
+     * DEFINITION in venueDailyRowsFromMssql changes, bump this — the stored
+     * `venue_daily_backfill_done` flag then no longer matches, so the next
+     * run (cron / run_backfills.php / update.sh) automatically REBUILDS
+     * venue_daily_stats with the corrected definition instead of being blocked
+     * by a stale "done" flag. v2 = drop the `rdrkey<>0` filter that silently
+     * dropped every play after ~2012 (readers stopped populating rdrkey).
+     */
+    const VENUE_DAILY_BACKFILL_VERSION = '2';
+
+    /**
      * Set app timezone and return the previous timezone for restoration.
      */
     private static function setTimezone(): string {
@@ -2112,21 +2123,30 @@ class Scheduler {
 
     /**
      * One bounded MSSQL query → normalized venue-wide daily rows for [from, upper).
-     * plays/value from PlayerCardTrans TransType 1 (deductions at readers,
-     * rdrkey<>0) — plays = row count (matching the per-game backfill's
-     * definition), value = SUM(DollarAmount) in real dollars; tickets = SUM of
-     * all ValueNo 3 (earned, matching Ticket Trends); cards = distinct cards that
-     * played. Dates are app-generated YYYY-MM-DD literals (not user input) and
-     * the query is single-SELECT (assertReadOnly-guarded in rows()).
+     * plays/value from PlayerCardTrans TransType 1 (deductions at a reader) —
+     * plays = row count, value = SUM(DollarAmount) in real dollars; tickets =
+     * SUM of all ValueNo 3 (earned, matching Ticket Trends); cards = distinct
+     * cards that played.
+     *
+     * IMPORTANT — do NOT add `rdrkey <> 0` here. Unlike the per-game backfill
+     * (which needs rdrkey to attribute a play to a game), this rollup is
+     * venue-wide and must count every reader deduction. This venue's readers
+     * STOPPED populating rdrkey after ~2012 (verified: TransType-1 rows carry
+     * rdrkey<>0 in 2011 but rdrkey=0 in 2019/2026), so an `rdrkey<>0` filter
+     * silently drops every play from 2013 on — which is exactly the bug this
+     * definition replaced. `TransType = 1` alone is the reader-swipe signal
+     * across all eras (same as the Go-Kart Labor report). Dates are
+     * app-generated YYYY-MM-DD literals (not user input) and the query is
+     * single-SELECT (assertReadOnly-guarded in rows()).
      *
      * @return array<int,array{day:string,plays:int,value:float,tickets:float,cards:int}>
      */
     private static function venueDailyRowsFromMssql(MssqlClient $client, string $from, string $upper): array {
         $sql = "SELECT CONVERT(VARCHAR(10), TransDateTime, 120) AS d,"
-            . " SUM(CASE WHEN TransType = 1 AND rdrkey <> 0 THEN 1 ELSE 0 END) AS plays,"
-            . " SUM(CASE WHEN TransType = 1 AND rdrkey <> 0 THEN DollarAmount ELSE 0 END) AS val,"
+            . " SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,"
+            . " SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS val,"
             . " SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets,"
-            . " COUNT(DISTINCT CASE WHEN TransType = 1 AND rdrkey <> 0 THEN CardNumber END) AS cards"
+            . " COUNT(DISTINCT CASE WHEN TransType = 1 THEN CardNumber END) AS cards"
             . " FROM dbo.PlayerCardTrans"
             . " WHERE TransDateTime >= '{$from}' AND TransDateTime < '{$upper}'"
             . " GROUP BY CONVERT(VARCHAR(10), TransDateTime, 120)";
@@ -2282,15 +2302,19 @@ class Scheduler {
             }
         }
 
-        if (DB::getConfig('venue_daily_backfill_done') !== '1') {
-            $note('Venue-wide daily backfill (venue_daily_stats) from MSSQL PlayerCardTrans...');
+        // Version-stamped guard (not a plain '1'): a DEFINITION change bumps
+        // VENUE_DAILY_BACKFILL_VERSION so a corrected query automatically
+        // rebuilds the rollup on the next run instead of being blocked by a
+        // stale "done" flag. INSERT OR REPLACE makes the rebuild idempotent.
+        if (DB::getConfig('venue_daily_backfill_done') !== self::VENUE_DAILY_BACKFILL_VERSION) {
+            $note('Venue-wide daily backfill (venue_daily_stats) from MSSQL PlayerCardTrans (v' . self::VENUE_DAILY_BACKFILL_VERSION . ')...');
             try {
                 $vs = self::backfillVenueDailyStatsFromMssql(2005, $note);
                 if (!empty($vs['skipped'])) {
                     $out['venue'] = ['status' => 'skipped', 'reason' => $vs['reason']];
                     $note('  Skipped: ' . $vs['reason'] . ' — will retry on a later run.');
                 } else {
-                    DB::setConfig('venue_daily_backfill_done', '1');
+                    DB::setConfig('venue_daily_backfill_done', self::VENUE_DAILY_BACKFILL_VERSION);
                     $out['venue'] = ['status' => 'done'] + $vs;
                     $note("  Done: {$vs['days']} venue day-rows; earliest " . ($vs['earliest'] ?? '?') . '.');
                 }
