@@ -70,10 +70,20 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   KPIs + trend reach back ~2 decades even though the raw feed is only ~30 days.
   A venue-wide daily rollup, `venue_daily_stats` (per local day: `plays`,
   `value`, `tickets`, `unique_cards`), is aggregated straight from the POS
-  ledger (`PlayerCardTrans`) — plays + play-value from `TransType 1` reader
-  deductions (`rdrkey<>0`), tickets from all `ValueNo 3` earned — none of which
-  depend on the per-game `rdrkey` mapping, so money/tickets are REAL historically
-  (unlike the per-game backfill, which can't attribute either). Written once
+  ledger (`PlayerCardTrans`) — plays + play-value (`DollarAmount`) from
+  `TransType 1` reader deductions, tickets from all `ValueNo 3` earned.
+  **Do NOT filter plays by `rdrkey<>0` here** (the per-game backfill must, to
+  attribute a play to a game, but this venue-wide rollup must not): this venue's
+  readers stopped populating `rdrkey` after ~2012 (verified — `TransType 1`
+  carries `rdrkey<>0` in 2011 but `rdrkey=0` in 2019/2026), so an `rdrkey<>0`
+  filter silently drops every play from 2013 on. `TransType 1` alone is the
+  reader-swipe signal across all eras (same as Go-Kart Labor). The backfill is
+  version-stamped (`Scheduler::VENUE_DAILY_BACKFILL_VERSION` /
+  `venue_daily_backfill_done`) so a definition change auto-rebuilds the rollup
+  on the next run instead of being blocked by a stale "done" flag. None of these
+  depend on the per-game `rdrkey` mapping, so money/tickets/plays are REAL
+  historically (unlike the per-game backfill, which can't attribute plays to a
+  game once `rdrkey=0`). Written once
   ~2 decades deep (`Scheduler::backfillVenueDailyStatsFromMssql`, monthly MSSQL
   batches, flag `venue_daily_backfill_done`, via `runPendingBackfills`) and
   refreshed nightly for the trailing 40 days
@@ -282,11 +292,18 @@ before building.
     (`Scheduler::backfillCardActivityFromMssql`), reaching back ~2 decades.
   - **Venue-wide daily rollup (CONFIRMED consumer):** grouped by
     `CONVERT(VARCHAR(10),TransDateTime,120)` (local day), this same table feeds
-    `venue_daily_stats` — plays + play-value from `TransType 1`/`rdrkey<>0`,
-    tickets from all `ValueNo 3`, distinct cards — for the Analytics overview's
-    deep money history (`Scheduler::backfillVenueDailyStatsFromMssql` /
-    `refreshVenueDailyStatsRecent`). Venue-wide (no `rdrkey`→game mapping), so
-    money/tickets are real here where the per-game backfill can only leave them 0.
+    `venue_daily_stats` — plays + play-value (`DollarAmount`) from `TransType 1`
+    (NO `rdrkey` filter — see below), tickets from all `ValueNo 3`, distinct
+    cards — for the Analytics overview's deep money history
+    (`Scheduler::backfillVenueDailyStatsFromMssql` / `refreshVenueDailyStatsRecent`).
+    Venue-wide (no `rdrkey`→game mapping), so money/tickets/plays are real here
+    where the per-game backfill can only leave them 0 once `rdrkey=0`.
+  - **`rdrkey` populated only pre-~2012 (CONFIRMED, era gotcha):** `TransType 1`
+    reader deductions carry a nonzero `rdrkey` in the early era (2011: all
+    `rdrkey<>0`) but `rdrkey = 0` afterward (2019 & 2026: all `rdrkey=0`). So the
+    per-game backfill (which joins `rdrkey`→game) can only attribute plays for
+    the early era, while a venue-wide count MUST use `TransType 1` alone. Real
+    per-play `DollarAmount` is 0 in the early era and populated from ~2013 on.
 - **`Sales` — POS sales lines (CONFIRMED).** `ShiftDate` is a business DAY
   stamped at MIDNIGHT (not a clock time), so Sales-sourced reports are honest at
   day grain only — no real hour-of-day (that's why Revenue Mix / the go-kart
