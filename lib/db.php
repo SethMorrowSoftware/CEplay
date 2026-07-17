@@ -850,6 +850,26 @@ class DB {
         // whole venue's hourly rows and discarding non-members in PHP.
         $db->exec('CREATE INDEX IF NOT EXISTS idx_ghs_game_date ON game_hourly_stats(game_id, stat_date)');
 
+        // Venue-wide daily rollup — the deep-history source for the Analytics
+        // OVERVIEW (plays / value played / tickets earned / unique cards per
+        // local day). Unlike game_daily_stats, this is NOT per-game and carries
+        // REAL money/tickets historically: it's aggregated straight from the POS
+        // ledger (PlayerCardTrans) — plays + value from TransType 1 (deductions
+        // at readers), tickets from all ValueNo 3, distinct cards that played —
+        // none of which depend on the per-game rdrkey mapping. Backfilled once
+        // ~2 decades deep and refreshed nightly for the trailing window, both
+        // from cron (never a web request). ~one row/day, so a range read is
+        // inherently tiny (<=370 rows).
+        $db->exec('CREATE TABLE IF NOT EXISTS venue_daily_stats (
+            stat_date TEXT NOT NULL,
+            plays INTEGER NOT NULL DEFAULT 0,
+            value REAL NOT NULL DEFAULT 0,
+            tickets REAL NOT NULL DEFAULT 0,
+            unique_cards INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            PRIMARY KEY (stat_date)
+        )');
+
         // Reader groups: operator-defined groupings of games/readers used
         // ONLY for analytics (staffing heatmaps, per-area play averages).
         // Deliberately separate from pause_groups — these never pause

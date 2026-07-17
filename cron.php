@@ -118,6 +118,23 @@ try {
         echo "  WARNING: Card activity ledger refresh failed: " . $e->getMessage() . "\n";
     }
 
+    // Step 5c: Refresh the trailing window of the venue-wide daily rollup
+    // (venue_daily_stats) from the POS ledger — the deep-history source for the
+    // Analytics overview. MSSQL-only (self-skips if not configured); one bounded
+    // query, so it's cheap. The one-time DEEP backfill runs later via
+    // runPendingBackfills; this keeps recent complete days accurate.
+    echo "Refreshing venue daily rollup...\n";
+    try {
+        $venueRefresh = Scheduler::refreshVenueDailyStatsRecent(40);
+        if (!empty($venueRefresh['skipped'])) {
+            echo "  Skipped: {$venueRefresh['reason']}.\n";
+        } else {
+            echo "  Refreshed {$venueRefresh['days']} recent day-rows.\n";
+        }
+    } catch (Exception $e) {
+        echo "  WARNING: Venue daily rollup refresh failed: " . $e->getMessage() . "\n";
+    }
+
     // Step 6: Purge old data to prevent unbounded growth. Skip purging the raw
     // play feed if the rollup failed — purging would delete raw rows that never
     // made it into the permanent summary, silently losing reporting history.

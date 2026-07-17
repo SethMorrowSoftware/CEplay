@@ -227,3 +227,17 @@
     font-size: 0.85rem;
     font-weight: 500;
 }
+
+/* Banner shown when the range reaches past the ~30-day detailed feed and the
+   page falls back to the venue-wide ledger rollup (deep history). Uses the
+   accent color so it reads as informational, not a warning. */
+.analytics-deep-note {
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--text-secondary);
+    border-radius: var(--radius-lg);
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+    line-height: 1.45;
+}

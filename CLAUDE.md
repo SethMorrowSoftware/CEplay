@@ -66,6 +66,33 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   (Day/Week/Month/Year/Custom, searchable, with prior-period comparison).
 - The same nightly pass also writes `game_hourly_stats` (per-game, per-local-
   hour; ~400-day retention) so hour-of-day history outlives the raw feed.
+- **Deep money history (Analytics overview):** the Analytics page's headline
+  KPIs + trend reach back ~2 decades even though the raw feed is only ~30 days.
+  A venue-wide daily rollup, `venue_daily_stats` (per local day: `plays`,
+  `value`, `tickets`, `unique_cards`), is aggregated straight from the POS
+  ledger (`PlayerCardTrans`) — plays + play-value from `TransType 1` reader
+  deductions (`rdrkey<>0`), tickets from all `ValueNo 3` earned — none of which
+  depend on the per-game `rdrkey` mapping, so money/tickets are REAL historically
+  (unlike the per-game backfill, which can't attribute either). Written once
+  ~2 decades deep (`Scheduler::backfillVenueDailyStatsFromMssql`, monthly MSSQL
+  batches, flag `venue_daily_backfill_done`, via `runPendingBackfills`) and
+  refreshed nightly for the trailing 40 days
+  (`Scheduler::refreshVenueDailyStatsRecent`, cron Step 5c) — both cron-only,
+  MSSQL-only (self-skip if unconfigured), and never touch today (today stays
+  live from the raw feed). `GET /api/analytics/overview` activates deep mode
+  ONLY when the requested range starts before the raw feed's earliest day
+  (`analyticsRawFloorDate`); it is SINGLE-SOURCE (`analyticsVenueDaily`, the
+  rollup only — never mixed with the raw feed, so no definitional seam), swaps
+  the headline plays/play-value/tickets to the ledger, and NULLs every
+  recent-only panel (hour-of-day, top games, category, payment/brand mix, guest
+  insights, per-period unique cards) because they can't be rebuilt from a daily
+  rollup. `value` = dollars spent at readers (broader than the recent "Reader CC
+  payments" walk-up figure), scrubbed by `analyticsScrubMoney` for roles without
+  view_revenue like every other dollar. Trend is per-month for Year-style ranges,
+  else per-day (cap 370). The frontend (`public/js/analytics.js`) shows a
+  "Historical view" banner with the exact coverage window, renders the deep KPIs
+  (labeling money "Play value"), and hides the nulled panels with a
+  "recent window only" note.
 - The Analytics overview and both reader-group endpoints accept
   `exclude_time_plays=1` (a UI toggle on those pages). The overview filters
   whole transactions (exact — excluded plays' tickets/points/payments drop
@@ -253,6 +280,13 @@ before building.
   - Also present: `CardNumber`, `EmpNo` (cashier/employee), `DivNo`. MIN/MAX
     `TransDateTime` per card seeds the guest "new vs returning" ledger
     (`Scheduler::backfillCardActivityFromMssql`), reaching back ~2 decades.
+  - **Venue-wide daily rollup (CONFIRMED consumer):** grouped by
+    `CONVERT(VARCHAR(10),TransDateTime,120)` (local day), this same table feeds
+    `venue_daily_stats` — plays + play-value from `TransType 1`/`rdrkey<>0`,
+    tickets from all `ValueNo 3`, distinct cards — for the Analytics overview's
+    deep money history (`Scheduler::backfillVenueDailyStatsFromMssql` /
+    `refreshVenueDailyStatsRecent`). Venue-wide (no `rdrkey`→game mapping), so
+    money/tickets are real here where the per-game backfill can only leave them 0.
 - **`Sales` — POS sales lines (CONFIRMED).** `ShiftDate` is a business DAY
   stamped at MIDNIGHT (not a clock time), so Sales-sourced reports are honest at
   day grain only — no real hour-of-day (that's why Revenue Mix / the go-kart

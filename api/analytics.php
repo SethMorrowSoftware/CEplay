@@ -90,6 +90,24 @@ function analyticsScrubMoney(array &$payload): void {
         if (isset($payload[$key]) && is_array($payload[$key])) {
             if (array_key_exists('cash', $payload[$key])) $payload[$key]['cash'] = 0.0;
             if (array_key_exists('avg_cash_per_play', $payload[$key])) $payload[$key]['avg_cash_per_play'] = 0.0;
+            // Deep-history "value" (dollars spent at readers) is money too.
+            if (array_key_exists('value', $payload[$key])) $payload[$key]['value'] = 0.0;
+        }
+    }
+    // Deep-history block: zero every dollar figure (totals, prior, per-point
+    // trend value, per-weekday value) so no $ slips out on long ranges.
+    if (isset($payload['history']) && is_array($payload['history'])) {
+        foreach (['value', 'prev_value'] as $mk) {
+            if (array_key_exists($mk, $payload['history'])) $payload['history'][$mk] = 0.0;
+        }
+        if (isset($payload['history']['value_by_dow']) && is_array($payload['history']['value_by_dow'])) {
+            $payload['history']['value_by_dow'] = array_map(function () { return 0.0; }, $payload['history']['value_by_dow']);
+        }
+        if (isset($payload['history']['trend']) && is_array($payload['history']['trend'])) {
+            foreach ($payload['history']['trend'] as &$pt) {
+                if (is_array($pt) && array_key_exists('value', $pt)) $pt['value'] = 0.0;
+            }
+            unset($pt);
         }
     }
     // Guest Insights carries per-visit / per-guest dollar figures — zero the
@@ -374,6 +392,47 @@ function analyticsOverview(bool $hideMoney = false): void {
          FROM game_play_transactions'
     );
 
+    // ---- Deep history: reach past the 30-day raw feed into venue_daily_stats ----
+    // When the requested range starts before the raw feed's earliest day, source
+    // the headline plays / value-played / tickets from the venue-wide daily
+    // rollup (POS ledger, ~2 decades) instead. Single-source (no raw mix), so no
+    // seam. The raw-only detail panels (payment mix, brand mix, guests, hour-of-
+    // day, top games, category, unique-over-period) can't be rebuilt historically,
+    // so they're cleared and the client hides them with a "last N days only" note.
+    // If the rollup hasn't been backfilled yet, we fall through to the raw path.
+    $startLocalDate   = $startLocal->format('Y-m-d');
+    $endLocalDateExcl = $endLocal->format('Y-m-d');
+    $rawFloorDate     = analyticsRawFloorDate($tz);
+    $history = null;
+    if ($startLocalDate < $rawFloorDate) {
+        $gran = $win['granularity'] ?? 'day';
+        $v = analyticsVenueDaily($startLocalDate, $endLocalDateExcl, $gran);
+        if ($v['has_data']) {
+            $pv = analyticsVenueDaily(
+                (clone $win['prev_start'])->format('Y-m-d'),
+                (clone $win['prev_endExcl'])->format('Y-m-d'),
+                $gran
+            );
+            $history = [
+                'active'               => true,
+                'granularity'          => $v['granularity'],
+                'since'                => $v['since'],
+                'through'              => $v['through'],
+                'recent_metrics_since' => $rawFloorDate,
+                'plays'                => $v['plays'],
+                'value'                => $v['value'],
+                'tickets'              => $v['tickets'],
+                'prev_plays'           => $pv['plays'],
+                'prev_value'           => $pv['value'],
+                'prev_tickets'         => $pv['tickets'],
+                'trend'                => $v['trend'],
+                'plays_by_dow'         => $v['plays_by_dow'],
+                'value_by_dow'         => $v['value_by_dow'],
+                'tickets_by_dow'       => $v['tickets_by_dow'],
+            ];
+        }
+    }
+
     $payload = [
         // Canonical window meta for the shared top-bar picker; `label` drives
         // the ‹ prev / next › nav — same shape every reporting page returns.
@@ -423,6 +482,35 @@ function analyticsOverview(bool $hideMoney = false): void {
         'generated_at' => (new DateTime('now', $utc))->format('Y-m-d\TH:i:s\Z'),
     ];
 
+    // Deep-history override: swap the headline numbers + trend to the ledger
+    // rollup and clear the raw-only detail panels (client hides them). Done
+    // BEFORE the money scrub so `value` gets scrubbed for roles without
+    // view_revenue like every other dollar figure.
+    if ($history !== null) {
+        $payload['history'] = $history;
+        // Headline KPIs from the ledger. `value` = $ played at readers (the deep
+        // money metric); `cash` (walk-up only) and per-period-unique/points can't
+        // go deep, so null them (client shows `value` and hides the rest).
+        $payload['kpis']['plays']        = $history['plays'];
+        $payload['kpis']['tickets']      = $history['tickets'];
+        $payload['kpis']['value']        = $history['value'];
+        $payload['kpis']['unique_cards'] = null;
+        $payload['kpis']['cash']         = null;
+        $payload['kpis']['points']       = null;
+        $payload['kpis']['bonus_points'] = null;
+        $payload['previous_kpis']['plays']   = $history['prev_plays'];
+        $payload['previous_kpis']['tickets'] = $history['prev_tickets'];
+        $payload['previous_kpis']['value']   = $history['prev_value'];
+        // Recent-only panels → null so the client hides them on long ranges.
+        foreach (['daily', 'plays_by_hour', 'tickets_by_hour', 'plays_by_dow',
+                  'tickets_by_dow', 'top_games_plays', 'top_games_tickets',
+                  'top_games_cash', 'by_category', 'payment_mix', 'cc_brand_mix',
+                  'system_events'] as $k) {
+            if (array_key_exists($k, $payload['charts'])) $payload['charts'][$k] = null;
+        }
+        $payload['guests'] = null; // new-vs-returning needs the per-transaction card list
+    }
+
     if ($hideMoney) {
         analyticsScrubMoney($payload);
     }
@@ -470,6 +558,116 @@ function analyticsKpis(string $startIso, string $endIso, bool $excludeTimePlays 
         'privilege_plays'      => (int)($row['privilege_plays'] ?? 0),
         'avg_tickets_per_play' => $plays > 0 ? round($tickets / $plays, 2) : 0,
         'avg_cash_per_play'    => $plays > 0 ? round($cash / $plays, 2) : 0,
+    ];
+}
+
+/**
+ * The local date the raw play feed's coverage begins (earliest transaction),
+ * or today when the feed is empty. The overview reaches beyond this into the
+ * venue_daily_stats rollup for deep history.
+ */
+function analyticsRawFloorDate(DateTimeZone $tz): string {
+    $row = DB::queryOne("SELECT MIN(transaction_time) AS t FROM game_play_transactions WHERE transaction_time != ''");
+    $min = $row['t'] ?? '';
+    if ($min === '' || $min === null) {
+        return (new DateTime('now', $tz))->format('Y-m-d');
+    }
+    try {
+        $d = new DateTime((string)$min);
+        $d->setTimezone($tz);
+        return $d->format('Y-m-d');
+    } catch (Exception $e) {
+        return (new DateTime('now', $tz))->format('Y-m-d');
+    }
+}
+
+/**
+ * DEEP-history venue totals + trend from the venue_daily_stats rollup
+ * (POS-ledger sourced, ~2 decades). SINGLE-SOURCE — never mixes the raw feed —
+ * so there is no definitional seam and no misleading partial "today" (today is
+ * never in venue_daily_stats, so a range ending today naturally covers through
+ * yesterday). Money here is VALUE PLAYED ($ spent at readers, TransType 1),
+ * and tickets are ALL earned (ValueNo 3) — the ledger definitions, which differ
+ * from the raw feed's walk-up-cash/won-at-play view (that's why we only use this
+ * once a range reaches past the raw window, and label it distinctly). Inherently
+ * bounded: one row/day, trend capped/aggregated per granularity.
+ *
+ * @param string $fromDate    inclusive local date YYYY-MM-DD
+ * @param string $toDateExcl  exclusive local date YYYY-MM-DD
+ * @param string $granularity 'month' → per-month trend; else per-day (cap 370)
+ * @return array{has_data:bool, plays:int, value:float, tickets:float,
+ *   covered_days:int, since:?string, through:?string, granularity:string,
+ *   trend:array, plays_by_dow:array, value_by_dow:array, tickets_by_dow:array}
+ */
+function analyticsVenueDaily(string $fromDate, string $toDateExcl, string $granularity): array {
+    $rows = DB::query(
+        'SELECT stat_date, plays, value, tickets
+         FROM venue_daily_stats
+         WHERE stat_date >= :p0 AND stat_date < :p1
+         ORDER BY stat_date',
+        [$fromDate, $toDateExcl]
+    );
+
+    $byDate = [];
+    $plays = 0; $value = 0.0; $tickets = 0.0; $since = null; $through = null;
+    $dowPlays = array_fill(0, 7, 0);
+    $dowValue = array_fill(0, 7, 0.0);
+    $dowTickets = array_fill(0, 7, 0.0);
+    $utc = new DateTimeZone('UTC');
+    foreach ($rows as $r) {
+        $d = (string)$r['stat_date'];
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+        $p = (int)$r['plays']; $v = (float)$r['value']; $t = (float)$r['tickets'];
+        $byDate[$d] = ['date' => $d, 'plays' => $p, 'value' => round($v, 2), 'tickets' => round($t, 2)];
+        $plays += $p; $value += $v; $tickets += $t;
+        if ($since === null || $d < $since) $since = $d;
+        if ($through === null || $d > $through) $through = $d;
+        $wd = DateTime::createFromFormat('!Y-m-d', $d, $utc);
+        $w = $wd ? (int)$wd->format('w') : 0;
+        $dowPlays[$w] += $p; $dowValue[$w] += $v; $dowTickets[$w] += $t;
+    }
+
+    // Trend: per-month for long/Year-style ranges (bounded even over decades),
+    // else per-day gap-filled (cap 370 like the raw daily series).
+    $trend = [];
+    if ($granularity === 'month') {
+        $byMonth = [];
+        foreach ($byDate as $d => $a) {
+            $ym = substr($d, 0, 7);
+            if (!isset($byMonth[$ym])) $byMonth[$ym] = ['month' => $ym, 'plays' => 0, 'value' => 0.0, 'tickets' => 0.0];
+            $byMonth[$ym]['plays'] += $a['plays']; $byMonth[$ym]['value'] += $a['value']; $byMonth[$ym]['tickets'] += $a['tickets'];
+        }
+        ksort($byMonth);
+        foreach ($byMonth as $m) {
+            $m['value'] = round($m['value'], 2); $m['tickets'] = round($m['tickets'], 2);
+            $trend[] = $m;
+        }
+    } else {
+        $cursor = DateTime::createFromFormat('!Y-m-d', $fromDate, $utc);
+        $stop   = DateTime::createFromFormat('!Y-m-d', $toDateExcl, $utc);
+        $limit = 370;
+        if ($cursor && $stop) {
+            while ($cursor < $stop && $limit-- > 0) {
+                $k = $cursor->format('Y-m-d');
+                $trend[] = $byDate[$k] ?? ['date' => $k, 'plays' => 0, 'value' => 0.0, 'tickets' => 0.0];
+                $cursor->modify('+1 day');
+            }
+        }
+    }
+
+    return [
+        'has_data'     => !empty($byDate),
+        'plays'        => $plays,
+        'value'        => round($value, 2),
+        'tickets'      => round($tickets, 2),
+        'covered_days' => count($byDate),
+        'since'        => $since,
+        'through'      => $through,
+        'granularity'  => ($granularity === 'month') ? 'month' : 'day',
+        'trend'        => $trend,
+        'plays_by_dow'   => array_values($dowPlays),
+        'value_by_dow'   => array_map(function ($x) { return round($x, 2); }, array_values($dowValue)),
+        'tickets_by_dow' => array_map(function ($x) { return round($x, 2); }, array_values($dowTickets)),
     ];
 }
 
