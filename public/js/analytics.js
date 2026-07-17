@@ -63,6 +63,13 @@
             className: 'analytics-timeplay-note',
             style: { display: 'none' }
         }));
+        // Banner shown when the range reaches past the ~30-day detailed feed and
+        // the page falls back to the venue-wide ledger rollup (deep history).
+        container.appendChild(App.el('div', {
+            id: 'analytics-deep-note',
+            className: 'analytics-deep-note',
+            style: { display: 'none' }
+        }));
         // Plain-language headlines land here on every load.
         container.appendChild(App.el('div', { id: 'analytics-insights' }));
         container.appendChild(buildKpiSection());
@@ -287,12 +294,48 @@
     }
 
     /**
+     * True when the requested range reaches past the ~30-day detailed feed and
+     * the server answered from the venue-wide ledger rollup instead. In this
+     * mode the headline plays/tickets/play-value are REAL and deep, but every
+     * recent-only breakdown (hour-of-day, top games, payment mix, guests, …) is
+     * null — so each renderer hides its panel and says why.
+     */
+    function isDeep(data) {
+        return !!(data && data.history && data.history.active);
+    }
+
+    /**
+     * Banner explaining deep-history mode + the exact coverage window, so a
+     * long range never silently looks like a full-detail one. Play-value is
+     * defined here once (it's a broader figure than the recent "Reader CC
+     * payments" card, so we name the difference).
+     */
+    function renderDeepNote(data) {
+        var note = document.getElementById('analytics-deep-note');
+        if (!note) return;
+        if (!isDeep(data)) { note.style.display = 'none'; note.textContent = ''; return; }
+        var h = data.history;
+        var since = h.since ? formatShortDate(h.since) : null;
+        var through = h.through ? formatShortDate(h.through) : null;
+        var recentSince = h.recent_metrics_since ? formatShortDate(h.recent_metrics_since) : null;
+        var span = (since && through) ? (since + ' – ' + through) : 'the selected range';
+        var msg = '📚 Historical view — this range reaches past the detailed feed we keep (about the last 30 days). '
+            + 'The headline plays, tickets and play value below come straight from the card-system ledger, covering ' + span + '. '
+            + 'Detailed breakdowns — by hour, by game, category, payment mix and guest insights — are only kept for the recent window'
+            + (recentSince ? ' (since ' + recentSince + ')' : '')
+            + ', so they’re hidden for this longer range. Pick a shorter range to see them.';
+        note.textContent = msg;
+        note.style.display = '';
+    }
+
+    /**
      * The headlines: four plain-language takeaways computed from data the
      * payload already carries, so a non-technical reader gets the story
      * before the first chart. Each card degrades away when its data is
      * absent (short ranges, hidden money, uncovered guest history).
      */
     function renderInsights(data) {
+        if (isDeep(data)) { renderInsightsDeep(data); return; }
         var box = document.getElementById('analytics-insights');
         if (!box) return;
         box.innerHTML = '';
@@ -350,6 +393,55 @@
         if (cards.length) box.appendChild(App.el('div', { className: 'insight-row' }, cards));
     }
 
+    /**
+     * Deep-history headlines built from the ledger rollup: total plays (with
+     * prior-period delta), the busiest month/day in the trend, total tickets,
+     * and — for money roles — total play value. No busiest-hour / most-played-
+     * game / guest cards here; those need the recent detailed feed.
+     */
+    function renderInsightsDeep(data) {
+        var box = document.getElementById('analytics-insights');
+        if (!box) return;
+        box.innerHTML = '';
+        var h = data.history || {};
+        var cards = [];
+
+        if (h.plays != null) {
+            var sub = 'game plays over this range';
+            var cls = 'insight-accent';
+            if (h.prev_plays) {
+                var chg = (h.plays - h.prev_plays) / h.prev_plays * 100;
+                var chgTxt = Math.abs(chg).toFixed(1).replace(/\.0$/, '');
+                sub = (chg >= 0 ? 'up ' : 'down ') + chgTxt + '% vs the previous period';
+                cls = chg >= 0 ? 'insight-good' : 'insight-warn';
+            }
+            cards.push(insightCard('🎮', cls, 'Plays', Number(h.plays).toLocaleString(), sub));
+        }
+
+        var trend = h.trend || [];
+        if (trend.length > 1) {
+            var best = trend.reduce(function(a, b) { return (b.plays || 0) > (a.plays || 0) ? b : a; });
+            if (best) {
+                var isMonth = h.granularity === 'month';
+                var label = isMonth ? formatMonthLabel(best.month) : formatShortDate(best.date);
+                cards.push(insightCard('📅', 'insight-heat', isMonth ? 'Busiest month' : 'Busiest day',
+                    label, Number(best.plays || 0).toLocaleString() + ' plays'));
+            }
+        }
+
+        if (h.tickets != null) {
+            cards.push(insightCard('🎟️', 'insight-quiet', 'Tickets earned',
+                Number(Math.round(h.tickets)).toLocaleString(), 'redemption tickets over this range'));
+        }
+
+        if (App.canSeeMoney() && h.value != null) {
+            cards.push(insightCard('💵', 'insight-accent', 'Play value',
+                formatCurrency(h.value), 'spent at the game readers over this range'));
+        }
+
+        if (cards.length) box.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
     function insightCard(emoji, cls, label, value, sub) {
         return App.el('div', { className: 'insight-card ' + cls }, [
             App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
@@ -393,6 +485,17 @@
         var g = data.guests || {};
         var canSeeMoney = App.canSeeMoney();
         body.textContent = '';
+
+        // Deep history: guest detail needs the per-transaction card list, which
+        // only exists for the recent detailed feed — say so plainly.
+        if (isDeep(data)) {
+            var rs = data.history && data.history.recent_metrics_since;
+            body.appendChild(App.el('div', { className: 'text-muted text-sm',
+                textContent: 'Guest insights (new vs returning, visit frequency and reader CC spend) are only kept for '
+                    + 'about the last 30 days' + (rs ? ' (since ' + formatShortDate(rs) + ')' : '')
+                    + ', so they’re not available for this longer range. Pick a shorter range to see them.' }));
+            return;
+        }
 
         var total = g.total_guests || 0;
         if (total === 0) {
@@ -615,6 +718,11 @@
         if (!box) return;
         box.innerHTML = '';
 
+        if (isDeep(data)) {
+            box.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                textContent: 'Card-system events are only kept for the recent detailed window — pick a shorter range to see them.' }));
+            return;
+        }
         if (data.system_tx_supported === false) {
             box.appendChild(App.el('p', { className: 'text-sm text-secondary',
                 textContent: 'This card system does not report system transactions.' }));
@@ -688,6 +796,7 @@
             var navLabel = document.getElementById('analytics-nav-label');
             if (navLabel && data.window && data.window.label) navLabel.textContent = data.window.label;
             renderTimePlayNote(data);
+            renderDeepNote(data);
             renderInsights(data);
             renderKpis(data);
             renderGuests(data);
@@ -710,10 +819,40 @@
     // ------------------------------------------------------------------
     // KPI cards
     // ------------------------------------------------------------------
+    // KPI cards that only make sense on the recent detailed feed — hidden in
+    // deep-history mode (the ledger rollup can't rebuild them accurately).
+    var DEEP_HIDDEN_KPIS = ['points', 'avg_cash', 'unique_cards', 'credit_card_share', 'expired'];
+
+    function kpiCardEl(key) {
+        return document.querySelector('.analytics-kpi[data-kpi="' + key + '"]');
+    }
+    function kpiSetVisible(key, show) {
+        var c = kpiCardEl(key);
+        if (c) c.style.display = show ? '' : 'none';
+    }
+    function kpiSetLabel(key, label, tip) {
+        var c = kpiCardEl(key);
+        if (!c) return;
+        var lbl = c.querySelector('.stat-label');
+        if (lbl) lbl.textContent = label;
+        if (tip != null) c.title = tip;
+    }
+
     function renderKpis(data) {
+        if (isDeep(data)) { renderKpisDeep(data); return; }
+
         var k = data.kpis || {};
         var p = data.previous_kpis || {};
         var canSeeMoney = App.canSeeMoney();
+
+        // Restore the normal layout (a previous deep render may have hidden
+        // cards / relabeled the money card).
+        DEEP_HIDDEN_KPIS.forEach(function(key) { kpiSetVisible(key, true); });
+        kpiSetVisible('avg_tickets', true);
+        if (canSeeMoney) {
+            kpiSetLabel('cash', 'Reader CC payments',
+                'Credit-card dollars paid at the game readers — sales at the front counter are not included');
+        }
 
         kpiUpdate('plays',           formatInt(k.plays),                       deltaText(k.plays, p.plays));
         kpiUpdate('tickets',         formatInt(Math.round(k.tickets || 0)),    deltaText(k.tickets, p.tickets));
@@ -745,6 +884,39 @@
             }
             kpiUpdate('expired', formatInt(Math.round(k.expired_points || 0)) + ' pts', expDetail);
         }
+    }
+
+    /**
+     * Deep-history KPIs: only the three the ledger rollup can report accurately
+     * over a long range — Plays, Tickets earned, and (money roles) Play value —
+     * plus Avg tickets/play, which is just tickets ÷ plays. Every recent-only
+     * card is hidden. Play value is a broader figure than the recent "Reader CC
+     * payments" card, so the money card is relabeled and re-tipped to say so.
+     */
+    function renderKpisDeep(data) {
+        var h = data.history || {};
+        var canSeeMoney = App.canSeeMoney();
+
+        DEEP_HIDDEN_KPIS.forEach(function(key) { kpiSetVisible(key, false); });
+        kpiSetVisible('plays', true);
+        kpiSetVisible('tickets', true);
+        kpiSetVisible('avg_tickets', true);
+
+        kpiUpdate('plays',   formatInt(h.plays),                    deltaText(h.plays, h.prev_plays));
+        kpiUpdate('tickets', formatInt(Math.round(h.tickets || 0)), deltaText(h.tickets, h.prev_tickets));
+
+        if (canSeeMoney) {
+            kpiSetVisible('cash', true);
+            kpiSetLabel('cash', 'Play value',
+                'Total dollars spent at the game readers over this range (stored card value + cash), straight from '
+                + 'the card-system ledger. Broader than “Reader CC payments,” which counts only walk-up credit-card '
+                + 'taps in the recent detailed window.');
+            kpiUpdate('cash', formatCurrency(h.value), deltaText(h.value, h.prev_value));
+        }
+
+        var avg = h.plays > 0 ? (h.tickets / h.plays) : 0;
+        var pavg = h.prev_plays > 0 ? (h.prev_tickets / h.prev_plays) : 0;
+        kpiUpdate('avg_tickets', avg.toFixed(2), deltaText(avg, pavg));
     }
 
     function kpiUpdate(key, value, trend) {
@@ -817,6 +989,24 @@
     // ------------------------------------------------------------------
     // Charts
     // ------------------------------------------------------------------
+    // Every chart canvas on the page, and the subset that survives deep-history
+    // mode (the two the ledger rollup can feed accurately over a long range).
+    var ALL_CHART_CANVASES = [
+        'analytics-chart-daily', 'analytics-chart-hour', 'analytics-chart-dow',
+        'analytics-chart-top-plays', 'analytics-chart-top-tickets',
+        'analytics-chart-cat-share', 'analytics-chart-cat-tickets',
+        'analytics-chart-payment-mix', 'analytics-chart-cc-brands',
+        'analytics-chart-revenue', 'analytics-chart-top-groups'
+    ];
+    var DEEP_VISIBLE_CANVASES = ['analytics-chart-daily', 'analytics-chart-dow'];
+
+    function setChartCardVisible(canvasId, show) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var card = canvas.closest('.analytics-card');
+        if (card) card.style.display = show ? '' : 'none';
+    }
+
     function renderCharts(data) {
         if (typeof window.Chart === 'undefined') {
             // Chart.js still loading or blocked. Try once more shortly.
@@ -826,6 +1016,13 @@
 
         destroyCharts();
         var theme = readThemeColors();
+
+        if (isDeep(data)) { renderChartsDeep(data, theme); return; }
+
+        // Restore all chart cards + the daily title (a previous deep render may
+        // have hidden cards / renamed the daily chart).
+        ALL_CHART_CANVASES.forEach(function(id) { setChartCardVisible(id, true); });
+        setChartCardTitle('analytics-chart-daily', 'Daily activity', 'Each bar is one day — taller means a busier day');
         var charts = data.charts || {};
 
         // Daily trend (combo: bars=plays, line=tickets)
@@ -976,6 +1173,77 @@
             theme.accent,
             theme
         ));
+    }
+
+    /**
+     * Deep-history charts: only the two the ledger rollup feeds accurately.
+     *   • Activity over time — plays (bars) + tickets (line), from history.trend
+     *     (per-month for Year-style ranges, else per-day).
+     *   • Plays by day of week — from history.plays_by_dow.
+     * All other chart cards are hidden (their recent-only sources are null).
+     */
+    function renderChartsDeep(data, theme) {
+        var h = data.history || {};
+        ALL_CHART_CANVASES.forEach(function(id) {
+            setChartCardVisible(id, DEEP_VISIBLE_CANVASES.indexOf(id) !== -1);
+        });
+
+        var trend = h.trend || [];
+        var isMonth = h.granularity === 'month';
+        var labels = trend.map(function(pt) {
+            return isMonth ? formatMonthLabel(pt.month) : formatShortDate(pt.date);
+        });
+        var plays = trend.map(function(pt) { return pt.plays || 0; });
+        var tickets = trend.map(function(pt) { return Math.round(pt.tickets || 0); });
+
+        setChartCardTitle('analytics-chart-daily',
+            isMonth ? 'Activity by month' : 'Activity by day',
+            isMonth ? 'Each bar is one month — taller means a busier month'
+                    : 'Each bar is one day — taller means a busier day');
+        registerChart('analytics-chart-daily', {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        type: 'bar', label: 'Plays', data: plays,
+                        backgroundColor: theme.accentSubtle, borderColor: theme.accent,
+                        borderWidth: 1, yAxisID: 'y', order: 2
+                    },
+                    {
+                        type: 'line', label: 'Tickets', data: tickets,
+                        borderColor: theme.tickets, backgroundColor: 'transparent',
+                        tension: 0.3, pointRadius: 2, pointHoverRadius: 5, yAxisID: 'y1', order: 1
+                    }
+                ]
+            },
+            options: dualAxisOptions(theme, 'Plays', 'Tickets')
+        });
+
+        registerChart('analytics-chart-dow', {
+            type: 'bar',
+            data: {
+                labels: DAYS_SHORT,
+                datasets: [{
+                    label: 'Plays', data: h.plays_by_dow || [],
+                    backgroundColor: theme.accent, borderRadius: 3
+                }]
+            },
+            options: simpleBarOptions(theme)
+        });
+    }
+
+    function setChartCardTitle(canvasId, title, subtitle) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var card = canvas.closest('.analytics-card');
+        if (!card) return;
+        var t = card.querySelector('.card-title');
+        if (t) t.textContent = title;
+        if (subtitle != null) {
+            var sub = card.querySelector('.analytics-card-header .text-muted');
+            if (sub) sub.textContent = subtitle;
+        }
     }
 
     function repaintCharts() {
@@ -1220,6 +1488,15 @@
         if (parts.length !== 3) return iso;
         var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
         return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function formatMonthLabel(ym) {
+        if (!ym) return '';
+        // ym looks like "2026-04"
+        var parts = String(ym).split('-');
+        if (parts.length < 2) return ym;
+        var d = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+        return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
     }
 
     function truncate(str, max) {

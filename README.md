@@ -54,7 +54,17 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   payment mix, with previous-period trend deltas.
 - Time-bucketed charts (hourly, day-of-week, daily), top-game leaderboards,
   and automation-activity breakdowns (actions by source / outcome / group).
-- Range presets: Today / 7d / 30d / 90d / All / Custom.
+- Range presets: Day / Week / Month / Year / Custom, with period navigation.
+- **Deep money history:** pick a range older than the ~30-day detailed feed
+  (a past year, a multi-year custom span) and the headline plays, tickets and
+  **play value** reach back ~2 decades — sourced from a venue-wide daily rollup
+  (`venue_daily_stats`) aggregated straight from the POS card ledger, so money
+  and tickets are real that far back. A "Historical view" banner names the exact
+  coverage window; the detailed breakdowns (by hour, by game, category, payment
+  mix, guest insights) only exist for the recent window, so they're hidden on
+  long ranges instead of shown partial. "Play value" is the dollars spent at the
+  game readers (broader than the recent "Reader CC payments" figure) and is
+  hidden from roles without `view_revenue` like every other dollar.
 
 ### Performance (`#/performance`)
 - Searchable per-game performance reporting over **Day / Week / Month / Year**
@@ -237,7 +247,7 @@ Add the following to your crontab (`crontab -e`), replacing the path:
 ```
 
 - **`cron_watchdog.php`** (every minute) — executes missed actions, enforces desired game states, re-queues broken `at` jobs, polls the CenterEdge play/system transaction feeds, writes a watchdog heartbeat.
-- **`cron.php`** (daily at 00:05) — syncs the game list from CenterEdge, plans all actions for the day, queues `at` jobs, rolls up the raw feed into the permanent per-game daily **and hourly** stats, backs up the SQLite DB (`data/backups/`, `VACUUM INTO`, keep 14), purges old data, rotates log files, runs any pending one-time MSSQL backfills (guest history + per-game play history), and writes a cron heartbeat.
+- **`cron.php`** (daily at 00:05) — syncs the game list from CenterEdge, plans all actions for the day, queues `at` jobs, rolls up the raw feed into the permanent per-game daily **and hourly** stats, refreshes the venue-wide daily rollup (`venue_daily_stats`), backs up the SQLite DB (`data/backups/`, `VACUUM INTO`, keep 14), purges old data, rotates log files, runs any pending one-time MSSQL backfills (guest history + per-game play history + venue-wide daily), and writes a cron heartbeat.
 
 Nothing about the MSSQL reporting or the backfills needs a CLI step — `cron.php` runs the backfills automatically (once, flag-guarded) as soon as it runs with an MSSQL connection configured, and `update.sh` runs them on deploy so history appears immediately.
 
@@ -374,10 +384,10 @@ The daily cron job (`cron.php`, recommended at 00:05) performs:
 2. **Missed-action catch-up** — executes any overdue actions from earlier.
 3. **Day planning** — merges recurring schedules with active overrides to compute all transition points for the day. Override transitions suppress conflicting schedule transitions. At each time slot, the highest-priority source wins. Past times are skipped.
 4. **At-job queueing** — queues each planned action as a Linux `at` job (or skips if `at` is unavailable).
-5. **Stats rollup** — aggregates the raw play feed into the permanent per-game, per-day `game_daily_stats` **and** per-game, per-local-hour `game_hourly_stats` tables (recomputing a trailing ~28-day window; hourly retained ~400 days). Runs BEFORE the purge; if it fails, the raw-feed purge is skipped so no un-rolled-up data is ever lost. The guest ledger (`card_activity`, new-vs-returning) is rolled up here too.
+5. **Stats rollup** — aggregates the raw play feed into the permanent per-game, per-day `game_daily_stats` **and** per-game, per-local-hour `game_hourly_stats` tables (recomputing a trailing ~28-day window; hourly retained ~400 days). Runs BEFORE the purge; if it fails, the raw-feed purge is skipped so no un-rolled-up data is ever lost. The guest ledger (`card_activity`, new-vs-returning) is rolled up here too. When MSSQL is configured, the trailing 40 days of the venue-wide daily rollup (`venue_daily_stats`, the Analytics overview's deep-history source) are refreshed here as well.
 6. **DB backup** — `VACUUM INTO` a compact snapshot in `data/backups/`, keeping the last 14.
 7. **Data purge** — removes action log entries older than 90 days, executed scheduled actions older than 30 days, expired overrides older than 90 days, and raw game-play transactions older than 30 days (long-range reporting is preserved by the rollups, which are never purged).
-8. **One-time MSSQL backfills** — if an MSSQL connection is configured, seeds the deep history once (flag-guarded): the guest ledger and per-game daily/hourly stats from the POS `PlayerCardTrans` ledger, reaching back ~2 decades. Shared runner `Scheduler::runPendingBackfills()` (also invoked by `run_backfills.php` / `update.sh`).
+8. **One-time MSSQL backfills** — if an MSSQL connection is configured, seeds the deep history once (flag-guarded): the guest ledger, per-game daily/hourly stats, and the venue-wide daily rollup (`venue_daily_stats`) from the POS `PlayerCardTrans` ledger, reaching back ~2 decades. Shared runner `Scheduler::runPendingBackfills()` (also invoked by `run_backfills.php` / `update.sh`).
 9. **Log rotation** — rotates `cron.log` and `watchdog.log` when they exceed 500KB (keeps last 256KB).
 10. **Heartbeat** — writes an ISO 8601 timestamp to `.heartbeat_cron`.
 

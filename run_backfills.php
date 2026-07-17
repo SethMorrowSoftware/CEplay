@@ -30,6 +30,10 @@ $res = Scheduler::runPendingBackfills($log);
 
 // Exit non-zero only if a backfill actively FAILED (so a caller can notice);
 // "skipped" (no MSSQL yet) and "already done" are both fine.
-$failed = ($res['card']['status'] ?? '') === 'failed' || ($res['game']['status'] ?? '') === 'failed';
-$log('Backfills: guest=' . ($res['card']['status'] ?? '?') . ', per-game=' . ($res['game']['status'] ?? '?') . '.');
+$failed = ($res['card']['status'] ?? '') === 'failed'
+    || ($res['game']['status'] ?? '') === 'failed'
+    || ($res['venue']['status'] ?? '') === 'failed';
+$log('Backfills: guest=' . ($res['card']['status'] ?? '?')
+    . ', per-game=' . ($res['game']['status'] ?? '?')
+    . ', venue-daily=' . ($res['venue']['status'] ?? '?') . '.');
 exit($failed ? 1 : 0);

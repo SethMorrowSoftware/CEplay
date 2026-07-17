@@ -2111,19 +2111,139 @@ class Scheduler {
     }
 
     /**
+     * One bounded MSSQL query → normalized venue-wide daily rows for [from, upper).
+     * plays/value from PlayerCardTrans TransType 1 (deductions at readers,
+     * rdrkey<>0) — plays = row count (matching the per-game backfill's
+     * definition), value = SUM(DollarAmount) in real dollars; tickets = SUM of
+     * all ValueNo 3 (earned, matching Ticket Trends); cards = distinct cards that
+     * played. Dates are app-generated YYYY-MM-DD literals (not user input) and
+     * the query is single-SELECT (assertReadOnly-guarded in rows()).
+     *
+     * @return array<int,array{day:string,plays:int,value:float,tickets:float,cards:int}>
+     */
+    private static function venueDailyRowsFromMssql(MssqlClient $client, string $from, string $upper): array {
+        $sql = "SELECT CONVERT(VARCHAR(10), TransDateTime, 120) AS d,"
+            . " SUM(CASE WHEN TransType = 1 AND rdrkey <> 0 THEN 1 ELSE 0 END) AS plays,"
+            . " SUM(CASE WHEN TransType = 1 AND rdrkey <> 0 THEN DollarAmount ELSE 0 END) AS val,"
+            . " SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets,"
+            . " COUNT(DISTINCT CASE WHEN TransType = 1 AND rdrkey <> 0 THEN CardNumber END) AS cards"
+            . " FROM dbo.PlayerCardTrans"
+            . " WHERE TransDateTime >= '{$from}' AND TransDateTime < '{$upper}'"
+            . " GROUP BY CONVERT(VARCHAR(10), TransDateTime, 120)";
+        $out = [];
+        foreach ($client->rows($sql, 500000) as $r) {
+            $d = substr((string)($r['d'] ?? ''), 0, 10);
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+            $out[] = [
+                'day'     => $d,
+                'plays'   => (int)($r['plays'] ?? 0),
+                'value'   => (float)($r['val'] ?? 0),
+                'tickets' => (float)($r['tickets'] ?? 0),
+                'cards'   => (int)($r['cards'] ?? 0),
+            ];
+        }
+        return $out;
+    }
+
+    /** Write venue daily rows to venue_daily_stats in one transaction (small batch). */
+    private static function writeVenueDailyRows(array $rows): int {
+        if (!$rows) return 0;
+        $db = DB::getInstance();
+        $written = 0;
+        $db->exec('BEGIN');
+        try {
+            foreach ($rows as $r) {
+                DB::execute(
+                    'INSERT OR REPLACE INTO venue_daily_stats
+                        (stat_date, plays, value, tickets, unique_cards, updated_at)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, datetime(\'now\'))',
+                    [$r['day'], $r['plays'], $r['value'], $r['tickets'], $r['cards']]
+                );
+                $written++;
+            }
+            $db->exec('COMMIT');
+        } catch (Exception $e) { $db->exec('ROLLBACK'); throw $e; }
+        return $written;
+    }
+
+    /**
+     * One-time DEEP backfill of venue_daily_stats from the POS ledger — venue-
+     * wide daily plays/value/tickets/unique-cards for the Analytics overview's
+     * deep-history view. Covers everything up to (not including) today; today is
+     * always served live from the raw feed, and refreshVenueDailyStatsRecent()
+     * keeps recent days current. Monthly batches keep each MSSQL query bounded
+     * (and the client query timeout caps it); one small commit per month so the
+     * SQLite writer is never held long. Idempotent (INSERT OR REPLACE). Runs
+     * from cron, never a web request.
+     *
+     * @return array{skipped?:bool, reason?:string, days:int, earliest:?string}
+     */
+    public static function backfillVenueDailyStatsFromMssql(int $fromYear = 2005, ?callable $log = null): array {
+        require_once __DIR__ . '/mssql_client.php';
+        if (!MssqlClient::isConfigured()) {
+            return ['skipped' => true, 'reason' => 'MSSQL not configured'];
+        }
+        $note = function (string $m) use ($log) { if ($log) $log($m); };
+        $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+
+        $today = (new DateTime('now', $tz))->format('Y-m-d');
+        if ($fromYear < 1990) $fromYear = 1990;
+        $toYear = (int)substr($today, 0, 4);
+
+        $client = new MssqlClient();
+        $client->setTimeout(180);
+        $written = 0;
+
+        for ($year = $fromYear; $year <= $toYear; $year++) {
+            for ($m = 1; $m <= 12; $m++) {
+                $from  = sprintf('%04d-%02d-01', $year, $m);
+                $next  = ($m === 12) ? sprintf('%04d-01-01', $year + 1) : sprintf('%04d-%02d-01', $year, $m + 1);
+                $upper = ($next > $today) ? $today : $next; // exclusive; never today or the future
+                if ($from >= $upper) continue;
+                $written += self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $from, $upper));
+            }
+        }
+        $row = DB::queryOne('SELECT MIN(stat_date) AS earliest FROM venue_daily_stats');
+        $note("Venue daily backfill wrote {$written} day-rows; earliest " . ($row['earliest'] ?? '?') . '.');
+        return ['days' => $written, 'earliest' => $row['earliest'] ?? null];
+    }
+
+    /**
+     * Refresh the trailing window of venue_daily_stats from the POS ledger.
+     * Cheap (one bounded MSSQL query + a small batch of upserts) — run nightly
+     * from cron so complete recent days stay accurate as late transactions post.
+     */
+    public static function refreshVenueDailyStatsRecent(int $days = 40, ?callable $log = null): array {
+        require_once __DIR__ . '/mssql_client.php';
+        if (!MssqlClient::isConfigured()) {
+            return ['skipped' => true, 'reason' => 'MSSQL not configured'];
+        }
+        $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+        $today = (new DateTime('now', $tz))->format('Y-m-d');
+        $from  = (new DateTime('now', $tz))->modify('-' . max(1, $days) . ' days')->format('Y-m-d');
+        $client = new MssqlClient();
+        $written = self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $from, $today));
+        if ($log) $log("Venue daily refresh: {$written} recent day-rows.");
+        return ['days' => $written];
+    }
+
+    /**
      * Run whichever one-time historical MSSQL backfills haven't finished yet
-     * (guest ledger, then per-game play history), each guarded by its own config
-     * flag so a success is never repeated and a skip/failure simply retries on
-     * the next call. This is the single home for that flag logic — shared by
-     * cron.php (nightly) and run_backfills.php / update.sh (on demand), so a
-     * deploy can surface the deep history immediately instead of at 00:05.
+     * (guest ledger, then per-game play history, then venue-wide daily), each
+     * guarded by its own config flag so a success is never repeated and a
+     * skip/failure simply retries on the next call. This is the single home for
+     * that flag logic — shared by cron.php (nightly) and run_backfills.php /
+     * update.sh (on demand), so a deploy can surface the deep history immediately
+     * instead of at 00:05.
      *
      * @param callable|null $log fn(string) for progress
-     * @return array{card:array, game:array} per-backfill status
+     * @return array{card:array, game:array, venue:array} per-backfill status
      */
     public static function runPendingBackfills(?callable $log = null): array {
         $note = function (string $m) use ($log) { if ($log) $log($m); };
-        $out = ['card' => ['status' => 'already'], 'game' => ['status' => 'already']];
+        $out = ['card' => ['status' => 'already'], 'game' => ['status' => 'already'], 'venue' => ['status' => 'already']];
 
         if (DB::getConfig('card_activity_backfill_done') !== '1') {
             $note('Guest-history backfill (card_activity) from MSSQL PlayerCardTrans...');
@@ -2158,6 +2278,24 @@ class Scheduler {
                 }
             } catch (Exception $e) {
                 $out['game'] = ['status' => 'failed', 'error' => $e->getMessage()];
+                $note('  Failed (will retry next run): ' . $e->getMessage());
+            }
+        }
+
+        if (DB::getConfig('venue_daily_backfill_done') !== '1') {
+            $note('Venue-wide daily backfill (venue_daily_stats) from MSSQL PlayerCardTrans...');
+            try {
+                $vs = self::backfillVenueDailyStatsFromMssql(2005, $note);
+                if (!empty($vs['skipped'])) {
+                    $out['venue'] = ['status' => 'skipped', 'reason' => $vs['reason']];
+                    $note('  Skipped: ' . $vs['reason'] . ' — will retry on a later run.');
+                } else {
+                    DB::setConfig('venue_daily_backfill_done', '1');
+                    $out['venue'] = ['status' => 'done'] + $vs;
+                    $note("  Done: {$vs['days']} venue day-rows; earliest " . ($vs['earliest'] ?? '?') . '.');
+                }
+            } catch (Exception $e) {
+                $out['venue'] = ['status' => 'failed', 'error' => $e->getMessage()];
                 $note('  Failed (will retry next run): ' . $e->getMessage());
             }
         }
