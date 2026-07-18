@@ -145,7 +145,7 @@
         var tiles = [
             summTile(formatInt(batches.length), batches.length === 1 ? 'Batch' : 'Batches'),
             summTile(formatInt(totalCards), 'Cards given out'),
-            summTile(haveStats ? formatInt(totalUsed) : '—', 'Came back' + (actPct != null ? ' · ' + actPct + '%' : ''))
+            summTile(haveStats ? formatInt(totalUsed) : '—', 'Played' + (actPct != null ? ' · ' + actPct + '%' : ''))
         ];
         if (money) tiles.push(summTile(haveStats ? formatCurrency(totalExtra) : '—', 'Extra money loaded'));
         return App.el('div', { className: 'promo-summary' }, tiles);
@@ -201,8 +201,11 @@
         var metaLines = [
             App.el('div', { className: 'promo-card-bignum', textContent: s ? formatInt(s.cards_used) : '—' }),
             App.el('div', { className: 'promo-card-metasub text-muted text-xs', textContent:
-                defined != null ? 'of ' + formatInt(defined) + ' came back' : 'cards used' })
+                defined != null ? 'of ' + formatInt(defined) + ' played' : 'cards played' })
         ];
+        if (s && s.cards_loaded != null) {
+            metaLines.push(App.el('div', { className: 'text-muted text-xs', textContent: formatInt(s.cards_loaded) + ' loaded with value' }));
+        }
         if (money && b.initial_value) {
             metaLines.push(App.el('div', { className: 'promo-card-face text-xs', textContent:
                 formatCurrency(b.initial_value) + '/card' + (b.total_initial != null ? ' · ' + formatCurrency(b.total_initial) + ' face value' : '') }));
@@ -324,29 +327,41 @@
             App.el('div', { className: 'promo-hero-big', textContent:
                 formatInt(s.cards_used) + (s.cards_defined != null ? ' / ' + formatInt(s.cards_defined) : '') }),
             App.el('div', { className: 'text-secondary', textContent:
-                'cards came back' + (actPct != null ? ' — ' + Math.round(actPct) + '% of the batch was used' : '') })
+                'cards played' + (actPct != null ? ' — ' + Math.round(actPct) + '% of the batch has been used' : '') })
         ];
+        // Loaded-vs-played context (a giveaway is bulk-loaded up front; the value
+        // metric is who actually played).
+        if (s.cards_loaded != null) {
+            var loadedMsg = formatInt(s.cards_loaded) + ' loaded with the promo value';
+            if (s.cards_used === 0 && s.cards_loaded > 0) loadedMsg += ' · none played yet';
+            lines.push(App.el('div', { className: 'text-muted text-sm', textContent: loadedMsg }));
+        }
         var extra = ['Reloaded ' + formatInt(s.cards_reloaded) + (s.reload_rate != null ? ' (' + Math.round(s.reload_rate * 100) + '%)' : '')];
         if (money && s.avg_additional != null) extra.push('avg ' + formatCurrency(s.avg_additional) + ' added');
         lines.push(App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.25rem' }, textContent: extra.join(' · ') }));
         return App.el('div', { className: 'promo-hero' }, [
-            buildGauge(actPct, { large: true, label: 'came back' }),
+            buildGauge(actPct, { large: true, label: 'played' }),
             App.el('div', { className: 'promo-hero-meta' }, lines)
         ]);
     }
 
     function buildDetailTiles(s, b, money) {
         var tiles = [];
+        if (s.cards_loaded != null) {
+            tiles.push(tile('Loaded', formatInt(s.cards_loaded)
+                + (s.cards_defined ? ' / ' + formatInt(s.cards_defined) : ''),
+                'cards carrying the promo value'));
+        }
         tiles.push(tile('Plays', formatInt(s.plays), 'total game plays on these cards'));
         tiles.push(tile('Tickets', formatInt(Math.round(s.tickets || 0)), 'redemption tickets earned'));
         tiles.push(tile('Reloaded', formatInt(s.cards_reloaded)
             + (s.reload_rate != null ? ' · ' + Math.round(s.reload_rate * 100) + '%' : ''),
-            'cards that had money added'));
+            'cards guests added real money to (beyond the promo value)'));
         if (money) {
             tiles.push(tile('Avg added', s.avg_additional != null ? formatCurrency(s.avg_additional) : '—',
-                'average reload per reloaded card'));
-            tiles.push(tile('Total reloaded', formatCurrency(s.reload_value),
-                s.avg_additional_all != null ? formatCurrency(s.avg_additional_all) + ' per card used' : 'extra money loaded'));
+                'average top-up per card that was reloaded'));
+            tiles.push(tile('Total added', formatCurrency(s.reload_value),
+                'extra money guests loaded beyond the promo value'));
             tiles.push(tile('Value played', formatCurrency(s.play_value), 'spent at the readers'));
         }
         var seen = '';
@@ -360,10 +375,10 @@
         var cards = data.cards || [];
         var wrap = App.el('div', { className: 'promo-cards-section' }, [
             App.el('div', { className: 'stat-label', style: { margin: '1rem 0 0.5rem' }, textContent:
-                'Cards used' + (data.cards_capped ? ' (top 200 most recent)' : ' (' + cards.length + ')') })
+                'Cards played' + (data.cards_capped ? ' (top 200 most recent)' : ' (' + cards.length + ')') })
         ]);
         if (cards.length === 0) {
-            wrap.appendChild(App.el('div', { className: 'text-muted text-sm', textContent: 'No individual cards to show.' }));
+            wrap.appendChild(App.el('div', { className: 'text-muted text-sm', textContent: 'No cards have been played yet — they’re loaded with the promo value and waiting to be used.' }));
             return wrap;
         }
         var head = [

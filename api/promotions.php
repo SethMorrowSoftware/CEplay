@@ -35,10 +35,21 @@
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
-// Aggregate performance for one card-number range. TransType 1 = plays
-// (DollarAmount = value spent at readers), TransType 3 = value added (reloads),
-// ValueNo 3 = tickets earned. TRY_CONVERT(BIGINT, CardNumber) tolerates the
-// '000000'/blank sentinels and dedupes number formats (0288051 == 288051).
+// Aggregate performance for one card-number range. Metric definitions:
+//   cards_used   = cards that actually PLAYED (distinct cn with a TransType 1).
+//                  "Came back / got used" — NOT cards that merely have the
+//                  promo value loaded (a giveaway is bulk-loaded up front, so
+//                  counting the load as usage would always read ~100%).
+//   cards_loaded = cards that have the promo value on them (distinct cn with a
+//                  TransType 3) — how many were prepped/activated.
+//   plays/value  = TransType 1 (DollarAmount = value spent at readers).
+//   reloads      = PAID top-ups only: TransType 3 AND DollarAmount > 0. The
+//                  initial $X promo value is loaded as COMPED value
+//                  (DollarAmount 0), so it is NOT a reload — "additional money
+//                  added" means real dollars a guest put on beyond the promo.
+//   tickets      = ValueNo 3 earned.
+// TRY_CONVERT(BIGINT, CardNumber) tolerates the '000000'/blank sentinels and
+// dedupes number formats (0288051 == 288051).
 //
 // MOST-RECENT-VERSION DEDUP: card numbers get reissued to different physical
 // cards over the years, so we don't want a decade-old card's activity folded
@@ -67,12 +78,13 @@ recent AS (
     SELECT l.* FROM lifed l
     JOIN (SELECT cn, MAX(life) AS ml FROM lifed GROUP BY cn) x ON l.cn = x.cn AND l.life = x.ml
 )
-SELECT COUNT(DISTINCT cn) AS cards_used,
+SELECT COUNT(DISTINCT CASE WHEN TransType = 1 THEN cn END) AS cards_used,
+       COUNT(DISTINCT CASE WHEN TransType = 3 THEN cn END) AS cards_loaded,
        SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,
        SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,
-       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,
-       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,
-       COUNT(DISTINCT CASE WHEN TransType = 3 THEN cn END) AS cards_reloaded,
+       SUM(CASE WHEN TransType = 3 AND DollarAmount > 0 THEN 1 ELSE 0 END) AS reloads,
+       SUM(CASE WHEN TransType = 3 AND DollarAmount > 0 THEN DollarAmount ELSE 0 END) AS reload_value,
+       COUNT(DISTINCT CASE WHEN TransType = 3 AND DollarAmount > 0 THEN cn END) AS cards_reloaded,
        SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets,
        CONVERT(VARCHAR(19), MIN(ts), 120) AS first_seen,
        CONVERT(VARCHAR(19), MAX(ts), 120) AS last_seen
@@ -107,11 +119,14 @@ SELECT TOP 200 MIN(card_raw) AS card,
        CONVERT(VARCHAR(19), MAX(ts), 120) AS last_seen,
        SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,
        SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,
-       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,
-       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,
+       SUM(CASE WHEN TransType = 3 AND DollarAmount > 0 THEN 1 ELSE 0 END) AS reloads,
+       SUM(CASE WHEN TransType = 3 AND DollarAmount > 0 THEN DollarAmount ELSE 0 END) AS reload_value,
        SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets
 FROM recent
 GROUP BY cn
+HAVING SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) > 0
+    OR SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) > 0
+    OR SUM(CASE WHEN TransType = 3 AND DollarAmount > 0 THEN 1 ELSE 0 END) > 0
 ORDER BY MAX(ts) DESC
 SQL;
 
@@ -383,14 +398,15 @@ function promoRunAggregate(MssqlClient $client, array $batch): array {
 function promoStatsFromAggRow(array $row, array $batch): array {
     $vals = array_values($row);
     $cardsUsed     = (int)promoCell($row, $vals, 'cards_used', 0);
-    $plays         = (int)promoCell($row, $vals, 'plays', 1);
-    $playValue     = (float)promoCell($row, $vals, 'play_value', 2);
-    $reloads       = (int)promoCell($row, $vals, 'reloads', 3);
-    $reloadValue   = (float)promoCell($row, $vals, 'reload_value', 4);
-    $cardsReloaded = (int)promoCell($row, $vals, 'cards_reloaded', 5);
-    $tickets       = (float)promoCell($row, $vals, 'tickets', 6);
-    $firstSeen     = trim((string)promoCell($row, $vals, 'first_seen', 7));
-    $lastSeen      = trim((string)promoCell($row, $vals, 'last_seen', 8));
+    $cardsLoaded   = (int)promoCell($row, $vals, 'cards_loaded', 1);
+    $plays         = (int)promoCell($row, $vals, 'plays', 2);
+    $playValue     = (float)promoCell($row, $vals, 'play_value', 3);
+    $reloads       = (int)promoCell($row, $vals, 'reloads', 4);
+    $reloadValue   = (float)promoCell($row, $vals, 'reload_value', 5);
+    $cardsReloaded = (int)promoCell($row, $vals, 'cards_reloaded', 6);
+    $tickets       = (float)promoCell($row, $vals, 'tickets', 7);
+    $firstSeen     = trim((string)promoCell($row, $vals, 'first_seen', 8));
+    $lastSeen      = trim((string)promoCell($row, $vals, 'last_seen', 9));
 
     $defined = $batch['cards_defined'] ?? null;
     $activation = ($defined && $defined > 0) ? round($cardsUsed / $defined, 4) : null;
@@ -398,6 +414,7 @@ function promoStatsFromAggRow(array $row, array $batch): array {
     return [
         'cards_defined'        => $defined,
         'cards_used'           => $cardsUsed,
+        'cards_loaded'         => $cardsLoaded,
         'activation_rate'      => $activation,
         'plays'                => $plays,
         'play_value'           => round($playValue, 2),
@@ -555,10 +572,11 @@ function promoTest(?array $input = null): void {
         echo json_encode(['success' => false, 'error' => 'Enter a valid card range (whole numbers, "to" ≥ "from").']);
         return;
     }
-    $since = PROMO_SINCE_FLOOR;
-    if (isset($input['since']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$input['since'])) {
-        $since = (string)$input['since'];
-    }
+    // Probe floor: an explicit since if given, else the recent default (same as
+    // a dateless batch). promoSinceFor with a blank date returns that default.
+    $since = (isset($input['since']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$input['since']))
+        ? (string)$input['since']
+        : promoSinceFor(['giveaway_date' => '']);
     $probeBatch = ['card_from' => $from, 'card_to' => $to, 'giveaway_date' => $since,
                    'cards_defined' => ((int)$to - (int)$from + 1)];
 
