@@ -396,6 +396,8 @@
         });
         table.appendChild(tbody);
         wrap.appendChild(App.el('div', { className: 'table-scroll-x' }, [table]));
+        wrap.appendChild(App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
+            'Card numbers get reissued to new cards over the years — this shows only the most recent card for each number, so older cards that once had these numbers are ignored.' }));
         return wrap;
     }
 
@@ -431,7 +433,7 @@
                 field('Card to', toInput, 'last card number (inclusive)')
             ]),
             App.el('div', { className: 'promo-form-row' }, [
-                field('Given out on', dateInput, 'bounds the search — recommended'),
+                field('Given out on', dateInput, 'optional — speeds things up and pins results to this giveaway; older reuses of the same numbers are ignored either way'),
                 money ? field('Starting value / card', valueInput, 'e.g. $30 preloaded') : App.el('div')
             ]),
             field('Notes', notesInput)

@@ -35,18 +35,90 @@
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
 
-// Aggregate performance for one card-number range since :since. One row of
-// totals. TransType 1 = plays (DollarAmount = value spent at readers),
-// TransType 3 = value added (reloads), ValueNo 3 = tickets earned. The
-// :since floor keeps the scan on the TransDateTime index; the CardNumber cast
-// (TRY_CONVERT) tolerates the '000000'/blank sentinels and any non-numeric card.
-const PROMO_DEFAULT_RANGE_SQL = "SELECT COUNT(DISTINCT CardNumber) AS cards_used,\n       SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,\n       SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,\n       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,\n       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,\n       COUNT(DISTINCT CASE WHEN TransType = 3 THEN CardNumber END) AS cards_reloaded,\n       SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets,\n       CONVERT(VARCHAR(19), MIN(TransDateTime), 120) AS first_seen,\n       CONVERT(VARCHAR(19), MAX(TransDateTime), 120) AS last_seen\nFROM [CenterEdge].[dbo].[PlayerCardTrans]\nWHERE TransDateTime >= :since\n  AND TRY_CONVERT(BIGINT, CardNumber) BETWEEN :cardfrom AND :cardto";
+// Aggregate performance for one card-number range. TransType 1 = plays
+// (DollarAmount = value spent at readers), TransType 3 = value added (reloads),
+// ValueNo 3 = tickets earned. TRY_CONVERT(BIGINT, CardNumber) tolerates the
+// '000000'/blank sentinels and dedupes number formats (0288051 == 288051).
+//
+// MOST-RECENT-VERSION DEDUP: card numbers get reissued to different physical
+// cards over the years, so we don't want a decade-old card's activity folded
+// into a recent giveaway. Per card number we split activity into "lives" at any
+// gap > 365 days (a reissue) and keep ONLY the most recent life — so the numbers
+// reflect the card currently carrying that number. The :since floor bounds the
+// scan for speed (the giveaway date when set, else a recent default).
+const PROMO_DEFAULT_RANGE_SQL = <<<'SQL'
+WITH inrange AS (
+    SELECT TRY_CONVERT(BIGINT, CardNumber) AS cn, CardNumber AS card_raw,
+           TransDateTime AS ts, TransType, ValueNo, DollarAmount, Amount
+    FROM [CenterEdge].[dbo].[PlayerCardTrans]
+    WHERE TransDateTime >= :since
+      AND TRY_CONVERT(BIGINT, CardNumber) BETWEEN :cardfrom AND :cardto
+),
+marked AS (
+    SELECT *, CASE WHEN DATEDIFF(DAY, LAG(ts) OVER (PARTITION BY cn ORDER BY ts), ts) > 365
+                   THEN 1 ELSE 0 END AS newlife
+    FROM inrange
+),
+lifed AS (
+    SELECT *, SUM(newlife) OVER (PARTITION BY cn ORDER BY ts ROWS UNBOUNDED PRECEDING) AS life
+    FROM marked
+),
+recent AS (
+    SELECT l.* FROM lifed l
+    JOIN (SELECT cn, MAX(life) AS ml FROM lifed GROUP BY cn) x ON l.cn = x.cn AND l.life = x.ml
+)
+SELECT COUNT(DISTINCT cn) AS cards_used,
+       SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,
+       SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,
+       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,
+       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,
+       COUNT(DISTINCT CASE WHEN TransType = 3 THEN cn END) AS cards_reloaded,
+       SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets,
+       CONVERT(VARCHAR(19), MIN(ts), 120) AS first_seen,
+       CONVERT(VARCHAR(19), MAX(ts), 120) AS last_seen
+FROM recent
+SQL;
 
-// Per-card drill-down (fixed; the detail view only). Same predicate as the
-// aggregate above. Capped at TOP 200 most-recently-active cards.
-const PROMO_PERCARD_SQL = "SELECT TOP 200 CardNumber AS card,\n       CONVERT(VARCHAR(19), MIN(TransDateTime), 120) AS first_seen,\n       CONVERT(VARCHAR(19), MAX(TransDateTime), 120) AS last_seen,\n       SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,\n       SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,\n       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,\n       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,\n       SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets\nFROM [CenterEdge].[dbo].[PlayerCardTrans]\nWHERE TransDateTime >= :since\n  AND TRY_CONVERT(BIGINT, CardNumber) BETWEEN :cardfrom AND :cardto\nGROUP BY CardNumber\nORDER BY MAX(TransDateTime) DESC";
+// Per-card drill-down (detail view). Same most-recent-life dedup as the
+// aggregate; one row per card number, capped at TOP 200 most-recently-active.
+const PROMO_PERCARD_SQL = <<<'SQL'
+WITH inrange AS (
+    SELECT TRY_CONVERT(BIGINT, CardNumber) AS cn, CardNumber AS card_raw,
+           TransDateTime AS ts, TransType, ValueNo, DollarAmount, Amount
+    FROM [CenterEdge].[dbo].[PlayerCardTrans]
+    WHERE TransDateTime >= :since
+      AND TRY_CONVERT(BIGINT, CardNumber) BETWEEN :cardfrom AND :cardto
+),
+marked AS (
+    SELECT *, CASE WHEN DATEDIFF(DAY, LAG(ts) OVER (PARTITION BY cn ORDER BY ts), ts) > 365
+                   THEN 1 ELSE 0 END AS newlife
+    FROM inrange
+),
+lifed AS (
+    SELECT *, SUM(newlife) OVER (PARTITION BY cn ORDER BY ts ROWS UNBOUNDED PRECEDING) AS life
+    FROM marked
+),
+recent AS (
+    SELECT l.* FROM lifed l
+    JOIN (SELECT cn, MAX(life) AS ml FROM lifed GROUP BY cn) x ON l.cn = x.cn AND l.life = x.ml
+)
+SELECT TOP 200 MIN(card_raw) AS card,
+       CONVERT(VARCHAR(19), MIN(ts), 120) AS first_seen,
+       CONVERT(VARCHAR(19), MAX(ts), 120) AS last_seen,
+       SUM(CASE WHEN TransType = 1 THEN 1 ELSE 0 END) AS plays,
+       SUM(CASE WHEN TransType = 1 THEN DollarAmount ELSE 0 END) AS play_value,
+       SUM(CASE WHEN TransType = 3 THEN 1 ELSE 0 END) AS reloads,
+       SUM(CASE WHEN TransType = 3 THEN DollarAmount ELSE 0 END) AS reload_value,
+       SUM(CASE WHEN ValueNo = 3 THEN Amount ELSE 0 END) AS tickets
+FROM recent
+GROUP BY cn
+ORDER BY MAX(ts) DESC
+SQL;
 
-const PROMO_SINCE_FLOOR = '1900-01-01'; // "all time" when a batch has no giveaway date
+// When a batch has no giveaway date, bound the scan to this many days back so
+// the query stays fast (the most-recent-life dedup handles older reuse within
+// the window). Setting a giveaway date overrides this with a tighter floor.
+const PROMO_DEFAULT_LOOKBACK_DAYS = 1095; // ~3 years
 
 function handlePromotions(string $method, array $parts, ?array $input): void {
     // View gate for every method; mutations require promotions_manage below.
@@ -264,10 +336,18 @@ function promoDelete(int $batchId): void {
 // Live analysis (MSSQL)
 // ------------------------------------------------------------------
 
-/** The giveaway date bounds the scan; blank → all time. */
+/**
+ * The scan floor (:since). Use the giveaway date when set (tight + fast); else
+ * default to a recent window so the query stays fast — the query's
+ * most-recent-life dedup drops any older reuse of the same card numbers, so
+ * this floor only needs to reach back far enough to cover a current card's life.
+ */
 function promoSinceFor(array $batch): string {
     $g = (string)($batch['giveaway_date'] ?? '');
-    return preg_match('/^\d{4}-\d{2}-\d{2}$/', $g) ? $g : PROMO_SINCE_FLOOR;
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $g)) return $g;
+    $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+    try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+    return (new DateTime('now', $tz))->modify('-' . PROMO_DEFAULT_LOOKBACK_DAYS . ' days')->format('Y-m-d');
 }
 
 /** Bind :since / :cardfrom / :cardto into a query (validated, injection-safe). */
