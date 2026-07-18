@@ -1,10 +1,11 @@
 /* ============================================
    Promotional Cards page
    ============================================
-   Managed list of giveaway card-number ranges (like Reader Groups) + a
-   click-through detail view with per-card breakdown. Reuses shared primitives
-   (.data-table, .table-scroll-x, .stat-label, .form-*, and the Labor admin
-   editor .labor-*); this file only adds the promo accent + a few layout bits.
+   Managed list of giveaway card-number ranges as a visual card grid (each with
+   a circular activation gauge), a summary strip, and a click-through detail
+   view with a hero gauge + per-card breakdown. Reuses shared primitives
+   (.data-table, .table-scroll-x, .form-*, and the Labor admin editor .labor-*);
+   this file adds the promo accent, the gauge, and the card/grid layout.
    Theme-aware via design tokens.
    ============================================ */
 
@@ -30,38 +31,140 @@
     line-height: 1.45;
 }
 
-/* ---- List table ---- */
-.promo-table .promo-name { font-weight: 600; }
+/* ---- Empty state ---- */
+.promo-empty {
+    text-align: center;
+    padding: 2.5rem 1rem 2rem;
+}
+.promo-empty-icon { font-size: 2.6rem; line-height: 1; margin-bottom: 0.6rem; }
+.promo-empty-title { font-size: 1.15rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.35rem; }
+.promo-empty-sub { color: var(--text-secondary); font-size: 0.9rem; max-width: 42rem; margin: 0 auto 1rem; line-height: 1.5; }
+
+/* ---- Summary strip ---- */
+.promo-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+.promo-summary-tile {
+    background: linear-gradient(180deg, rgba(var(--promo-rgb), 0.10), rgba(var(--promo-rgb), 0.02));
+    border: 1px solid rgba(var(--promo-rgb), 0.22);
+    border-radius: var(--radius-md);
+    padding: 0.7rem 0.9rem;
+}
+.promo-summary-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+.promo-summary-label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.1rem; }
+
+/* ---- Card grid ---- */
+.promo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+}
+.promo-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    cursor: pointer;
+    transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+.promo-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(var(--promo-rgb), 0.5);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.promo-card:hover .promo-card-open { color: var(--promo); }
+.promo-card-selected {
+    border-color: var(--promo);
+    box-shadow: 0 0 0 1px var(--promo) inset;
+}
+
+.promo-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+.promo-card-name { font-weight: 700; font-size: 1.02rem; color: var(--text-primary); line-height: 1.25; }
+.promo-card-sub { margin-top: 0.3rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.78rem; }
+.promo-card-actions { display: flex; gap: 0.15rem; flex: 0 0 auto; opacity: 0.65; transition: opacity 0.12s ease; }
+.promo-card:hover .promo-card-actions { opacity: 1; }
+
 .promo-range-chip {
     display: inline-block;
     font-variant-numeric: tabular-nums;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     padding: 0.1rem 0.45rem;
     border-radius: var(--radius-sm);
-    background: rgba(var(--promo-rgb), 0.12);
+    background: rgba(var(--promo-rgb), 0.14);
     color: var(--promo);
     white-space: nowrap;
 }
-.promo-came-back { font-variant-numeric: tabular-nums; }
-.promo-bar {
-    height: 5px;
-    border-radius: 3px;
-    background: rgba(var(--promo-rgb), 0.15);
-    overflow: hidden;
-    margin: 0.3rem 0 0.15rem auto;
-    max-width: 120px;
+
+/* ---- Activation gauge (conic ring) ---- */
+.promo-gauge {
+    --pct: 0;
+    width: 74px; height: 74px; flex: 0 0 auto;
+    border-radius: 50%;
+    background: conic-gradient(var(--promo) calc(var(--pct) * 3.6deg), rgba(var(--promo-rgb), 0.16) 0deg);
+    display: grid; place-items: center;
+    position: relative;
 }
-.promo-bar-fill {
-    height: 100%;
-    background: var(--promo);
-    border-radius: 3px;
+.promo-gauge-inner {
+    position: absolute; inset: 7px; border-radius: 50%;
+    background: var(--bg-card);
+    display: grid; place-items: center; text-align: center;
 }
-.promo-row-selected { background: rgba(var(--promo-rgb), 0.08); }
-.promo-row-selected:hover { background: rgba(var(--promo-rgb), 0.12); }
+.promo-gauge-val { font-weight: 700; font-size: 1.05rem; font-variant-numeric: tabular-nums; color: var(--text-primary); line-height: 1; }
+.promo-gauge-cap { font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-top: 2px; }
+.promo-gauge-empty { background: rgba(var(--promo-rgb), 0.10); }
+.promo-gauge-empty .promo-gauge-val { color: var(--text-muted); }
+.promo-gauge-lg { width: 128px; height: 128px; }
+.promo-gauge-lg .promo-gauge-inner { inset: 11px; }
+.promo-gauge-lg .promo-gauge-val { font-size: 1.75rem; }
+.promo-gauge-lg .promo-gauge-cap { font-size: 0.62rem; }
+
+.promo-card-gauge-row { display: flex; align-items: center; gap: 0.9rem; }
+.promo-card-gauge-meta { min-width: 0; }
+.promo-card-bignum { font-size: 1.5rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.promo-card-metasub { margin-top: 0.05rem; }
+.promo-card-face { color: var(--promo); margin-top: 0.25rem; font-variant-numeric: tabular-nums; }
+
+/* ---- Stat chips ---- */
+.promo-card-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+    gap: 0.4rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.75rem;
+}
+.promo-chip { text-align: center; min-width: 0; }
+.promo-chip-val { font-weight: 600; font-size: 0.92rem; color: var(--text-primary); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.promo-chip-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); margin-top: 0.1rem; }
+
+.promo-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.promo-card-open { font-weight: 600; color: var(--text-secondary); transition: color 0.12s ease; }
 
 /* ---- Detail ---- */
-.promo-detail-card { border-top: 3px solid var(--promo); }
+.promo-detail-card { border-top: 3px solid var(--promo); margin-bottom: 1.5rem; }
 .promo-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+
+.promo-hero {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.5rem 0 1.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.promo-hero .promo-gauge-inner { background: var(--bg-card); }
+.promo-hero-big { font-size: 2rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
 .promo-tile-grid {
     display: grid;
@@ -75,7 +178,6 @@
     border-radius: var(--radius-md);
     padding: 0.75rem 0.85rem;
 }
-.promo-tile-accent { border-color: rgba(var(--promo-rgb), 0.5); }
 .promo-tile-value {
     font-size: 1.35rem;
     font-weight: 700;
@@ -113,4 +215,5 @@
 
 @media (max-width: 640px) {
     .promo-form-row { grid-template-columns: 1fr; }
+    .promo-hero { flex-direction: column; align-items: flex-start; gap: 1rem; }
 }

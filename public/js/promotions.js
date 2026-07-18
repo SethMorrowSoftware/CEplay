@@ -110,98 +110,130 @@
         var batches = data.batches || [];
         var money = moneyOK(data);
 
-        if (batches.length === 0) {
-            var empty = App.el('div', { className: 'text-center', style: { padding: '2rem 1rem' } }, [
-                App.el('div', { className: 'text-secondary', style: { marginBottom: '0.75rem' }, textContent: 'No promotional card batches yet.' })
-            ]);
-            if (canManage()) {
-                empty.appendChild(App.el('button', {
-                    className: 'btn btn-primary', textContent: '+ Create your first batch',
-                    onClick: function() { openEditor(null); }
-                }));
-            }
-            box.appendChild(empty);
-            return;
+        if (batches.length === 0) { box.appendChild(buildEmptyState()); return; }
+
+        box.appendChild(buildSummaryStrip(data, money));
+
+        var grid = App.el('div', { className: 'promo-grid' });
+        batches.forEach(function(b) { grid.appendChild(buildBatchCard(b, money)); });
+        box.appendChild(grid);
+    }
+
+    function buildEmptyState() {
+        var wrap = App.el('div', { className: 'promo-empty' }, [
+            App.el('div', { className: 'promo-empty-icon', 'aria-hidden': 'true', textContent: '🎟️' }),
+            App.el('div', { className: 'promo-empty-title', textContent: 'No promotional batches yet' }),
+            App.el('div', { className: 'promo-empty-sub', textContent: 'Add a block of giveaway cards by number range — like the K104 on-air cards — and track how many came back, how much extra money was loaded, and how much they played.' })
+        ]);
+        if (canManage()) {
+            wrap.appendChild(App.el('button', { className: 'btn btn-primary', style: { marginTop: '0.5rem' },
+                textContent: '+ Create your first batch', onClick: function() { openEditor(null); } }));
+        }
+        return wrap;
+    }
+
+    /** Aggregate strip across all batches (definitions always; stats when live). */
+    function buildSummaryStrip(data, money) {
+        var batches = data.batches || [];
+        var totalCards = 0, totalUsed = 0, totalExtra = 0, haveStats = false;
+        batches.forEach(function(b) {
+            if (b.cards_defined != null) totalCards += b.cards_defined;
+            if (b.stats) { haveStats = true; totalUsed += b.stats.cards_used || 0; totalExtra += b.stats.reload_value || 0; }
+        });
+        var actPct = (haveStats && totalCards > 0) ? Math.round(totalUsed / totalCards * 100) : null;
+
+        var tiles = [
+            summTile(formatInt(batches.length), batches.length === 1 ? 'Batch' : 'Batches'),
+            summTile(formatInt(totalCards), 'Cards given out'),
+            summTile(haveStats ? formatInt(totalUsed) : '—', 'Came back' + (actPct != null ? ' · ' + actPct + '%' : ''))
+        ];
+        if (money) tiles.push(summTile(haveStats ? formatCurrency(totalExtra) : '—', 'Extra money loaded'));
+        return App.el('div', { className: 'promo-summary' }, tiles);
+    }
+    function summTile(value, label) {
+        return App.el('div', { className: 'promo-summary-tile' }, [
+            App.el('div', { className: 'promo-summary-value', textContent: value }),
+            App.el('div', { className: 'promo-summary-label', textContent: label })
+        ]);
+    }
+
+    /** Circular activation gauge (conic-gradient ring). pct null → empty state. */
+    function buildGauge(pct, opts) {
+        opts = opts || {};
+        var has = pct != null && !isNaN(pct);
+        var val = has ? Math.max(0, Math.min(100, Math.round(pct))) : null;
+        var inner = [App.el('div', { className: 'promo-gauge-val', textContent: has ? val + '%' : '—' })];
+        if (opts.label) inner.push(App.el('div', { className: 'promo-gauge-cap', textContent: opts.label }));
+        var g = App.el('div', { className: 'promo-gauge' + (has ? '' : ' promo-gauge-empty') + (opts.large ? ' promo-gauge-lg' : '') }, [
+            App.el('div', { className: 'promo-gauge-inner' }, inner)
+        ]);
+        g.style.setProperty('--pct', has ? val : 0);
+        return g;
+    }
+
+    function statChip(label, value) {
+        return App.el('div', { className: 'promo-chip' }, [
+            App.el('div', { className: 'promo-chip-val', textContent: value }),
+            App.el('div', { className: 'promo-chip-label', textContent: label })
+        ]);
+    }
+
+    function buildBatchCard(b, money) {
+        var s = b.stats || null;
+        var defined = b.cards_defined;
+        var actPct = (s && s.activation_rate != null) ? s.activation_rate * 100 : null;
+
+        var titleWrap = App.el('div', { className: 'promo-card-titlewrap' }, [
+            App.el('div', { className: 'promo-card-name', textContent: b.name }),
+            App.el('div', { className: 'promo-card-sub' }, [
+                App.el('span', { className: 'promo-range-chip', textContent: b.card_from + '–' + b.card_to }),
+                App.el('span', { className: 'text-muted', textContent: defined != null ? ' ' + formatInt(defined) + ' cards' : '' })
+            ])
+        ]);
+        var top = App.el('div', { className: 'promo-card-top' }, [titleWrap]);
+        if (canManage()) {
+            top.appendChild(App.el('div', { className: 'promo-card-actions' }, [
+                iconBtn('Edit', 'Edit batch', function(e) { e.stopPropagation(); openEditor(b.id); }),
+                iconBtn('Delete', 'Delete batch', function(e) { e.stopPropagation(); deleteBatch(b); }, true)
+            ]));
         }
 
-        var headCells = [
-            App.el('th', { textContent: 'Batch' }),
-            App.el('th', { textContent: 'Card range' }),
-            App.el('th', { textContent: 'Given out' }),
-            App.el('th', { className: 'text-right', textContent: 'Came back' }),
-            App.el('th', { className: 'text-right', textContent: 'Plays' }),
-            App.el('th', { className: 'text-right', textContent: 'Tickets' }),
-            App.el('th', { className: 'text-right', textContent: 'Reloaded' })
+        var metaLines = [
+            App.el('div', { className: 'promo-card-bignum', textContent: s ? formatInt(s.cards_used) : '—' }),
+            App.el('div', { className: 'promo-card-metasub text-muted text-xs', textContent:
+                defined != null ? 'of ' + formatInt(defined) + ' came back' : 'cards used' })
         ];
-        if (money) headCells.push(App.el('th', { className: 'text-right', textContent: 'Avg added' }));
-        if (canManage()) headCells.push(App.el('th', {}));
-
-        var table = App.el('table', { className: 'data-table promo-table' }, [
-            App.el('thead', {}, [App.el('tr', {}, headCells)])
+        if (money && b.initial_value) {
+            metaLines.push(App.el('div', { className: 'promo-card-face text-xs', textContent:
+                formatCurrency(b.initial_value) + '/card' + (b.total_initial != null ? ' · ' + formatCurrency(b.total_initial) + ' face value' : '') }));
+        }
+        var gaugeRow = App.el('div', { className: 'promo-card-gauge-row' }, [
+            buildGauge(actPct),
+            App.el('div', { className: 'promo-card-gauge-meta' }, metaLines)
         ]);
-        var tbody = App.el('tbody', {});
 
-        batches.forEach(function(b) {
-            var s = b.stats || null;
-            var defined = b.cards_defined;
-            var used = s ? s.cards_used : null;
-            var actPct = (s && s.activation_rate != null) ? Math.round(s.activation_rate * 100) : null;
+        var chipDefs = [
+            statChip('Plays', s ? formatInt(s.plays) : '—'),
+            statChip('Tickets', s ? formatInt(Math.round(s.tickets || 0)) : '—'),
+            statChip('Reloaded', s ? formatInt(s.cards_reloaded) + (s.reload_rate != null ? ' · ' + Math.round(s.reload_rate * 100) + '%' : '') : '—')
+        ];
+        if (money) chipDefs.push(statChip('Avg added', (s && s.avg_additional != null) ? formatCurrency(s.avg_additional) : '—'));
+        var chips = App.el('div', { className: 'promo-card-stats' }, chipDefs);
 
-            var nameCell = App.el('td', {}, [
-                App.el('div', { className: 'promo-name', textContent: b.name }),
-                App.el('div', { className: 'text-muted text-xs', textContent:
-                    (defined != null ? formatInt(defined) + ' cards' : (b.card_from + '–' + b.card_to))
-                    + (money && b.initial_value ? ' · ' + formatCurrency(b.initial_value) + ' each' : '') })
-            ]);
+        var foot = App.el('div', { className: 'promo-card-foot' }, [
+            App.el('span', { className: 'text-muted text-xs', textContent: b.giveaway_date ? 'Given out ' + shortStamp(b.giveaway_date) : 'No giveaway date set' }),
+            App.el('span', { className: 'promo-card-open text-xs', textContent: 'View →' })
+        ]);
 
-            var cameBack = App.el('td', { className: 'text-right' });
-            if (s) {
-                cameBack.appendChild(App.el('div', { className: 'promo-came-back' }, [
-                    App.el('strong', { textContent: formatInt(used) }),
-                    App.el('span', { className: 'text-muted', textContent: defined != null ? ' / ' + formatInt(defined) : '' })
-                ]));
-                if (actPct != null) {
-                    cameBack.appendChild(App.el('div', { className: 'promo-bar', 'aria-hidden': 'true' }, [
-                        App.el('div', { className: 'promo-bar-fill', style: { width: Math.min(100, actPct) + '%' } })
-                    ]));
-                    cameBack.appendChild(App.el('div', { className: 'text-muted text-xs', textContent: actPct + '% activated' }));
-                }
-            } else {
-                cameBack.appendChild(App.el('span', { className: 'text-muted', textContent: '—' }));
-            }
+        var card = App.el('div', { className: 'promo-card' + (state.batchId === b.id ? ' promo-card-selected' : '') }, [top, gaugeRow, chips, foot]);
+        card.addEventListener('click', function() { selectBatch(b.id); });
+        return card;
+    }
 
-            var reloadCell = App.el('td', { className: 'text-right', textContent:
-                s ? (formatInt(s.cards_reloaded) + (s.reload_rate != null ? ' · ' + Math.round(s.reload_rate * 100) + '%' : '')) : '—' });
-
-            var cells = [
-                nameCell,
-                App.el('td', {}, [App.el('span', { className: 'promo-range-chip', textContent: b.card_from + '–' + b.card_to })]),
-                App.el('td', { textContent: b.giveaway_date || '—' }),
-                cameBack,
-                App.el('td', { className: 'text-right', textContent: s ? formatInt(s.plays) : '—' }),
-                App.el('td', { className: 'text-right', textContent: s ? formatInt(Math.round(s.tickets || 0)) : '—' }),
-                reloadCell
-            ];
-            if (money) cells.push(App.el('td', { className: 'text-right', textContent: (s && s.avg_additional != null) ? formatCurrency(s.avg_additional) : '—' }));
-
-            if (canManage()) {
-                cells.push(App.el('td', { className: 'text-right' }, [
-                    App.el('div', { className: 'flex gap-sm', style: { justifyContent: 'flex-end' } }, [
-                        App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'Edit',
-                            onClick: function(e) { e.stopPropagation(); openEditor(b.id); } }),
-                        App.el('button', { className: 'btn btn-sm btn-ghost text-danger', textContent: 'Delete',
-                            onClick: function(e) { e.stopPropagation(); deleteBatch(b); } })
-                    ])
-                ]));
-            }
-
-            var row = App.el('tr', { className: 'clickable-row' + (state.batchId === b.id ? ' promo-row-selected' : '') }, cells);
-            row.addEventListener('click', function() { selectBatch(b.id); });
-            tbody.appendChild(row);
-        });
-
-        table.appendChild(tbody);
-        box.appendChild(App.el('div', { className: 'table-scroll-x' }, [table]));
+    function iconBtn(label, title, onClick, danger) {
+        var btn = App.el('button', { className: 'btn btn-sm btn-ghost' + (danger ? ' text-danger' : ''), title: title, textContent: label });
+        btn.addEventListener('click', onClick);
+        return btn;
     }
 
     function selectBatch(id) {
@@ -264,8 +296,9 @@
         } else if (data.error) {
             bodyChildren.push(App.el('div', { className: 'text-danger text-sm', textContent: 'Query error: ' + data.error }));
         } else if (s) {
-            bodyChildren.push(buildDetailTiles(s, b, money));
+            bodyChildren.push(buildDetailHero(s, b, money));
             if (b.notes) bodyChildren.push(App.el('div', { className: 'promo-notes', textContent: b.notes }));
+            bodyChildren.push(buildDetailTiles(s, b, money));
             bodyChildren.push(buildCardTable(data, money));
         } else {
             bodyChildren.push(App.el('div', { className: 'text-secondary text-sm', textContent: 'No activity found for this card range yet.' }));
@@ -285,13 +318,25 @@
         ]);
     }
 
+    function buildDetailHero(s, b, money) {
+        var actPct = s.activation_rate != null ? s.activation_rate * 100 : null;
+        var lines = [
+            App.el('div', { className: 'promo-hero-big', textContent:
+                formatInt(s.cards_used) + (s.cards_defined != null ? ' / ' + formatInt(s.cards_defined) : '') }),
+            App.el('div', { className: 'text-secondary', textContent:
+                'cards came back' + (actPct != null ? ' — ' + Math.round(actPct) + '% of the batch was used' : '') })
+        ];
+        var extra = ['Reloaded ' + formatInt(s.cards_reloaded) + (s.reload_rate != null ? ' (' + Math.round(s.reload_rate * 100) + '%)' : '')];
+        if (money && s.avg_additional != null) extra.push('avg ' + formatCurrency(s.avg_additional) + ' added');
+        lines.push(App.el('div', { className: 'text-muted text-sm', style: { marginTop: '0.25rem' }, textContent: extra.join(' · ') }));
+        return App.el('div', { className: 'promo-hero' }, [
+            buildGauge(actPct, { large: true, label: 'came back' }),
+            App.el('div', { className: 'promo-hero-meta' }, lines)
+        ]);
+    }
+
     function buildDetailTiles(s, b, money) {
         var tiles = [];
-        var actPct = s.activation_rate != null ? Math.round(s.activation_rate * 100) : null;
-        tiles.push(tile('Came back',
-            formatInt(s.cards_used) + (s.cards_defined != null ? ' / ' + formatInt(s.cards_defined) : ''),
-            actPct != null ? actPct + '% of the batch was used' : 'cards with any activity',
-            'promo-tile-accent'));
         tiles.push(tile('Plays', formatInt(s.plays), 'total game plays on these cards'));
         tiles.push(tile('Tickets', formatInt(Math.round(s.tickets || 0)), 'redemption tickets earned'));
         tiles.push(tile('Reloaded', formatInt(s.cards_reloaded)
