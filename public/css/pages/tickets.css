@@ -281,13 +281,17 @@
 }
 .detail-stat-value.text-sm { font-size: 0.85rem; }
 
-/* --- Ticket Trends report: gold fill for the by-day and by-area bars, riding
-   the shared .labor-hour-track / .labor-bar-track rails (Card Loads pattern). */
-.tickets-bar-fill {
+/* --- Ticket Trends report: the by-day and by-area bars use the app's bright
+   accent (the same fill every other bar chart uses — Labor, Card Loads,
+   Analytics) for readability, rather than the low-contrast gold. Scoped to the
+   shared .labor-hour-track / .labor-bar-track rails so the gold gradient on the
+   Games-page ticket cells is untouched. */
+.labor-hour-track .tickets-bar-fill,
+.labor-bar-track .tickets-bar-fill {
     display: block;
     height: 100%;
     border-radius: var(--radius-full);
-    background: var(--tickets);
+    background: var(--accent);
     transition: width 0.3s ease;
 }
 
