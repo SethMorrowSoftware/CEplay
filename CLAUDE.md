@@ -238,14 +238,23 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   cards that appear and activation = used ÷ range size (`card_to−card_from+1`).
   Money defs match the other reports: `TransType 1` = plays (`DollarAmount` =
   value spent), `TransType 3` = value ADDED (reloads), `ValueNo 3` = tickets.
-  One admin-editable aggregate query (`promo_range_sql`, placeholders
-  `:since`/`:cardfrom`/`:cardto`, single-SELECT guarded); the `:since` floor
-  (the giveaway date) lets the `TransDateTime` index bound the scan so a
-  card-range query over the 20-year ledger stays fast (a full CardNumber scan
-  would be non-SARGable). Card-range bounds are inlined as validated integer
-  literals via `MssqlClient::bindCardRange` (digits-only → injection-proof, same
-  rationale as bindDate/bindRange). `TRY_CONVERT(BIGINT, CardNumber)` tolerates
-  the `000000`/blank card sentinels. View gate: `analytics` (money scrubbed for
+  One admin-editable aggregate query (`promo_range_sql`, a WITH-CTE with
+  placeholders `:since`/`:cardfrom`/`:cardto`, single-SELECT guarded). **Card
+  numbers get reissued to different physical cards over the years**, so the
+  query DEDUPES to the MOST RECENT card per number: per `TRY_CONVERT(BIGINT,
+  CardNumber)` it splits activity into "lives" at any gap > 365 days (a reissue)
+  and keeps only the latest life — otherwise a decade-old card's plays/tickets
+  get folded into a recent giveaway (the bug that made a 51-card range read
+  "94 cards, 184%"). `cards_used` counts `DISTINCT cn` (the numeric value, so
+  `0288051`==`288051`). The `:since` floor bounds the scan on the `TransDateTime`
+  index (a bare `TRY_CONVERT` card-range scan is non-SARGable): the giveaway
+  date when set, else a recent default (`PROMO_DEFAULT_LOOKBACK_DAYS`, ~3y) since
+  the dedup already drops older reuse. The giveaway date is OPTIONAL (a
+  speed/precision knob, not required). Card-range bounds are inlined as validated
+  integer literals via `MssqlClient::bindCardRange` (digits-only →
+  injection-proof, same rationale as bindDate/bindRange). `TRY_CONVERT(BIGINT,
+  CardNumber)` tolerates the `000000`/blank card sentinels. (Window functions
+  need SQL Server 2012+.) View gate: `analytics` (money scrubbed for
   roles without view_revenue — techs see activation/plays/tickets, never
   dollars); manage gate: `promotions_manage` (its own catalog key, granted once
   to roles holding `reader_groups_manage`); config gate: `settings`; Test gate:
