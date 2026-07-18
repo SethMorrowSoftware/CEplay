@@ -28,9 +28,9 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, explorer, logs, users, roles, capabilities)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, logs, users, roles, capabilities)
 lib/          — 9 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting)
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, labor, cardloads, tickets, revenue, explorer, logs, settings)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
 data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
 docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
@@ -225,6 +225,34 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   view_revenue; config gate: settings; Test gate: data_explorer. The Test button
   dumps a RecType breakdown + reconciles line-item vs receipt-header ticket
   totals. Venue server only (no sandbox driver).
+- Promotional Cards (`#/promotions`, `/api/promotions/*`, `api/promotions.php`)
+  tracks BLOCKS of giveaway cards by card-number RANGE (e.g. "K104 on-air
+  giveaway, cards 100000–100499, $30 each") and measures how they performed:
+  how many came back (activation), reloads + average additional $, plays,
+  tickets earned, value spent, and a per-card drill-down. Modeled on Reader
+  Groups (a managed list of ranges + click-through detail): batch DEFINITIONS
+  live in SQLite (`promo_batches`: name, card_from/card_to, giveaway_date,
+  initial_value, notes — no child table, a batch is just a range), while every
+  PERFORMANCE number is computed LIVE from MSSQL `PlayerCardTrans` by card
+  number. A card never used has NO ledger rows, so "cards used" = distinct
+  cards that appear and activation = used ÷ range size (`card_to−card_from+1`).
+  Money defs match the other reports: `TransType 1` = plays (`DollarAmount` =
+  value spent), `TransType 3` = value ADDED (reloads), `ValueNo 3` = tickets.
+  One admin-editable aggregate query (`promo_range_sql`, placeholders
+  `:since`/`:cardfrom`/`:cardto`, single-SELECT guarded); the `:since` floor
+  (the giveaway date) lets the `TransDateTime` index bound the scan so a
+  card-range query over the 20-year ledger stays fast (a full CardNumber scan
+  would be non-SARGable). Card-range bounds are inlined as validated integer
+  literals via `MssqlClient::bindCardRange` (digits-only → injection-proof, same
+  rationale as bindDate/bindRange). `TRY_CONVERT(BIGINT, CardNumber)` tolerates
+  the `000000`/blank card sentinels. View gate: `analytics` (money scrubbed for
+  roles without view_revenue — techs see activation/plays/tickets, never
+  dollars); manage gate: `promotions_manage` (its own catalog key, granted once
+  to roles holding `reader_groups_manage`); config gate: `settings`; Test gate:
+  `data_explorer` (the Test button probes a card range + dumps a sample of the
+  card numbers matched, to confirm the range hit real cards). Pink `--promo`
+  theme. Batches can be defined even before MSSQL is configured (stats fill in
+  later). Venue server only for the live numbers (no sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column
@@ -387,8 +415,9 @@ before building.
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 18 keys incl.
-  view_revenue, manual_control, reader_groups_manage, data_explorer). A
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 19 keys incl.
+  view_revenue, manual_control, reader_groups_manage, promotions_manage,
+  data_explorer). A
   read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.

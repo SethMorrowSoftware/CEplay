@@ -110,16 +110,29 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   discount rate per category, and prior-period delta. Source: MSSQL `Sales`
   grouped by category. Day grain only (ShiftDate is midnight-stamped).
 
+### Promotional Cards (`#/promotions`)
+- Track **blocks of giveaway cards** by card-number range (e.g. "K104 on-air
+  giveaway, cards 100000–100499, $30 each") and see how they performed: how many
+  came back (activation rate), reloads and **average additional money loaded**,
+  plays, tickets earned, value spent, and a per-card drill-down. Works like
+  Reader Groups — a managed list of ranges plus a click-through detail view.
+- Batch definitions live locally; every performance number is computed live from
+  the POS card ledger (`PlayerCardTrans`) by card number. Money figures are
+  hidden from roles without `view_revenue` (activation/plays/tickets stay
+  visible). Create/edit/delete needs `promotions_manage`. Batches can be defined
+  before the MSSQL connection is set up — their stats fill in automatically.
+
 ### Database Explorer (`#/explorer`)
 - A READ-ONLY window into the CenterEdge MSSQL database for finding where metrics
   live: table browser (columns/types, date-column freshness, sample rows), a
   "find a metric" grouped-totals builder, and a guarded free-form `SELECT` with
   CSV export. Every query is single-`SELECT` guarded and audit-logged.
 
-> The five MSSQL pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue Mix,
-> Database Explorer) all share **one** encrypted MSSQL connection, configured on
-> the Go-Kart Labor page. Each report runs one admin-editable, read-only range
-> query. See [MSSQL Reporting](#mssql-reporting-centeredge-sql-server) below.
+> The MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue
+> Mix, Redemption, Promotional Cards, Database Explorer) all share **one**
+> encrypted MSSQL connection, configured on the Go-Kart Labor page. Each report
+> runs admin-editable, read-only queries. See
+> [MSSQL Reporting](#mssql-reporting-centeredge-sql-server) below.
 
 ### Roles & Permissions (custom RBAC)
 Access is controlled by **roles**, which are data — create and edit them in
@@ -145,6 +158,7 @@ read APIs); the rest gate features and data.
 | `overrides_manage` | Create/delete schedule overrides |
 | `groups_manage` | Create/edit/delete pause groups |
 | `reader_groups_manage` | Create/edit/delete reader groups (analytics areas) |
+| `promotions_manage` | Create/edit/delete promotional card batches (card-range tracking) |
 | `schedules_manage` | Create/edit/delete schedules |
 | `settings` | System settings: CenterEdge API credentials, timezone |
 | `data_explorer` | Database Explorer + the MSSQL report **Test** buttons (raw POS data, incl. dollar & card figures) — separate from `settings`, admin-only by default |
@@ -582,6 +596,7 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 | `/api/analytics/reader-groups` | GET | Per-area comparison (totals, averages, busiest weekday/hour, deltas). |
 | `/api/analytics/reader-group` | GET | One area: heatmap, trend, per-game breakdown. |
 | `/api/reader-groups` | GET/POST/PUT/DELETE | Reader-group CRUD. Read gate `analytics`; write gate `reader_groups_manage`. |
+| `/api/promotions` | GET/POST/PUT/DELETE | Promotional card-batch CRUD + `/analyze` (per-batch MSSQL analysis), `/settings`, `/test`. Read gate `analytics` (money scrubbed without `view_revenue`); write gate `promotions_manage`; test gate `data_explorer`. |
 | `/api/capabilities` | GET | CenterEdge capability flags (drives kiosk controls, card-admin UI). |
 
 ### MSSQL Reports (Labor / Card Loads / Ticket Trends / Revenue Mix)

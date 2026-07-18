@@ -50,6 +50,7 @@ class Auth {
         'overrides_manage' => 'Create and delete schedule overrides',
         'groups_manage'    => 'Create, edit, and delete pause groups',
         'reader_groups_manage' => 'Create, edit, and delete reader groups (the analytics areas)',
+        'promotions_manage' => 'Create, edit, and delete promotional card batches (card-range tracking)',
         'schedules_manage' => 'Create, edit, and delete recurring schedules',
         'settings'         => 'System settings: CenterEdge API credentials, timezone',
         'data_explorer'    => 'Database Explorer + MSSQL report Test buttons (raw POS data, incl. dollar & card figures)',
@@ -77,7 +78,7 @@ class Auth {
     private const FALLBACK_ROLES = [
         'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
         'manager' => ['name' => 'Manager', 'is_system' => 1,
-                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'schedules_manage', 'view_logs']],
+                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'schedules_manage', 'view_logs']],
         'tech'    => ['name' => 'Technician', 'is_system' => 1,
                       'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
     ];

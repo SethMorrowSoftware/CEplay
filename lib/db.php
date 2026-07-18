@@ -87,7 +87,7 @@ class DB {
              '["*"]'],
             ['manager', 'Manager',
              'Runs the floor and the automation: full analytics with reader CC payments, card lookup, and group/schedule management. No system settings or user management.',
-             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","schedules_manage","view_logs"]'],
+             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","promotions_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
              'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No payment figures, card lookup, or group/schedule editing.',
              '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","manual_control","overrides_manage","settings","users"]'],
@@ -184,6 +184,40 @@ class DB {
             }
         } catch (Exception $e) {
             error_log('reader_groups_manage migration skipped: ' . $e->getMessage());
+        }
+
+        // One-time migration: promotional-card batch management is its own
+        // catalog key ('promotions_manage'), split from the analytics-area
+        // editing key ('reader_groups_manage') so operators can hand out promo
+        // tracking separately. Grant it to every role that already holds
+        // reader_groups_manage (or the wildcard) so introducing the key changes
+        // nobody's effective access. Flagged so it runs exactly once.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_promotions_manage_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms)) {
+                        continue;
+                    }
+                    if (in_array('*', $perms, true) || in_array('promotions_manage', $perms, true)) {
+                        continue;
+                    }
+                    if (in_array('reader_groups_manage', $perms, true)) {
+                        $perms[] = 'promotions_manage';
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_promotions_manage_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('promotions_manage migration skipped: ' . $e->getMessage());
         }
 
         // One-time migration: page-visibility keys (view_dashboard,
@@ -892,6 +926,25 @@ class DB {
             UNIQUE (reader_group_id, game_id)
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_rgg_group ON reader_group_games(reader_group_id)');
+
+        // Promotional card batches: operator-defined BLOCKS of giveaway cards,
+        // each a contiguous card-number range (card_from .. card_to). Used ONLY
+        // for analytics — they never pause anything. Each batch records the
+        // campaign details the operator knows (name, date handed out, starting
+        // value per card, notes); every performance number (how many came back,
+        // reloads, plays, tickets, value) is computed LIVE from the CenterEdge
+        // POS card ledger by card-number range, so nothing is duplicated here.
+        $db->exec('CREATE TABLE IF NOT EXISTS promo_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            card_from TEXT NOT NULL,
+            card_to TEXT NOT NULL,
+            giveaway_date TEXT NOT NULL DEFAULT \'\',
+            initial_value REAL NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT \'\',
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
 
         // Durable per-card activity ledger for Guest Insights. The raw play
         // feed (game_play_transactions) is only kept ~30 days, so it cannot

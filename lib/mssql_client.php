@@ -138,6 +138,26 @@ class MssqlClient
         return str_replace([':from', ':to'], ["'" . $from . "'", "'" . $to . "'"], $sql);
     }
 
+    /**
+     * Substitute the :cardfrom / :cardto placeholders with validated integer
+     * literals (an inclusive card-NUMBER range, for the Promotional Cards
+     * report). Card numbers are whole numbers, so these are inlined as bare
+     * numeric literals (no quotes) — the strict digit check makes it
+     * injection-proof, same rationale as bindDate/bindRange.
+     */
+    public static function bindCardRange(string $sql, string $from, string $to): string
+    {
+        foreach (['cardfrom' => $from, 'cardto' => $to] as $name => $val) {
+            if (!preg_match('/^\d{1,18}$/', (string)$val)) {
+                throw new RuntimeException('Card range bounds must be whole numbers (up to 18 digits).');
+            }
+            if (strpos($sql, ':' . $name) === false) {
+                throw new RuntimeException('Query must contain the :' . $name . ' placeholder.');
+            }
+        }
+        return str_replace([':cardfrom', ':cardto'], [(string)$from, (string)$to], $sql);
+    }
+
     public function connect(): void
     {
         if ($this->pdo !== null) {
