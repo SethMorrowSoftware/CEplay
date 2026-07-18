@@ -236,8 +236,14 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   PERFORMANCE number is computed LIVE from MSSQL `PlayerCardTrans` by card
   number. A card never used has NO ledger rows, so "cards used" = distinct
   cards that appear and activation = used ÷ range size (`card_to−card_from+1`).
-  Money defs match the other reports: `TransType 1` = plays (`DollarAmount` =
-  value spent), `TransType 3` = value ADDED (reloads), `ValueNo 3` = tickets.
+  Metric defs (important — a giveaway is bulk-loaded up front, so "loaded" ≠
+  "used"): `cards_used`/"played" = distinct cards with a `TransType 1` PLAY (came
+  back and used); `cards_loaded` = distinct cards with a `TransType 3` (carry the
+  promo value); `reloads`/"additional money" = PAID top-ups only (`TransType 3`
+  AND `DollarAmount > 0`) — the initial promo value is COMPED (`DollarAmount 0`)
+  so it is NOT a reload; `plays`/value = `TransType 1`; `tickets` = `ValueNo 3`.
+  The per-card table filters to cards with real activity (played / earned tickets
+  / paid reload), so bulk-loaded-but-unplayed cards don't fill it with zeros.
   One admin-editable aggregate query (`promo_range_sql`, a WITH-CTE with
   placeholders `:since`/`:cardfrom`/`:cardto`, single-SELECT guarded). **Card
   numbers get reissued to different physical cards over the years**, so the
