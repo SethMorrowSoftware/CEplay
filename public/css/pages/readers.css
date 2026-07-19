@@ -12,10 +12,18 @@
 /* The warm heat token and the insight-card component live in
    components/insight-cards.css (shared with the Performance page). */
 
-/* Wide tables scroll inside the card instead of stretching the page. */
+/* Legacy wrapper kept ONLY for promotions.js — this page's tables now use
+   the shared .table-scroll (components/tables.css). */
 .table-scroll-x {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+}
+
+/* Dim the areas table while a period/toggle re-query is in flight. */
+.rg-busy {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
 }
 
 /* The detail panel stacks several cards inside one wrapper div — give it
@@ -115,15 +123,21 @@
 }
 .rg-heat-main { min-width: 0; }
 
-/* Heatmap: CSS grid, one auto label column + N hour columns + summary col. */
+/* Heatmap: CSS grid, one auto label column + N hour columns + summary col.
+   The min-width grid overflows on phones, so it lives inside the
+   .rg-heatmap-holder scroll container (created by the JS) — the grid itself
+   must NOT own the overflow or the page pans instead. */
 .rg-heatmap {
     display: grid;
     gap: 3px;
     margin-top: 0.75rem;
     min-width: 480px;
 }
-.rg-heatmap-holder,
-.rg-heatmap { overflow-x: auto; }
+.rg-heatmap-holder {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+}
 
 .rg-heat-corner { min-width: 2.2rem; }
 .rg-heat-hour {
@@ -150,7 +164,7 @@
     height: 26px;
     border-radius: 4px;
     background: var(--bg-hover, rgba(255, 255, 255, 0.04));
-    cursor: default;
+    cursor: pointer; /* tap writes the cell's numbers into .rg-heat-readout */
     transition: transform 0.08s ease;
 }
 .rg-heat-cell:hover {
@@ -192,6 +206,15 @@
     gap: 0.5rem;
     margin-top: 0.25rem;
 }
+
+/* Visible readout of the tapped heatmap cell / rank row (touch has no hover). */
+.rg-heat-readout {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    min-height: 1.2em;
+}
 .rg-heat-legend-swatches {
     display: inline-flex;
     gap: 3px;
@@ -225,6 +248,7 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.35rem 0;
+    cursor: pointer; /* tap writes the row's numbers into .rg-heat-readout */
 }
 .rg-rank-num {
     flex: none;
@@ -283,6 +307,19 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* Search row above the per-game breakdown table. */
+.rg-games-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.rg-games-toolbar .form-input {
+    flex: 1;
+    min-width: 180px;
+    max-width: 340px;
+}
+
 /* --------------------------------------------
    Game picker inside the group editor modal.
    -------------------------------------------- */
@@ -311,6 +348,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+    /* Match the ~40px touch-target size the app uses elsewhere at ≤720px. */
+    .rg-picker-item { min-height: 40px; }
+    .rg-picker-check { width: 1.1rem; height: 1.1rem; }
 }
 
 @media (max-width: 640px) {

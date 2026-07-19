@@ -31,8 +31,14 @@
         detail: null,         // last detail payload
         charts: [],
         themeObserver: null,
+        chartPoll: null,      // Chart.js availability poll (cleared on route exit)
         genList: 0,
-        genDetail: 0
+        genDetail: 0,
+        areasSort: { key: 'plays', dir: 'desc' },   // server default: plays DESC, name ASC
+        gamesSort: { key: 'plays', dir: 'desc' },
+        gamesSearch: '',
+        gamesPage: 1,
+        gamesPageSize: 25
     };
 
     var RANGE_LABELS = { day: 'Day', week: 'Week', month: 'Month', year: 'Year', custom: 'Custom' };
@@ -44,9 +50,19 @@
     async function renderReadersPage(container, params) {
         var query = (params && params._query) || {};
         if (query.range && RANGE_LABELS[query.range]) state.range = query.range;
+        if (query.from && /^\d{4}-\d{2}-\d{2}$/.test(query.from)) state.custom.from = query.from;
+        if (query.to && /^\d{4}-\d{2}-\d{2}$/.test(query.to)) state.custom.to = query.to;
+        // A custom range without both dates (deep link or stale module state)
+        // would 422 server-side — fall back to the default preset instead.
+        if (state.range === 'custom' &&
+            (!state.custom.from || !state.custom.to || state.custom.from > state.custom.to)) {
+            state.range = 'week';
+        }
         if (query.group) state.groupId = parseInt(query.group, 10) || null;
         state.offset = 0;
         state.detail = null;
+        state.gamesSearch = '';
+        state.gamesPage = 1;
 
         var headerRight = [];
         if (canManage()) {
@@ -99,6 +115,7 @@
 
         return function cleanup() {
             destroyCharts();
+            if (state.chartPoll) { clearInterval(state.chartPoll); state.chartPoll = null; }
             if (state.themeObserver) { state.themeObserver.disconnect(); state.themeObserver = null; }
         };
     }
@@ -124,7 +141,7 @@
             })
         );
 
-        var nav = App.el('div', { className: 'perf-nav', id: 'rg-nav' }, [
+        var nav = App.el('div', { className: 'perf-nav', id: 'rg-nav', style: { display: state.range === 'custom' ? 'none' : '' } }, [
             App.el('button', {
                 className: 'btn btn-sm btn-ghost perf-nav-btn',
                 textContent: '‹',
@@ -151,9 +168,9 @@
         ]);
 
         var custom = App.el('div', { className: 'perf-custom', id: 'rg-custom', style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'rg-custom-from', textContent: 'From' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'rg-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'rg-custom-to', textContent: 'To' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'rg-custom-to', value: state.custom.to }),
             App.el('button', {
                 className: 'btn btn-sm btn-primary',
@@ -224,11 +241,31 @@
         return q.join('&');
     }
 
+    /**
+     * Mirror the current period + selection into the hash so the view can be
+     * refreshed or shared (renderReadersPage reads these back on entry).
+     */
+    function syncUrl() {
+        var cur = window.location.hash || '';
+        var q = ['range=' + encodeURIComponent(state.range)];
+        if (state.range === 'custom') {
+            q.push('from=' + encodeURIComponent(state.custom.from));
+            q.push('to=' + encodeURIComponent(state.custom.to));
+        }
+        if (state.groupId) q.push('group=' + encodeURIComponent(state.groupId));
+        var next = '#/readers?' + q.join('&');
+        if (cur === next) return;
+        try { history.replaceState(null, '', window.location.pathname + window.location.search + next); } catch (e) {}
+    }
+
     // ------------------------------------------------------------------
     // List load + comparison table
     // ------------------------------------------------------------------
     async function load() {
         var gen = ++state.genList;
+        syncUrl();
+        var busyEl = document.getElementById('rg-table');
+        if (busyEl && state.data) { busyEl.classList.add('rg-busy'); busyEl.setAttribute('aria-busy', 'true'); }
         try {
             var data = await API.get('analytics/reader-groups?' + rangeQuery());
             if (gen !== state.genList) return;
@@ -241,9 +278,10 @@
             var exists = state.groupId && (data.groups || []).some(function(g) { return g.id === state.groupId; });
             if (exists) {
                 loadDetail();
-            } else {
+            } else if (state.groupId || state.detail) {
                 state.groupId = null;
                 state.detail = null;
+                syncUrl();
                 var panel = document.getElementById('rg-detail');
                 if (panel) panel.innerHTML = '';
             }
@@ -251,6 +289,8 @@
             if (gen !== state.genList) return;
             var t = document.getElementById('rg-table');
             if (t) {
+                t.classList.remove('rg-busy');
+                t.removeAttribute('aria-busy');
                 t.innerHTML = '';
                 t.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Failed to load reader groups: ' + err.message }));
             }
@@ -275,6 +315,8 @@
         var meta = document.getElementById('rg-table-meta');
         if (meta) meta.textContent = groups.length + ' group' + (groups.length === 1 ? '' : 's');
 
+        el.classList.remove('rg-busy');
+        el.removeAttribute('aria-busy');
         el.innerHTML = '';
 
         if (groups.length === 0) {
@@ -290,30 +332,36 @@
             return;
         }
 
-        var headers = [
-            { label: 'Area', cls: '' },
-            { label: 'Games', cls: 'text-right' },
-            { label: 'Plays', cls: 'text-right' },
-            { label: 'Avg/day', cls: 'text-right', tip: 'Average plays per day over this period' },
-            { label: 'Avg/game/day', cls: 'text-right', tip: 'Average plays per game per day — compares areas of different sizes fairly' }
+        var columns = [
+            { key: 'name', label: 'Area', type: 'string' },
+            { key: 'game_count', label: 'Games', type: 'number', className: 'text-right' },
+            { key: 'plays', label: 'Plays', type: 'number', className: 'text-right' },
+            { key: 'avg_plays_per_day', label: 'Avg/day', type: 'number', className: 'text-right', tip: 'Average plays per day over this period' },
+            { key: 'avg_plays_per_game_per_day', label: 'Avg/game/day', type: 'number', className: 'text-right', tip: 'Average plays per game per day — compares areas of different sizes fairly' }
         ];
-        if (money) headers.push({ label: 'Reader CC', cls: 'text-right', tip: 'Credit-card payments taken at the readers' });
-        headers.push({ label: 'Week rhythm', cls: '', tip: 'Plays by weekday, Sunday through Saturday — the orange bar is the busiest day' });
-        headers.push({ label: 'Busiest time', cls: '', tip: 'The single busiest hour of the week for this area' });
-        headers.push({ label: 'vs prev', cls: 'text-right', tip: 'Plays compared with the previous period' });
-        if (canManage()) headers.push({ label: '', cls: 'text-right' });
+        if (money) columns.push({ key: 'cash', label: 'Reader CC', type: 'number', className: 'text-right', tip: 'Credit-card payments taken at the readers' });
+        columns.push({ key: 'rhythm', label: 'Week rhythm', sortable: false, tip: 'Plays by weekday, Sunday through Saturday — the orange bar is the busiest day' });
+        columns.push({ key: 'busiest', label: 'Busiest time', type: 'number', defaultDir: 'asc', tip: 'The single busiest hour of the week for this area',
+            sortValue: function(g) { return g.busiest ? g.busiest.dow * 24 + g.busiest.hour : null; } });
+        columns.push({ key: 'delta', label: 'vs prev', type: 'number', className: 'text-right', tip: 'Plays compared with the previous period',
+            sortValue: playsDeltaValue });
+        if (canManage()) columns.push({ key: 'actions', label: '', sortable: false, className: 'text-right' });
 
         var thead = App.el('thead', {}, [
-            App.el('tr', {}, headers.map(function(h) {
-                var attrs = { className: h.cls, textContent: h.label };
-                if (h.tip) attrs.title = h.tip;
-                return App.el('th', attrs);
+            App.el('tr', {}, columns.map(function(col) {
+                var th = App.sortableTh(col, state.areasSort, function(next) {
+                    state.areasSort = next;
+                    renderTable();
+                });
+                if (col.tip) th.title = col.tip;
+                return th;
             }))
         ]);
 
         var maxPlays = groups.reduce(function(m, g) { return Math.max(m, g.plays || 0); }, 0);
+        var sorted = App.sortRows(groups, state.areasSort, columns);
 
-        var tbody = App.el('tbody', {}, groups.map(function(g) {
+        var tbody = App.el('tbody', {}, sorted.map(function(g) {
             var cells = [
                 App.el('td', {}, [
                     App.el('div', { textContent: g.name, style: { fontWeight: '500' } }),
@@ -369,13 +417,14 @@
                 ]));
             }
 
-            return App.el('tr', {
-                className: 'clickable-row' + (state.groupId === g.id ? ' rg-row-selected' : ''),
-                onClick: function() { selectGroup(g.id); }
+            var tr = App.el('tr', {
+                className: 'clickable-row' + (state.groupId === g.id ? ' rg-row-selected' : '')
             }, cells);
+            App.makeCardClickable(tr, function() { selectGroup(g.id); });
+            return tr;
         }));
 
-        var wrap = App.el('div', { className: 'table-scroll-x' }, [
+        var wrap = App.el('div', { className: 'table-scroll' }, [
             App.el('table', { className: 'data-table directory-table' }, [thead, tbody])
         ]);
         el.appendChild(wrap);
@@ -410,8 +459,12 @@
         var peak = -1;
         for (i = 0; i < 7; i++) if ((Number(dowPlays[i]) || 0) === max) { peak = i; break; }
 
+        // Carry the real numbers in the label — hover titles never reach
+        // screen readers or touch devices.
+        var labelParts = [];
+        for (i = 0; i < 7; i++) labelParts.push(DOW_SHORT[i] + ' ' + formatInt(Number(dowPlays[i]) || 0));
         var wrap = App.el('div', { className: 'rg-rhythm', role: 'img',
-            'aria-label': 'Plays by weekday, Sunday through Saturday' });
+            'aria-label': 'Plays by weekday: ' + labelParts.join(', ') + '. Busiest: ' + DOW_FULL[peak] + '.' });
         for (var d = 0; d < 7; d++) {
             var v = Number(dowPlays[d]) || 0;
             var hpct = v > 0 ? Math.max(14, Math.round(v / max * 100)) : 0;
@@ -436,6 +489,9 @@
 
     function selectGroup(id) {
         state.groupId = (state.groupId === id) ? null : id;
+        state.gamesSearch = '';
+        state.gamesPage = 1;
+        syncUrl();
         renderTable(); // refresh row highlight
         var panel = document.getElementById('rg-detail');
         if (!state.groupId) {
@@ -640,15 +696,24 @@
 
         var body = [];
         var heat = d.heatmap;
-        var grid = buildHeatmapGrid(d);
+        // Visible readout for the tapped/clicked cell — title tooltips never
+        // fire on touch devices, so the numbers need a non-hover home too.
+        var readout = App.el('p', { className: 'rg-heat-readout', 'aria-live': 'polite' });
+        function setReadout(text) { readout.textContent = text; }
+        var grid = buildHeatmapGrid(d, setReadout);
         if (grid) {
             var cap = state.heatMetric === 'avg'
-                ? 'Each square is one hour of the week. Deeper orange = busier on a typical week. ★ marks the single busiest hour. Hover any square for the exact numbers.'
-                : 'Each square is one hour of the week. Deeper orange = more plays in total over this period. ★ marks the single busiest hour. Hover any square for the exact numbers.';
+                ? 'Each square is one hour of the week. Deeper orange = busier on a typical week. ★ marks the single busiest hour. Tap or hover any square for the exact numbers.'
+                : 'Each square is one hour of the week. Deeper orange = more plays in total over this period. ★ marks the single busiest hour. Tap or hover any square for the exact numbers.';
             if (d.exclude_time_plays) cap += ' Time-pass plays are excluded from these counts.';
             body.push(App.el('p', { className: 'rg-heat-caption', textContent: cap }));
-            var layout = [App.el('div', { className: 'rg-heat-main' }, [grid.legendTop, grid.el])];
-            var rankList = buildBusiestList(d);
+            if (grid.peakTip) setReadout(grid.peakTip);
+            var layout = [App.el('div', { className: 'rg-heat-main' }, [
+                grid.legendTop,
+                App.el('div', { className: 'rg-heatmap-holder' }, [grid.el]),
+                readout
+            ])];
+            var rankList = buildBusiestList(d, setReadout);
             if (rankList) layout.push(rankList);
             body.push(App.el('div', { className: 'rg-heat-layout' }, layout));
         } else {
@@ -680,7 +745,7 @@
      * All bars share one hue (length carries the ranking); the #1 row gets
      * an explicit Peak tag so nothing relies on color alone.
      */
-    function buildBusiestList(d) {
+    function buildBusiestList(d, setReadout) {
         var items = d.busiest || [];
         if (items.length === 0) return null;
         var theme = readThemeColors();
@@ -691,9 +756,11 @@
             var pct = maxAvg > 0 ? Math.max(6, Math.round((Number(b.avg_plays) || 0) / maxAvg * 100)) : 6;
             var labelBits = [App.el('span', { textContent: DOW_FULL[b.dow] + 's, ' + hourRangeLabel(b.hour) })];
             if (i === 0) labelBits.push(App.el('span', { className: 'rg-rank-peak-tag', textContent: '🔥 Peak' }));
+            var rowTip = DOW_FULL[b.dow] + 's, ' + hourRangeLabel(b.hour) + ': usually around ' + formatNum(b.avg_plays) + ' plays in that hour (' + formatInt(b.plays) + ' plays there in this whole period)';
             return App.el('div', {
                 className: 'rg-rank-row',
-                title: 'Usually around ' + formatNum(b.avg_plays) + ' plays in that hour (' + formatInt(b.plays) + ' plays there in this whole period)'
+                title: rowTip,
+                onClick: function() { if (setReadout) setReadout(rowTip); }
             }, [
                 App.el('span', { className: 'rg-rank-num' + (i === 0 ? ' rg-rank-num-top' : ''), textContent: (i + 1) }),
                 App.el('div', { className: 'rg-rank-main' }, [
@@ -717,7 +784,7 @@
      * venue's live hours (first to last hour with any plays, padded by one)
      * so overnight dead air doesn't crush the interesting cells.
      */
-    function buildHeatmapGrid(d) {
+    function buildHeatmapGrid(d, setReadout) {
         var heat = d.heatmap;
         if (!heat) return null;
         var matrix = state.heatMetric === 'avg' ? heat.avg : heat.totals;
@@ -756,12 +823,25 @@
             rowSums.push(rs);
         }
 
+        // role=img flattens the grid's children out of the accessibility
+        // tree, so the label itself must carry the headline fact.
+        var ariaLabel = 'Heatmap of plays by weekday and hour.';
+        if (peakD >= 0 && peakVal > 0) {
+            ariaLabel += ' Busiest: ' + DOW_FULL[peakD] + 's, ' + hourRangeLabel(peakH) +
+                (state.heatMetric === 'avg'
+                    ? ' — usually around ' + formatNum(peakVal) + ' plays in that hour.'
+                    : ' — ' + formatInt(peakVal) + ' plays in total.');
+        }
         var gridEl = App.el('div', {
             className: 'rg-heatmap',
             style: { gridTemplateColumns: 'auto repeat(' + hours.length + ', minmax(0, 1fr)) auto' },
             role: 'img',
-            'aria-label': 'Heatmap of plays by weekday and hour'
+            'aria-label': ariaLabel
         });
+        function readoutHandler(text) {
+            return function() { if (setReadout) setReadout(text); };
+        }
+        var peakTip = null;
 
         // Header row: hour labels (sparse when narrow — every other label),
         // then the day-summary column header.
@@ -791,16 +871,21 @@
                 var n = Number((heat.dow_counts || [])[dw]) || 0;
                 var tip = DOW_FULL[dw] + ', ' + hourRangeLabel(h2) + ': ';
                 if (state.heatMetric === 'avg') {
-                    tip += 'usually around ' + formatNum(val) + ' plays' +
-                        ' (' + formatInt(totalVal) + ' total across ' + n + ' ' + DOW_FULL[dw] + (n === 1 ? '' : 's') + ')';
+                    tip += n > 0
+                        ? 'usually around ' + formatNum(val) + ' plays' +
+                            ' (' + formatInt(totalVal) + ' total across ' + n + ' ' + DOW_FULL[dw] + (n === 1 ? '' : 's') + ')'
+                        : 'no data for this period';
                 } else {
                     tip += formatInt(val) + ' plays in total' + (n > 0 ? ' across ' + n + ' ' + DOW_FULL[dw] + (n === 1 ? '' : 's') : '');
                 }
                 var isPeak = (dw === peakD && h2 === peakH && val > 0);
+                if (isPeak) tip += ' — the busiest hour of the week';
+                if (isPeak) peakTip = '★ ' + tip;
                 var cell = App.el('div', {
                     className: 'rg-heat-cell' + (val > 0 ? '' : ' rg-heat-cell-empty') + (isPeak ? ' rg-heat-cell-peak' : ''),
                     style: cellStyle,
-                    title: isPeak ? tip + ' — the busiest hour of the week' : tip
+                    title: tip,
+                    onClick: readoutHandler((isPeak ? '★ ' : '') + tip)
                 });
                 if (isPeak) cell.appendChild(App.el('span', { className: 'rg-heat-star', 'aria-hidden': 'true', textContent: '★' }));
                 gridEl.appendChild(cell);
@@ -828,7 +913,7 @@
                 (state.heatMetric === 'avg' ? '~' + formatNum(maxVal) + ' plays/hr' : formatInt(maxVal) + ' plays') })
         ]);
 
-        return { el: gridEl, legendTop: legendTop };
+        return { el: gridEl, legendTop: legendTop, peakTip: peakTip };
     }
 
     /**
@@ -889,6 +974,13 @@
             return metric === 'cash' ? Number(pt.cash) : (metric === 'tickets' ? Number(pt.tickets) : Number(pt.plays));
         });
 
+        var metricLabel = metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Reader CC' : 'Tickets');
+        var total = values.reduce(function(s, v) { return s + (Number(v) || 0); }, 0);
+        canvas.setAttribute('role', 'img');
+        canvas.setAttribute('aria-label', metricLabel + ' trend ' +
+            granularityNote(state.detail.series.granularity) + ', ' + state.detail.range.label +
+            ' — total ' + (metric === 'cash' ? formatCurrency(total) : formatInt(total)));
+
         var theme = readThemeColors();
         var barColor = metric === 'plays' ? theme.accent : (metric === 'cash' ? theme.success : theme.tickets);
 
@@ -946,62 +1038,23 @@
             bodyChildren.push(App.emptyState('🎮', 'This group has no games yet.' +
                 (canManage() ? ' Use "Edit group" to add some.' : '')));
         } else {
-            var headers = [
-                { label: '#', cls: '' },
-                { label: 'Game', cls: '' },
-                { label: 'Status', cls: '' },
-                { label: 'Plays', cls: 'text-right' },
-                { label: 'Avg/day', cls: 'text-right' },
-                { label: '% of area', cls: 'text-right' },
-                { label: 'Tickets', cls: 'text-right' }
-            ];
-            if (money) headers.push({ label: 'Reader CC', cls: 'text-right' });
-            headers.push({ label: 'vs prev', cls: 'text-right' });
-
-            var thead = App.el('thead', {}, [
-                App.el('tr', {}, headers.map(function(h) {
-                    return App.el('th', { className: h.cls, textContent: h.label });
-                }))
-            ]);
-            var tbody = App.el('tbody', {}, games.map(function(g, i) {
-                var cells = [
-                    App.el('td', { className: 'text-muted num-cell', textContent: i + 1 }),
-                    App.el('td', {}, [
-                        App.el('div', { textContent: g.game_name || ('Game ' + g.game_id), style: { fontWeight: '500' } }),
-                        App.el('div', { className: 'text-xs text-muted font-mono', textContent: g.game_id })
-                    ]),
-                    App.el('td', {}, [g.status ? App.statusBadge(g.status) : App.el('span', { className: 'text-muted', textContent: '—' })]),
-                    App.el('td', { className: 'text-right num-cell', textContent: g.plays > 0 ? formatInt(g.plays) : '—' }),
-                    App.el('td', { className: 'text-right num-cell text-secondary', textContent: g.plays > 0 ? formatNum(g.avg_plays_per_day) : '—' })
-                ];
-                if (g.share_pct === null || g.share_pct === undefined) {
-                    cells.push(App.el('td', { className: 'text-right num-cell text-muted', textContent: '—' }));
-                } else {
-                    cells.push(App.el('td', { className: 'text-right num-cell' }, [
-                        App.el('div', { className: 'perf-share' }, [
-                            App.el('span', { className: 'perf-share-val', textContent: g.share_pct + '%' }),
-                            App.el('span', { className: 'perf-share-bar' }, [
-                                App.el('span', { className: 'perf-share-bar-fill', style: { width: Math.min(100, g.share_pct) + '%' } })
-                            ])
-                        ])
-                    ]));
+            // Rank from the server's default order (plays DESC) — it stays
+            // honest under user sorting, and sorting "#" restores the default.
+            games.forEach(function(g, i) { g._rank = i + 1; });
+            var holder = App.el('div', {});
+            var search = App.buildSearchInput({
+                placeholder: 'Search games by name or ID…',
+                ariaLabel: 'Search games in this area',
+                value: state.gamesSearch,
+                onSearch: function(term) {
+                    state.gamesSearch = term;
+                    state.gamesPage = 1;
+                    renderGamesTable(holder, games, money);
                 }
-                cells.push(App.el('td', { className: 'text-right num-cell' }, [
-                    App.el('span', { className: g.tickets > 0 ? 'tickets-amount' : 'text-muted',
-                        textContent: g.tickets > 0 ? formatInt(Math.round(g.tickets)) : '—' })
-                ]));
-                if (money) cells.push(App.el('td', { className: 'text-right num-cell', textContent: g.cash > 0 ? formatCurrency(g.cash) : '—' }));
-                cells.push(App.el('td', { className: 'text-right' }, [delta(g.plays, g.prev_plays)]));
-
-                return App.el('tr', {
-                    className: 'clickable-row',
-                    title: 'Open in Performance',
-                    onClick: function() { window.location.hash = '#/performance?game=' + encodeURIComponent(g.game_id); }
-                }, cells);
-            }));
-            bodyChildren.push(App.el('div', { className: 'table-scroll-x' }, [
-                App.el('table', { className: 'data-table directory-table' }, [thead, tbody])
-            ]));
+            });
+            bodyChildren.push(App.el('div', { className: 'rg-games-toolbar' }, [search]));
+            bodyChildren.push(holder);
+            renderGamesTable(holder, games, money);
         }
 
         return App.el('div', { className: 'card' }, [
@@ -1013,15 +1066,108 @@
         ]);
     }
 
+    /** Filter → sort → paginate → render loop for the per-game table. */
+    function renderGamesTable(holder, games, money) {
+        function rerender() { renderGamesTable(holder, games, money); }
+        holder.innerHTML = '';
+
+        var filtered = games.filter(function(g) {
+            return App.matchesSearch(g, state.gamesSearch, ['game_name', 'game_id']);
+        });
+
+        var columns = [
+            { key: '_rank', label: '#', type: 'number', defaultDir: 'asc', tip: 'Rank by plays in this period' },
+            { key: 'game_name', label: 'Game', type: 'string',
+                sortValue: function(g) { return g.game_name || String(g.game_id); } },
+            { key: 'status', label: 'Status', type: 'string' },
+            { key: 'plays', label: 'Plays', type: 'number', className: 'text-right' },
+            { key: 'avg_plays_per_day', label: 'Avg/day', type: 'number', className: 'text-right' },
+            { key: 'share_pct', label: '% of area', type: 'number', className: 'text-right' },
+            { key: 'tickets', label: 'Tickets', type: 'number', className: 'text-right' }
+        ];
+        if (money) columns.push({ key: 'cash', label: 'Reader CC', type: 'number', className: 'text-right' });
+        columns.push({ key: 'delta', label: 'vs prev', type: 'number', className: 'text-right',
+            tip: 'Plays compared with the previous period', sortValue: playsDeltaValue });
+
+        var thead = App.el('thead', {}, [
+            App.el('tr', {}, columns.map(function(col) {
+                var th = App.sortableTh(col, state.gamesSort, function(next) {
+                    state.gamesSort = next;
+                    rerender();
+                });
+                if (col.tip) th.title = col.tip;
+                return th;
+            }))
+        ]);
+
+        var sorted = App.sortRows(filtered, state.gamesSort, columns);
+        var pg = App.paginate(sorted, state.gamesPage, state.gamesPageSize);
+        state.gamesPage = pg.page;
+
+        if (pg.total === 0) {
+            holder.appendChild(App.el('p', { className: 'text-sm text-muted', style: { padding: '0.5rem 0' },
+                textContent: 'No games match your search.' }));
+            return;
+        }
+
+        var tbody = App.el('tbody', {}, pg.items.map(function(g) {
+            var cells = [
+                App.el('td', { className: 'text-muted num-cell', textContent: g._rank }),
+                App.el('td', {}, [
+                    App.el('div', { textContent: g.game_name || ('Game ' + g.game_id), style: { fontWeight: '500' } }),
+                    App.el('div', { className: 'text-xs text-muted font-mono', textContent: g.game_id })
+                ]),
+                App.el('td', {}, [g.status ? App.statusBadge(g.status) : App.el('span', { className: 'text-muted', textContent: '—' })]),
+                App.el('td', { className: 'text-right num-cell', textContent: g.plays > 0 ? formatInt(g.plays) : '—' }),
+                App.el('td', { className: 'text-right num-cell text-secondary', textContent: g.plays > 0 ? formatNum(g.avg_plays_per_day) : '—' })
+            ];
+            if (g.share_pct === null || g.share_pct === undefined) {
+                cells.push(App.el('td', { className: 'text-right num-cell text-muted', textContent: '—' }));
+            } else {
+                cells.push(App.el('td', { className: 'text-right num-cell' }, [
+                    App.el('div', { className: 'perf-share' }, [
+                        App.el('span', { className: 'perf-share-val', textContent: g.share_pct + '%' }),
+                        App.el('span', { className: 'perf-share-bar' }, [
+                            App.el('span', { className: 'perf-share-bar-fill', style: { width: Math.min(100, g.share_pct) + '%' } })
+                        ])
+                    ])
+                ]));
+            }
+            cells.push(App.el('td', { className: 'text-right num-cell' }, [
+                App.el('span', { className: g.tickets > 0 ? 'tickets-amount' : 'text-muted',
+                    textContent: g.tickets > 0 ? formatInt(Math.round(g.tickets)) : '—' })
+            ]));
+            if (money) cells.push(App.el('td', { className: 'text-right num-cell', textContent: g.cash > 0 ? formatCurrency(g.cash) : '—' }));
+            cells.push(App.el('td', { className: 'text-right' }, [delta(g.plays, g.prev_plays)]));
+
+            var tr = App.el('tr', { className: 'clickable-row', title: 'Open in Performance' }, cells);
+            App.makeCardClickable(tr, function() { window.location.hash = '#/performance?game=' + encodeURIComponent(g.game_id); });
+            return tr;
+        }));
+        holder.appendChild(App.el('div', { className: 'table-scroll' }, [
+            App.el('table', { className: 'data-table directory-table' }, [thead, tbody])
+        ]));
+
+        var pagingState = { page: pg.page, pageSize: pg.pageSize, totalItems: pg.total };
+        holder.appendChild(App.buildPaginationBar(pagingState, function() {
+            state.gamesPage = pagingState.page;
+            state.gamesPageSize = pagingState.pageSize;
+            rerender();
+        }, { itemLabel: 'games' }));
+    }
+
     // ------------------------------------------------------------------
     // Group editor (create / edit) + delete
     // ------------------------------------------------------------------
     async function openEditor(groupId) {
+        // ONE showModal call: the loading body and footer are swapped in
+        // place when the data arrives, so hideModal can restore focus to
+        // the button that opened the editor.
         var body = App.el('div', {}, [App.loading()]);
-        App.showModal(groupId ? 'Edit reader group' : 'New reader group', body,
-            App.el('div', { className: 'flex gap-sm' }, [
-                App.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: function() { App.hideModal(); } })
-            ]));
+        var footer = App.el('div', { className: 'flex gap-sm' }, [
+            App.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: function() { App.hideModal(); } })
+        ]);
+        App.showModal(groupId ? 'Edit reader group' : 'New reader group', body, footer);
 
         var group = { name: '', description: '', games: [] };
         var catalog = [];
@@ -1033,10 +1179,12 @@
             catalog = (results[0] && results[0].games) || [];
             if (results[1]) group = results[1];
         } catch (err) {
+            if (!document.body.contains(body)) return; // modal closed while loading
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-secondary', textContent: 'Failed to load: ' + err.message }));
             return;
         }
+        if (!document.body.contains(body)) return; // modal closed while loading
 
         var selected = {};
         (group.games || []).forEach(function(g) { selected[g.game_id] = true; });
@@ -1051,9 +1199,9 @@
             }
         });
 
-        var nameInput = App.el('input', { className: 'form-input', type: 'text', value: group.name || '',
+        var nameInput = App.el('input', { className: 'form-input', type: 'text', id: 'rg-edit-name', value: group.name || '',
             placeholder: 'e.g. Redemption Wall', maxLength: 100 });
-        var descInput = App.el('input', { className: 'form-input', type: 'text', value: group.description || '',
+        var descInput = App.el('input', { className: 'form-input', type: 'text', id: 'rg-edit-desc', value: group.description || '',
             placeholder: 'Optional — what part of the venue is this?', maxLength: 500 });
 
         var countEl = App.el('span', { className: 'text-sm text-secondary' });
@@ -1107,10 +1255,10 @@
 
         body.innerHTML = '';
         body.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Name' }), nameInput
+            App.el('label', { className: 'form-label', 'for': 'rg-edit-name', textContent: 'Name' }), nameInput
         ]));
         body.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Description' }), descInput
+            App.el('label', { className: 'form-label', 'for': 'rg-edit-desc', textContent: 'Description' }), descInput
         ]));
         body.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('div', { className: 'flex-between', style: { marginBottom: '0.4rem' } }, [
@@ -1151,12 +1299,8 @@
             }
         });
 
-        // Rebuild the footer with the save button now that the form is live.
-        App.showModal(groupId ? 'Edit reader group' : 'New reader group', body,
-            App.el('div', { className: 'flex gap-sm' }, [
-                App.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: function() { App.hideModal(); } }),
-                saveBtn
-            ]));
+        // Add the save button to the live footer now that the form is ready.
+        footer.appendChild(saveBtn);
         requestAnimationFrame(function() { nameInput.focus(); });
     }
 
@@ -1218,13 +1362,26 @@
         return App.el('div', { className: 'perf-kpi-delta perf-delta-' + cls, textContent: text, title: 'vs previous period' });
     }
 
+    /**
+     * Raw plays-vs-previous ratio backing the "vs prev" sort: "new" rows
+     * (no previous plays) sort as the biggest gain; rows dead in both
+     * periods return null so they sink to the bottom.
+     */
+    function playsDeltaValue(g) {
+        var cur = Number(g.plays) || 0, prev = Number(g.prev_plays) || 0;
+        if (prev > 0) return (cur - prev) / prev;
+        return cur > 0 ? Infinity : null;
+    }
+
     function ensureChart() {
         return new Promise(function(resolve) {
             if (window.Chart) return resolve(true);
+            if (state.chartPoll) clearInterval(state.chartPoll);
             var tries = 0;
-            var timer = setInterval(function() {
-                if (window.Chart) { clearInterval(timer); resolve(true); }
-                else if (++tries > 50) { clearInterval(timer); resolve(false); }
+            // Kept in state so the route's cleanup fn can cancel the poll.
+            state.chartPoll = setInterval(function() {
+                if (window.Chart) { clearInterval(state.chartPoll); state.chartPoll = null; resolve(true); }
+                else if (++tries > 50) { clearInterval(state.chartPoll); state.chartPoll = null; resolve(false); }
             }, 100);
         });
     }
