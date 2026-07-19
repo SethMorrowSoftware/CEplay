@@ -11,6 +11,19 @@
     let scheduleDayFilter = 'all'; // 'all' or '0'..'6'
     let scheduleStatusFilter = 'all'; // 'all', 'active', 'inactive'
     let schedulePaging = { page: 1, pageSize: 25, totalItems: 0 };
+    let scheduleSort = { key: 'group_name', dir: 'asc' };
+
+    // Venue-local weekday index (0=Sun). Schedules are stored/enforced in the
+    // venue timezone, so the "today" highlight must use it too — not the
+    // browser's local day, which can be a day off for a remote operator.
+    function venueTodayDow() {
+        try {
+            const wd = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: App.appTimezone }).format(new Date());
+            const idx = App.DAYS_SHORT.indexOf(wd);
+            if (idx !== -1) return idx;
+        } catch (e) {}
+        return new Date().getDay();
+    }
 
     async function renderSchedules(container) {
         // Reset on every visit
@@ -104,16 +117,28 @@
     }
 
     async function loadSchedules() {
+        var gen = App.navGeneration();
         try {
             const [schedData, groupData] = await Promise.all([
                 API.get('schedules'),
                 API.get('groups')
             ]);
+            if (App.navGeneration() !== gen) return; // user navigated away
             allSchedules = (schedData || {}).schedules || [];
             allGroups = (groupData || {}).groups || [];
             renderGrid(allSchedules);
             renderList();
         } catch (err) {
+            if (App.navGeneration() !== gen) return;
+            const listEl = document.getElementById('schedule-list');
+            if (listEl) {
+                listEl.innerHTML = '';
+                listEl.appendChild(App.emptyState('⚠️', 'Could not load schedules: ' + err.message,
+                    App.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Retry',
+                        onClick: function() { listEl.innerHTML = ''; listEl.appendChild(App.loading()); loadSchedules(); } })));
+            }
+            const gridEl = document.getElementById('schedule-grid');
+            if (gridEl) gridEl.innerHTML = '';
             App.toast(err.message, 'error');
         }
     }
@@ -135,7 +160,8 @@
         if (!grid) return;
         grid.innerHTML = '';
 
-        const todayDow = new Date().getDay();
+        const canManage = App.canAccess('schedules_manage');
+        const todayDow = venueTodayDow();
 
         for (let d = 0; d < 7; d++) {
             const dayCol = App.el('div', { className: 'schedule-day' });
@@ -149,13 +175,10 @@
             App.makeCardClickable(header, function() {
                 scheduleDayFilter = String(dayIndex);
                 schedulePaging.page = 1;
-                // Update the day-filter <select> so the toolbar reflects state
-                const sel = document.querySelector('#schedule-toolbar select');
-                if (sel) {
-                    // The day filter is the second select in the toolbar.
-                    const selects = document.querySelectorAll('#schedule-toolbar select');
-                    if (selects.length >= 1) selects[0].value = String(dayIndex);
-                }
+                // Keep the toolbar's day-filter <select> (the first select) in
+                // step so the control reflects the filter the header just set.
+                const selects = document.querySelectorAll('#schedule-toolbar select');
+                if (selects.length >= 1) selects[0].value = String(dayIndex);
                 renderList();
                 const listCard = document.getElementById('schedule-list-card');
                 if (listCard && listCard.scrollIntoView) listCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -165,14 +188,20 @@
             const daySchedules = schedules.filter(s => s.day_of_week == d).sort((a, b) => a.start_time.localeCompare(b.start_time));
 
             daySchedules.forEach(s => {
-                const block = App.el('div', { className: 'schedule-block' }, [
+                const block = App.el('div', {
+                    className: 'schedule-block' + (s.is_active ? '' : ' schedule-block-inactive'),
+                    title: s.is_active ? null : 'Inactive schedule'
+                }, [
                     App.el('div', { className: 'schedule-block-time', textContent: App.formatTime(s.start_time) + ' - ' + App.formatTime(s.end_time) }),
                     App.el('div', { className: 'schedule-block-group', textContent: s.group_name || 'Group #' + s.pause_group_id })
                 ]);
-                App.makeCardClickable(block, function() { showEditForm(s); }, {
-                    title: 'Edit this schedule',
-                    role: 'button'
-                });
+                // Only managers can edit — don't advertise a click techs can't act on.
+                if (canManage) {
+                    App.makeCardClickable(block, function() { showEditForm(s); }, {
+                        title: 'Edit this schedule',
+                        role: 'button'
+                    });
+                }
                 dayCol.appendChild(block);
             });
 
@@ -182,6 +211,21 @@
 
             grid.appendChild(dayCol);
         }
+    }
+
+    // Column model shared by the sortable header and App.sortRows. Day sorts
+    // by weekday index (not the localized label); times sort as HH:MM strings
+    // (lexicographic == chronological); status by active flag.
+    function sortColumns() {
+        return [
+            { key: 'group_name', label: 'Group', type: 'string',
+              sortValue: function(s) { return s.group_name || ('Group #' + s.pause_group_id); } },
+            { key: 'day_of_week', label: 'Day', type: 'number' },
+            { key: 'start_time', label: 'Active From', type: 'string' },
+            { key: 'end_time', label: 'Active Until', type: 'string' },
+            { key: 'is_active', label: 'Status', type: 'number' },
+            { key: '_actions', label: 'Actions', sortable: false }
+        ];
     }
 
     function renderList() {
@@ -196,13 +240,16 @@
 
         if (allSchedules.length === 0) {
             if (toolbarEl) toolbarEl.style.display = 'none';
-            listEl.appendChild(App.emptyState('\u25F4', 'No schedules configured yet.'));
+            listEl.appendChild(App.emptyState('\u25F4', 'No schedules configured yet.',
+                App.canAccess('schedules_manage')
+                    ? App.el('button', { className: 'btn btn-primary btn-sm', textContent: '+ New Schedule', onClick: showCreateForm })
+                    : null));
             return;
         }
 
         if (toolbarEl) toolbarEl.style.display = '';
 
-        const filtered = getFilteredSchedules();
+        const filtered = App.sortRows(getFilteredSchedules(), scheduleSort, sortColumns());
         schedulePaging.totalItems = filtered.length;
         const page = App.paginate(filtered, schedulePaging.page, schedulePaging.pageSize);
         schedulePaging.page = page.page;
@@ -225,15 +272,11 @@
         const table = App.el('div', { className: 'table-wrapper' });
         const tbl = App.el('table', { className: 'data-table' });
 
+        const onSort = function(next) { scheduleSort = next; renderList(); };
         const thead = App.el('thead', {}, [
-            App.el('tr', {}, [
-                App.el('th', { textContent: 'Group' }),
-                App.el('th', { textContent: 'Day' }),
-                App.el('th', { textContent: 'Active From' }),
-                App.el('th', { textContent: 'Active Until' }),
-                App.el('th', { textContent: 'Status' }),
-                App.el('th', { textContent: 'Actions' })
-            ])
+            App.el('tr', {}, sortColumns().map(function(col) {
+                return App.sortableTh(col, scheduleSort, onSort);
+            }))
         ]);
         tbl.appendChild(thead);
 
@@ -278,12 +321,12 @@
 
             const form = App.el('div');
 
-            const groupSelect = App.el('select', { className: 'form-select' });
+            const groupSelect = App.el('select', { className: 'form-select', id: 'sched-create-group' });
             groups.forEach(g => {
                 groupSelect.appendChild(App.el('option', { value: String(g.id), textContent: g.name }));
             });
             form.appendChild(App.el('div', { className: 'form-group' }, [
-                App.el('label', { className: 'form-label', textContent: 'Pause Group' }),
+                App.el('label', { className: 'form-label', 'for': 'sched-create-group', textContent: 'Pause Group' }),
                 groupSelect
             ]));
 
@@ -301,11 +344,11 @@
             ]));
 
             // Time inputs
-            const startInput = App.el('input', { className: 'form-input', type: 'time', value: '09:00' });
-            const endInput = App.el('input', { className: 'form-input', type: 'time', value: '17:00' });
+            const startInput = App.el('input', { className: 'form-input', type: 'time', value: '09:00', id: 'sched-create-from' });
+            const endInput = App.el('input', { className: 'form-input', type: 'time', value: '17:00', id: 'sched-create-until' });
             form.appendChild(App.el('div', { className: 'form-row' }, [
-                App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: 'Active From' }), startInput]),
-                App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: 'Active Until' }), endInput])
+                App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': 'sched-create-from', textContent: 'Active From' }), startInput]),
+                App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': 'sched-create-until', textContent: 'Active Until' }), endInput])
             ]));
             form.appendChild(App.el('p', { className: 'form-help', textContent: 'Games will be ACTIVE (unpaused) during these hours and PAUSED outside them. Schedules cannot cross midnight \u2014 for overnight, create two entries.' }));
 
@@ -344,22 +387,22 @@
     async function showEditForm(schedule) {
         const form = App.el('div');
 
-        const daySelect = App.el('select', { className: 'form-select' });
+        const daySelect = App.el('select', { className: 'form-select', id: 'sched-edit-day' });
         App.DAYS.forEach((day, i) => {
             const opt = App.el('option', { value: String(i), textContent: day });
             if (i == schedule.day_of_week) opt.selected = true;
             daySelect.appendChild(opt);
         });
         form.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Day of Week' }),
+            App.el('label', { className: 'form-label', 'for': 'sched-edit-day', textContent: 'Day of Week' }),
             daySelect
         ]));
 
-        const startInput = App.el('input', { className: 'form-input', type: 'time', value: schedule.start_time });
-        const endInput = App.el('input', { className: 'form-input', type: 'time', value: schedule.end_time });
+        const startInput = App.el('input', { className: 'form-input', type: 'time', value: schedule.start_time, id: 'sched-edit-from' });
+        const endInput = App.el('input', { className: 'form-input', type: 'time', value: schedule.end_time, id: 'sched-edit-until' });
         form.appendChild(App.el('div', { className: 'form-row' }, [
-            App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: 'Active From' }), startInput]),
-            App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: 'Active Until' }), endInput])
+            App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': 'sched-edit-from', textContent: 'Active From' }), startInput]),
+            App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': 'sched-edit-until', textContent: 'Active Until' }), endInput])
         ]));
 
         const activeCheck = App.el('input', { type: 'checkbox', className: 'toggle-input' });
@@ -390,11 +433,17 @@
             saveBtn
         ]);
 
-        App.showModal('Edit Schedule', form, footer);
+        const groupName = schedule.group_name || ('Group #' + schedule.pause_group_id);
+        App.showModal('Edit Schedule — ' + groupName, form, footer);
     }
 
     async function deleteSchedule(id) {
-        const yes = await App.confirm('Delete this schedule?');
+        const s = allSchedules.filter(function(x) { return x.id === id; })[0];
+        const detail = s
+            ? 'Delete the ' + (s.group_name || ('Group #' + s.pause_group_id)) + ' schedule for ' +
+              App.DAYS[s.day_of_week] + ' (' + App.formatTime(s.start_time) + '–' + App.formatTime(s.end_time) + ')?'
+            : 'Delete this schedule?';
+        const yes = await App.confirm({ title: 'Delete schedule', message: detail, confirmLabel: 'Delete' });
         if (!yes) return;
         try {
             await API.del('schedules/' + encodeURIComponent(id));
