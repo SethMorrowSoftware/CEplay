@@ -12,15 +12,28 @@
 
     var allGames = [];
     var ticketStats = {};
+    var ticketStatsFailed = false;
     var searchTerm = '';
     var statusFilter = 'all';
-    var ticketSort = 'tickets_today';
-    var ticketSortDir = 'desc';
+    var dirSort = { key: 'tickets_today', dir: 'desc' };
     var dirPaging = { page: 1, pageSize: 25, totalItems: 0 };
     var topWindow = 'today';
     var TOP_LIMIT = 8;
+    var TOP_WINDOWS = [
+        ['hour', 'Last hour'],
+        ['today', 'Today'],
+        ['week', 'Last 7 days'],
+        ['all', 'All cached']
+    ];
 
     var VALID_STATUSES = ['enabled', 'paused', 'outOfService'];
+
+    function topWindowLabel() {
+        for (var i = 0; i < TOP_WINDOWS.length; i++) {
+            if (TOP_WINDOWS[i][0] === topWindow) return TOP_WINDOWS[i][1];
+        }
+        return topWindow;
+    }
 
     async function renderGamesPage(container, params) {
         // Apply deep-link query params from the hash. Dashboard tiles, top-
@@ -34,7 +47,9 @@
             statusFilter = 'all';
         }
         searchTerm = (query.search || '').toLowerCase();
+        dirPaging.page = 1;
         var pendingDetailId = query.game || '';
+        var gen = App.navGeneration();
 
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
@@ -42,11 +57,7 @@
                 App.el('p', { className: 'page-subtitle', textContent: 'Search and control individual games. Top earners and live play activity are spotlighted on the Dashboard.' })
             ]),
             App.el('div', { className: 'flex gap-sm' }, App.canAccess('manual_control') ? [
-                App.el('button', {
-                    className: 'btn btn-primary',
-                    textContent: 'Sync games',
-                    onClick: function() { syncGames(); }
-                })
+                buildSyncButton('btn btn-primary')
             ] : [])
         ]));
 
@@ -72,7 +83,9 @@
                 renderGameList();
             }
         });
-        dirSearchInput.style.flex = '1';
+        // A real flex-basis (not 0) lets the toolbar wrap the select onto its
+        // own line on very narrow screens instead of crushing the search box.
+        dirSearchInput.style.flex = '1 1 12rem';
         dirSearchInput.id = 'games-search';
 
         var dir = App.el('div', { className: 'card' }, [
@@ -84,7 +97,7 @@
                 App.el('span', { className: 'text-xs text-muted', textContent: 'Click any row to open game detail' })
             ]),
             App.el('div', { className: 'card-body' }, [
-                App.el('div', { className: 'flex gap-sm', style: { marginBottom: '0.75rem' } }, [
+                App.el('div', { className: 'flex gap-sm', style: { marginBottom: '0.75rem', flexWrap: 'wrap' } }, [
                     dirSearchInput,
                     buildStatusFilter()
                 ]),
@@ -102,12 +115,27 @@
             loaders.push(loadTopGames());
         }
         await Promise.all(loaders);
+        if (App.navGeneration() !== gen) return;
 
         // After games loaded, auto-open the detail modal if the caller
         // (e.g. a dashboard top-games tile) requested a specific game.
         if (pendingDetailId) {
             showGameDetail(pendingDetailId);
         }
+    }
+
+    /**
+     * "Sync games" button with busy feedback — the POST is a live
+     * CenterEdge round-trip that can take seconds, so disable + relabel
+     * while it runs. Used by the page header and the empty state.
+     */
+    function buildSyncButton(className) {
+        var btn = App.el('button', {
+            className: className || 'btn btn-primary',
+            textContent: 'Sync games',
+            onClick: function() { syncGames(btn); }
+        });
+        return btn;
     }
 
     /**
@@ -146,6 +174,8 @@
     function buildStatusFilter() {
         var sel = App.el('select', {
             className: 'form-input form-input-sm',
+            id: 'games-status-filter',
+            'aria-label': 'Filter by status',
             onChange: function(e) {
                 statusFilter = e.target.value;
                 dirPaging.page = 1;
@@ -166,11 +196,14 @@
     }
 
     async function loadGames() {
+        var gen = App.navGeneration();
         try {
             var data = await API.get('games');
+            if (App.navGeneration() !== gen) return;
             allGames = data.games || [];
             renderGameList();
         } catch (err) {
+            if (App.navGeneration() !== gen) return;
             var listEl = document.getElementById('games-list');
             if (listEl) {
                 listEl.innerHTML = '';
@@ -191,29 +224,40 @@
             return true;
         });
 
-        // Apply ticket-aware sort
-        filtered.sort(function(a, b) {
-            var sa = ticketStats[a.game_id] || {};
-            var sb = ticketStats[b.game_id] || {};
-            var aVal, bVal;
-            if (ticketSort === 'game_name') {
-                aVal = (a.game_name || '').toLowerCase();
-                bVal = (b.game_name || '').toLowerCase();
-            } else if (ticketSort === 'operation_status') {
-                var order = { enabled: 0, paused: 1, outOfService: 2 };
-                aVal = order[a.operation_status] != null ? order[a.operation_status] : 3;
-                bVal = order[b.operation_status] != null ? order[b.operation_status] : 3;
-            } else if (ticketSort === 'last_play') {
-                aVal = sa.last_play || '';
-                bVal = sb.last_play || '';
-            } else {
-                aVal = sa[ticketSort] || 0;
-                bVal = sb[ticketSort] || 0;
+        // Sales columns (plays/tickets/last play) are hidden from the
+        // 'tech' role. Status + actions stay visible so techs can still
+        // pause/unpause individual games.
+        var includeSales = App.canAccess('analytics');
+        var statusRank = { enabled: 0, paused: 1, outOfService: 2 };
+        var columns = [
+            { key: 'game_name', label: 'Name' },
+            {
+                key: 'operation_status', label: 'Status', type: 'number', defaultDir: 'asc',
+                sortValue: function(g) {
+                    return statusRank[g.operation_status] != null ? statusRank[g.operation_status] : 3;
+                }
             }
-            if (aVal < bVal) return ticketSortDir === 'asc' ? -1 : 1;
-            if (aVal > bVal) return ticketSortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
+        ];
+        if (includeSales) {
+            columns.push({ key: 'plays_today', label: 'Plays today', className: 'text-right', type: 'number',
+                sortValue: function(g) { var s = ticketStats[g.game_id]; return s ? (s.plays_today || 0) : 0; } });
+            columns.push({ key: 'tickets_today', label: 'Tickets today', className: 'text-right', type: 'number',
+                sortValue: function(g) { var s = ticketStats[g.game_id]; return s ? (s.tickets_today || 0) : 0; } });
+            columns.push({ key: 'tickets_week', label: '7 days', className: 'text-right', type: 'number',
+                sortValue: function(g) { var s = ticketStats[g.game_id]; return s ? (s.tickets_week || 0) : 0; } });
+            columns.push({ key: 'last_play', label: 'Last play', type: 'date',
+                sortValue: function(g) { var s = ticketStats[g.game_id]; return s ? s.last_play : null; } });
+        }
+        columns.push({ key: '_actions', label: '', sortable: false, className: 'text-right' });
+
+        // Repair sort selection if a previously-active sales column is
+        // hidden for the current role.
+        if (!includeSales && (dirSort.key === 'plays_today' || dirSort.key === 'tickets_today'
+                || dirSort.key === 'tickets_week' || dirSort.key === 'last_play')) {
+            dirSort = { key: 'game_name', dir: 'asc' };
+        }
+
+        filtered = App.sortRows(filtered, dirSort, columns);
 
         // Update directory meta line: e.g. "31 games · 12 active in last hour"
         var meta = document.getElementById('games-dir-meta');
@@ -225,12 +269,13 @@
             var pieces = [filtered.length + ' game' + (filtered.length === 1 ? '' : 's')];
             if (filtered.length !== allGames.length) pieces.push('of ' + allGames.length + ' total');
             if (activeNow > 0) pieces.push(activeNow + ' active in last hour');
+            if (includeSales && ticketStatsFailed) pieces.push('ticket stats unavailable');
             meta.textContent = pieces.join('  •  ');
         }
 
         listEl.innerHTML = '';
         if (filtered.length === 0) {
-            listEl.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'No games match these filters.' }));
+            listEl.appendChild(buildDirectoryEmptyState());
             if (pagerEl) pagerEl.innerHTML = '';
             return;
         }
@@ -250,53 +295,12 @@
             if (v > maxTickets) maxTickets = v;
         });
 
-        // Sales columns (plays/tickets/last play) are hidden from the
-        // 'tech' role. Status + actions stay visible so techs can still
-        // pause/unpause individual games.
-        var includeSales = App.canAccess('analytics');
-        var columns = [
-            { key: 'game_name', label: 'Name', sortable: true },
-            { key: 'operation_status', label: 'Status', sortable: true }
-        ];
-        if (includeSales) {
-            columns.push({ key: 'plays_today', label: 'Plays today', sortable: true, className: 'text-right' });
-            columns.push({ key: 'tickets_today', label: 'Tickets today', sortable: true, className: 'text-right' });
-            columns.push({ key: 'tickets_week', label: '7 days', sortable: true, className: 'text-right' });
-            columns.push({ key: 'last_play', label: 'Last play', sortable: true });
-        }
-        columns.push({ key: '_actions', label: '', sortable: false, className: 'text-right' });
-
-        // Repair sort selection if a previously-active sales column is
-        // hidden for the current role.
-        if (!includeSales && (ticketSort === 'plays_today' || ticketSort === 'tickets_today'
-                || ticketSort === 'tickets_week' || ticketSort === 'last_play')) {
-            ticketSort = 'game_name';
-            ticketSortDir = 'asc';
-        }
-
         var thead = App.el('thead', {}, [
             App.el('tr', {}, columns.map(function(col) {
-                var classes = [];
-                if (col.sortable) classes.push('sortable');
-                if (col.key === ticketSort) classes.push('sorted');
-                if (col.className) classes.push(col.className);
-                var arrow = '';
-                if (col.key === ticketSort) arrow = ticketSortDir === 'asc' ? ' ▲' : ' ▼';
-                var th = App.el('th', { className: classes.join(' '), textContent: col.label + arrow });
-                if (col.sortable) {
-                    th.addEventListener('click', function() {
-                        if (ticketSort === col.key) {
-                            ticketSortDir = ticketSortDir === 'asc' ? 'desc' : 'asc';
-                        } else {
-                            ticketSort = col.key;
-                            ticketSortDir = (col.key === 'plays_today' || col.key === 'tickets_today'
-                                || col.key === 'tickets_week' || col.key === 'last_play')
-                                ? 'desc' : 'asc';
-                        }
-                        renderGameList();
-                    });
-                }
-                return th;
+                return App.sortableTh(col, dirSort, function(next) {
+                    dirSort = next;
+                    renderGameList();
+                });
             }))
         ]);
 
@@ -317,16 +321,22 @@
             if (includeSales) {
                 cells.push(App.el('td', { className: 'text-right num-cell',
                     textContent: plays > 0 ? plays.toLocaleString() : '—' }));
-                cells.push(App.el('td', { className: 'text-right num-cell' }, [
+                cells.push(App.el('td', {
+                    className: 'text-right num-cell',
+                    'aria-label': (tickets > 0 ? tickets.toLocaleString() : 'no') + ' tickets today'
+                        + (ticketsHour > 0 ? ', ' + ticketsHour + ' in last hour' : '')
+                }, [
                     App.el('div', { className: 'tickets-cell' }, [
                         ticketsHour > 0 ? App.el('span', { className: 'tickets-dot',
+                            'aria-hidden': 'true',
                             title: ticketsHour + ' in last hour' }) : null,
                         App.el('span', {
                             className: tickets > 0 ? 'tickets-amount' : 'text-muted',
                             textContent: tickets > 0 ? tickets.toLocaleString() : '—'
                         })
                     ].filter(Boolean)),
-                    App.el('div', { className: 'tickets-bar', title: tickets + ' tickets today' }, [
+                    App.el('div', { className: 'tickets-bar', 'aria-hidden': 'true',
+                        title: tickets + ' tickets today' }, [
                         App.el('div', {
                             className: 'tickets-bar-fill' + (tickets > 0 ? ' has-tickets' : ''),
                             style: { width: Math.max(0, pct) + '%' }
@@ -349,19 +359,19 @@
                     App.el('button', {
                         className: 'btn btn-sm btn-ghost',
                         textContent: 'Details',
-                        onClick: function(e) { e.stopPropagation(); showGameDetail(g.game_id); }
+                        onClick: function() { showGameDetail(g.game_id); }
                     })
                 ]))
             ]));
 
-            return App.el('tr', {
-                className: 'clickable-row',
-                onClick: function() { showGameDetail(g.game_id); }
-            }, cells);
+            var tr = App.el('tr', { className: 'clickable-row' }, cells);
+            App.makeCardClickable(tr, function() { showGameDetail(g.game_id); },
+                { title: 'Open game detail' });
+            return tr;
         }));
 
         var table = App.el('table', { className: 'data-table directory-table' }, [thead, tbody]);
-        listEl.appendChild(table);
+        listEl.appendChild(App.el('div', { className: 'table-wrapper' }, [table]));
 
         if (pagerEl) {
             pagerEl.innerHTML = '';
@@ -373,13 +383,53 @@
         }
     }
 
+    /**
+     * Empty directory list: a fresh install with nothing synced yet needs
+     * guidance (and a sync shortcut), not a filter-mismatch message.
+     */
+    function buildDirectoryEmptyState() {
+        if (allGames.length === 0) {
+            return App.emptyState('🎮',
+                'No games synced yet. Sync pulls the game list from CenterEdge — check the connection in Settings if nothing comes back.',
+                App.canAccess('manual_control') ? buildSyncButton('btn btn-primary') : null);
+        }
+        return App.emptyState('🔍', 'No games match these filters.', App.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Clear filters',
+            onClick: function() {
+                searchTerm = '';
+                statusFilter = 'all';
+                dirPaging.page = 1;
+                var si = document.getElementById('games-search');
+                if (si) si.value = '';
+                var sf = document.getElementById('games-status-filter');
+                if (sf) sf.value = 'all';
+                if (window.location.hash.indexOf('#/games?') === 0) {
+                    // Deep-linked filters: rewriting the hash re-renders the
+                    // page and clears the filter banner too.
+                    window.location.hash = '#/games';
+                } else {
+                    renderGameList();
+                }
+            }
+        }));
+    }
+
     async function loadTicketStats() {
+        var gen = App.navGeneration();
         try {
             var data = await API.get('games/transactions/stats');
+            if (App.navGeneration() !== gen) return;
             ticketStats = data.stats || {};
+            ticketStatsFailed = false;
             renderGameList();  // re-render to pick up new ticket data
         } catch (err) {
-            // Non-fatal — directory still renders without ticket stats
+            // Non-fatal — directory still renders without ticket stats, but
+            // surface the gap in the meta line so '—' cells aren't mistaken
+            // for a quiet day.
+            if (App.navGeneration() !== gen) return;
+            ticketStatsFailed = true;
+            renderGameList();
         }
     }
 
@@ -398,12 +448,7 @@
                 loadTopGames();
             }
         });
-        [
-            ['hour', 'Last hour'],
-            ['today', 'Today'],
-            ['week', 'Last 7 days'],
-            ['all', 'All cached']
-        ].forEach(function(opt) {
+        TOP_WINDOWS.forEach(function(opt) {
             var o = App.el('option', { value: opt[0], textContent: opt[1] });
             if (opt[0] === topWindow) o.selected = true;
             sel.appendChild(o);
@@ -422,7 +467,11 @@
             ]),
             App.el('div', { className: 'card top-games-card', id: 'games-topplays-card' }, [
                 App.el('div', { className: 'card-header flex-between' }, [
-                    App.el('div', { className: 'card-title', textContent: 'Top by plays' })
+                    App.el('div', { className: 'card-title', textContent: 'Top by plays' }),
+                    // Echo the shared window selector's choice so this card
+                    // isn't ambiguous when the grid stacks on narrow screens.
+                    App.el('span', { id: 'games-topplays-window', className: 'text-xs text-muted',
+                        textContent: topWindowLabel() })
                 ]),
                 App.el('div', { id: 'games-topplays-body', className: 'card-body' }, [App.loading()])
             ])
@@ -430,6 +479,8 @@
     }
 
     async function loadTopGames() {
+        var echo = document.getElementById('games-topplays-window');
+        if (echo) echo.textContent = topWindowLabel();
         // Two compact leaderboards side by side, sharing the window selector.
         await Promise.all([
             renderTopList('games-top-body', 'tickets'),
@@ -443,9 +494,12 @@
     async function renderTopList(bodyId, metric) {
         var body = document.getElementById(bodyId);
         if (!body) return;
+        var gen = App.navGeneration();
+        var win = topWindow;
         try {
             var data = await API.get('games/transactions/top?window=' + encodeURIComponent(topWindow)
                 + '&sort=' + metric + '&limit=' + TOP_LIMIT);
+            if (App.navGeneration() !== gen || topWindow !== win) return;
             var rows = data.top || [];
             body.innerHTML = '';
 
@@ -503,13 +557,18 @@
                     spotlight
                 ]);
                 if (r.game_id) {
-                    App.makeCardLink(item, '#/games?game=' + encodeURIComponent(r.game_id),
-                        { title: 'Open game detail for ' + name });
+                    // Already on the Games page — open the modal directly. A
+                    // '?game=' hash link would be a silent no-op on the second
+                    // click (hashchange-only router) and would wipe active
+                    // filters by re-rendering the whole page.
+                    App.makeCardClickable(item, function() { showGameDetail(r.game_id); },
+                        { title: 'Open game detail for ' + name, role: 'button' });
                 }
                 list.appendChild(item);
             });
             body.appendChild(list);
         } catch (err) {
+            if (App.navGeneration() !== gen || topWindow !== win) return;
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-sm text-secondary',
                 textContent: 'Top games unavailable: ' + err.message }));
@@ -675,6 +734,9 @@
             // side. The dashboard owns the scrollable feed; this modal just
             // needs the last few plays for one specific game.
             var data = await API.get('games/transactions/recent?limit=500');
+            // Modal may have been closed (or reopened for another game) while
+            // the fetch was in flight — the old holder is detached then.
+            if (!holder.isConnected) return;
             holder.innerHTML = '';
             var matched = (data.transactions || []).filter(function(t) {
                 return String(t.game_id) === String(gameId);
@@ -688,6 +750,7 @@
             matched.forEach(function(t) { ul.appendChild(buildFeedRow(t)); });
             holder.appendChild(ul);
         } catch (err) {
+            if (!holder.isConnected) return;
             holder.innerHTML = '';
             holder.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Failed to load plays: ' + err.message }));
         }
@@ -754,7 +817,7 @@
             btns.push(App.el('button', {
                 className: 'btn btn-sm btn-success',
                 textContent: status === 'outOfService' ? 'Return to service' : 'Unpause',
-                onClick: function(e) { if (e) e.stopPropagation(); doStatusChange(ctx, 'enabled'); }
+                onClick: function() { doStatusChange(ctx, 'enabled'); }
             }));
         }
         if (status !== 'paused') {
@@ -762,7 +825,7 @@
                 className: 'btn btn-sm btn-warning',
                 textContent: 'Pause',
                 title: 'One-shot — next scheduled state change for the pause group will resume this game',
-                onClick: function(e) { if (e) e.stopPropagation(); doStatusChange(ctx, 'paused'); }
+                onClick: function() { doStatusChange(ctx, 'paused'); }
             }));
         }
         if (status !== 'outOfService') {
@@ -770,7 +833,7 @@
                 className: 'btn btn-sm btn-ghost',
                 textContent: 'Out of service',
                 title: 'Sticks — scheduler will skip this game until you return it to service',
-                onClick: function(e) { if (e) e.stopPropagation(); doStatusChange(ctx, 'outOfService'); }
+                onClick: function() { doStatusChange(ctx, 'outOfService'); }
             }));
         }
         return btns;
@@ -804,23 +867,36 @@
             App.toast('Status change failed: ' + e.message, 'error');
         }
 
-        // Re-fetch live state for the modal and refresh the directory cache view.
-        try {
-            var fresh = await API.get('games/' + encodeURIComponent(game.id));
-            renderGameDetailModal(fresh);
-        } catch (e) { /* swallow — modal still shows pre-action state */ }
+        // Re-fetch live state for the modal (only when it's open — directory
+        // row actions shouldn't pay a live CenterEdge round-trip for a modal
+        // that isn't there) and refresh the directory cache view.
+        if (document.getElementById('game-detail-body')) {
+            try {
+                var fresh = await API.get('games/' + encodeURIComponent(game.id));
+                renderGameDetailModal(fresh);
+            } catch (e) { /* swallow — modal still shows pre-action state */ }
+        }
         loadGames();
     }
 
-    async function syncGames() {
+    async function syncGames(btn) {
+        if (btn && btn.disabled) return;
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Syncing…';
+        }
         try {
             await API.post('games/sync');
             App.toast('Games synced.', 'success');
+            await loadGames();
         } catch (err) {
             App.toast('Sync failed: ' + err.message, 'error');
-            return;
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Sync games';
+            }
         }
-        await loadGames();
     }
 
     function formatPoints(n) {
