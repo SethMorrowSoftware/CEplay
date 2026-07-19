@@ -30,6 +30,7 @@
     // Monotonic load token: MSSQL round-trips can take seconds, so a rapid
     // ‹ ‹ click must not let an older response paint over a newer one.
     var loadSeq = 0;
+    var adminSeq = 0;
 
     function fmtMoney(v) {
         if (v == null) return '—';
@@ -90,6 +91,7 @@
                         state.offset = 0;
                         refreshPresetButtons();
                         toggleCustomRow();
+                        updateNav();
                         if (key !== 'custom') load();
                     }
                 });
@@ -105,21 +107,25 @@
             App.el('div', { className: 'perf-nav-label', id: 'cardloads-nav-label', textContent: '…' }),
             App.el('button', {
                 className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '›',
+                id: 'cardloads-nav-next',
                 title: 'Next period', 'aria-label': 'Next period',
+                disabled: state.range === 'custom' || state.offset >= 0,
                 onClick: function() { if (state.range === 'custom' || state.offset >= 0) return; state.offset += 1; load(); }
             }),
             App.el('button', {
                 className: 'btn btn-sm btn-ghost', textContent: 'Today',
+                id: 'cardloads-nav-today',
                 title: 'Jump to the current period',
+                disabled: state.offset === 0,
                 onClick: function() { if (state.offset === 0) return; state.offset = 0; load(); }
             })
         ]);
 
         var custom = App.el('div', { className: 'perf-custom', id: 'cardloads-custom',
             style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', textContent: 'From', 'for': 'cardloads-custom-from' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'cardloads-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', textContent: 'To', 'for': 'cardloads-custom-to' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'cardloads-custom-to', value: state.custom.to }),
             App.el('button', {
                 className: 'btn btn-sm btn-primary', textContent: 'Apply',
@@ -156,6 +162,14 @@
         if (nav) nav.style.display = state.range === 'custom' ? 'none' : '';
     }
 
+    /** Disable the no-op nav buttons — same convention as the Performance page. */
+    function updateNav() {
+        var next = document.getElementById('cardloads-nav-next');
+        if (next) next.disabled = (state.range === 'custom' || state.offset >= 0);
+        var today = document.getElementById('cardloads-nav-today');
+        if (today) today.disabled = (state.offset === 0);
+    }
+
     function insightCard(emoji, cls, label, value, sub) {
         return App.el('div', { className: 'insight-card ' + cls }, [
             App.el('div', { className: 'insight-icon', 'aria-hidden': 'true', textContent: emoji }),
@@ -174,6 +188,7 @@
         var box = document.getElementById('cardloads-results');
         if (!box) return;
         var seq = ++loadSeq;
+        updateNav();
         box.innerHTML = '';
         box.appendChild(App.loading());
 
@@ -239,6 +254,21 @@
         var s = data.summary || {};
         var days = data.days || [];
 
+        // The API emits a row for every date (zeros included), so an all-zero
+        // period must be detected from the summary — otherwise the page shows
+        // a wall of $0.00 rows plus fabricated "busiest hour" insights (the
+        // API seeds its best-averages at -1, so hour 0 / Sunday always win).
+        var hasPaid = (s.paid_loads || 0) > 0 || (s.paid_dollars || 0) > 0;
+        var hasAny = hasPaid || (s.bonus_loads || 0) > 0 || (s.bonus_dollars || 0) > 0;
+        if (!hasAny) {
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent: 'No card loads in this period yet.' })
+                ])
+            ]));
+            return;
+        }
+
         // ---- Plain-language summary ----
         var cards = [];
         cards.push(insightCard('💳', 'insight-accent', 'Loaded this period',
@@ -255,7 +285,7 @@
             cards.push(insightCard('🎟️', 'insight-quiet', 'Average load',
                 fmtMoney(s.avg_load), 'per paid load'));
         }
-        if (s.busiest_hour != null) {
+        if (s.busiest_hour != null && hasPaid) {
             cards.push(insightCard('⏰', 'insight-quiet', 'Busiest hour',
                 hourLabel(s.busiest_hour),
                 (s.busiest_dow_label ? 'busiest day ' + s.busiest_dow_label : 'by average dollars loaded')));
@@ -307,15 +337,16 @@
             App.el('tbody', {}, rows.map(function(d) {
                 var w = maxPaid > 0 ? Math.max(d.paid_dollars > 0 ? 2 : 0, Math.round((d.paid_dollars || 0) / maxPaid * 100)) : 0;
                 var cells = [
-                    App.el('td', {}, d.month
+                    App.el('td', { 'data-sort': d.month || d.date }, d.month
                         ? [App.el('strong', { textContent: monthLabel(d.month) })]
                         : [App.el('strong', { textContent: dayLabel(d.date) }),
                            App.el('span', { className: 'text-muted text-xs', textContent: ' ' + d.date })]),
-                    App.el('td', { textContent: fmtInt(d.paid_loads) }),
-                    App.el('td', { textContent: fmtMoney(d.paid_dollars) }),
-                    App.el('td', { textContent: d.avg_load != null ? fmtMoney(d.avg_load) : '—' })
+                    App.el('td', { 'data-sort': d.paid_loads != null ? String(d.paid_loads) : null, textContent: fmtInt(d.paid_loads) }),
+                    App.el('td', { 'data-sort': d.paid_dollars != null ? String(d.paid_dollars) : null, textContent: fmtMoney(d.paid_dollars) }),
+                    App.el('td', { 'data-sort': d.avg_load != null ? String(d.avg_load) : null, textContent: d.avg_load != null ? fmtMoney(d.avg_load) : '—' })
                 ];
-                if (anyBonus) cells.push(App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: (d.bonus_dollars || 0) > 0 ? fmtMoney(d.bonus_dollars) : '—' })]));
+                if (anyBonus) cells.push(App.el('td', { 'data-sort': (d.bonus_dollars || 0) > 0 ? String(d.bonus_dollars) : null },
+                    [App.el('span', { className: 'text-muted', textContent: (d.bonus_dollars || 0) > 0 ? fmtMoney(d.bonus_dollars) : '—' })]));
                 cells.push(App.el('td', { style: { width: '26%' } }, [
                     App.el('div', { className: 'labor-bar-track', title: fmtMoney(d.paid_dollars) + ' loaded' }, [
                         App.el('div', { className: 'labor-bar-seg labor-bar-profit', style: { width: w + '%' } })
@@ -324,12 +355,16 @@
                 return App.el('tr', {}, cells);
             }))
         ]);
+        // Fully rendered, non-paginated — headers sort in place. Default
+        // order stays chronological (no defaultSort).
+        App.enhanceTableSort(table);
 
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [
                 App.el('h3', { textContent: 'Card loads by ' + rowLabel.toLowerCase() })
             ]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Paid $ is real money guests added to cards (deferred stored value — it is not a POS sale until it\'s played off). '
                     + 'Bonus $ is comped/promotional value added with no payment, shown separately and estimated from card value-units.' })
@@ -423,6 +458,11 @@
         });
         if (hi < 0) return;
 
+        // White ink only works over the strong tints in the dark theme; the
+        // light theme composites these semi-transparent colors on a white
+        // card, where the default (dark) ink keeps contrast at every level.
+        var isLight = App.theme === 'light';
+
         var headCells = [App.el('th', { className: 'cardloads-heat-corner', textContent: '' })];
         for (var h = lo; h <= hi; h++) {
             headCells.push(App.el('th', { className: 'cardloads-heat-hhead', textContent: hourLabel(h).replace(' ', '') }));
@@ -436,11 +476,13 @@
                 var intensity = hm.max_avg > 0 ? v / hm.max_avg : 0;
                 // Accent-blue scale: transparent (0) → solid accent (max).
                 var bg = v > 0 ? 'rgba(91, 141, 239, ' + (0.12 + intensity * 0.78).toFixed(3) + ')' : 'transparent';
+                var tip = r.label + ' ' + hourLabel(h) + ' — ' + fmtMoney(v) + ' avg loaded'
+                    + (r.occurrences ? ' (' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ')' : '');
                 tds.push(App.el('td', {
                     className: 'cardloads-heat-cell',
-                    style: { backgroundColor: bg, color: intensity > 0.55 ? '#fff' : 'inherit' },
-                    title: r.label + ' ' + hourLabel(h) + ' — ' + fmtMoney(v) + ' avg loaded'
-                        + (r.occurrences ? ' (' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ')' : ''),
+                    style: { backgroundColor: bg, color: !isLight && intensity > 0.55 ? '#fff' : 'inherit' },
+                    title: tip,
+                    'aria-label': tip,
                     textContent: v >= 1 ? fmtMoney0(v) : ''
                 }));
             }
@@ -456,7 +498,8 @@
             App.el('div', { className: 'card-header' }, [
                 App.el('h3', { textContent: 'When guests load — day of week × hour' })
             ]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Average dollars loaded in each weekday/hour slot, averaged across every occurrence of that weekday in the period — the staffing view.' })
             ])
@@ -467,11 +510,22 @@
     // Admin: editable load query + test (settings permission only)
     // ------------------------------------------------------------------
     async function loadAdmin() {
+        var seq = ++adminSeq;
         try {
-            state.settings = await API.get('cardloads/settings');
+            var settings = await API.get('cardloads/settings');
+            if (seq !== adminSeq) return; // a newer load superseded this one
+            state.settings = settings;
             renderAdmin();
         } catch (err) {
-            console.error('cardloads settings load failed:', err);
+            if (seq !== adminSeq) return;
+            var box = document.getElementById('cardloads-admin');
+            if (!box) return;
+            box.innerHTML = '';
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.emptyState('⚠️',
+                    'Could not load the query settings: ' + (err && err.message ? err.message : 'unknown error'),
+                    App.el('button', { className: 'btn btn-secondary', textContent: 'Retry', onClick: function() { loadAdmin(); } }))
+            ]));
         }
     }
 
@@ -511,7 +565,8 @@
 
         var diagEl = App.el('pre', { className: 'labor-diagnostics', style: { display: 'none' } });
         var probeDateIn = App.el('input', { className: 'form-input', type: 'date',
-            title: 'Reconcile this date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
+            title: 'Reconcile this date (blank = yesterday)',
+            'aria-label': 'Reconcile date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
 
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test & reconcile',
             onClick: async function() {
@@ -548,6 +603,12 @@
             ? 'Using the MSSQL connection configured on the Go-Kart Labor page (database: ' + (s.connection.database || 'CenterEdge') + ').'
             : 'No MSSQL connection yet — set it up on the Go-Kart Labor page first; this report shares it.';
 
+        // POST cardloads/test requires data_explorer, not just settings —
+        // don't render a button that can only fail with a permission error.
+        var btnRow = [saveBtn];
+        if (App.canAccess('data_explorer')) btnRow.push(testBtn, probeDateIn);
+        btnRow.push(resetBtn, statusEl);
+
         box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
             App.el('summary', { className: 'labor-admin-summary', textContent: '⚙️ Load query (admin setup)' }),
             App.el('div', { className: 'card-body' }, [
@@ -556,7 +617,7 @@
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Must be a single SELECT and contain :from and :to. Runs read-only with the shared SQL login. '
                     + 'Default: PlayerCardTrans TransType 3 (add value). Adjust the bonus definition or value-unit divisor here if this install differs, then reconcile with Test.' }),
-                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, btnRow),
                 diagEl
             ])
         ]));
