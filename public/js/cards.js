@@ -46,6 +46,7 @@
                         className: 'form-input',
                         type: 'text',
                         placeholder: 'Card number (e.g. 80009100)',
+                        'aria-label': 'Card number',
                         autocomplete: 'off',
                         autofocus: true,
                         value: prefilled,
@@ -72,12 +73,12 @@
         }, 50);
     }
 
-    async function doLookup() {
+    async function doLookup(numberOverride) {
         var inp = document.getElementById('card-number-input');
         var resultEl = document.getElementById('card-result');
         if (!inp || !resultEl) return;
 
-        var cardNumber = (inp.value || '').trim();
+        var cardNumber = (numberOverride || inp.value || '').trim();
         if (!cardNumber) {
             App.toast('Enter a card number first.', 'warning');
             return;
@@ -86,15 +87,19 @@
             App.toast('Card numbers are alphanumeric only (max 32 chars).', 'error');
             return;
         }
+        if (numberOverride) inp.value = cardNumber;
         lastQuery = cardNumber;
 
         resultEl.innerHTML = '';
         resultEl.appendChild(App.loading());
 
+        var gen = App.navGeneration();
         try {
             var card = await API.get('cards/' + encodeURIComponent(cardNumber));
+            if (App.navGeneration() !== gen || cardNumber !== lastQuery) return;
             renderCardResult(resultEl, card);
         } catch (err) {
+            if (App.navGeneration() !== gen || cardNumber !== lastQuery) return;
             resultEl.innerHTML = '';
             if (err.status === 404) {
                 resultEl.appendChild(App.emptyState('?', 'Card "' + cardNumber + '" not found.'));
@@ -111,6 +116,11 @@
     function renderCardResult(container, card) {
         container.innerHTML = '';
 
+        // Adopt the API-canonical card number (case/leading zeros may differ
+        // from what was typed) so the stale guards compare like with like.
+        var cardNumber = card.cardNumber || lastQuery;
+        lastQuery = cardNumber;
+
         var balance = card.balance || {};
         var timePlays = card.timePlays || [];
         var privileges = card.privileges || [];
@@ -120,19 +130,19 @@
             App.el('div', { className: 'card-body' }, [
                 App.el('div', { className: 'flex-between' }, [
                     App.el('div', {}, [
-                        App.el('div', { className: 'card-title', textContent: 'Card ' + (card.cardNumber || '-') }),
+                        App.el('div', { className: 'card-title', textContent: 'Card ' + (cardNumber || '-') }),
                         App.el('p', { className: 'text-sm text-secondary', textContent: 'Issued ' + App.formatDatetime(card.issuedAtTime) })
                     ]),
                     App.el('div', { className: 'flex gap-sm' }, [
                         App.el('button', {
                             className: 'btn btn-sm btn-ghost',
                             textContent: 'Refresh',
-                            onClick: function() { doLookup(); }
+                            onClick: function() { doLookup(cardNumber); }
                         }),
                         App.el('button', {
                             className: 'btn btn-sm btn-ghost',
                             textContent: 'Check PIN',
-                            onClick: function() { showPinModal(card.cardNumber); }
+                            onClick: function() { showPinModal(cardNumber); }
                         })
                     ])
                 ]),
@@ -182,7 +192,7 @@
         ]);
         container.appendChild(txCard);
 
-        loadTransactions(card.cardNumber, 0);
+        loadTransactions(cardNumber, 0);
     }
 
     function balanceTile(label, value) {
@@ -206,7 +216,7 @@
         } else if (tp.type === 'dateTimeRange') {
             label = 'Active ' + App.formatDatetime(tp.start) + ' – ' + App.formatDatetime(tp.end);
         } else {
-            label = JSON.stringify(tp);
+            label = tp.type ? 'Time play (' + tp.type + ')' : 'Time play';
         }
         // groupName is resolved server-side from /timePlayGroups when the
         // card system supports it (e.g. "All Games — 45 minutes remaining").
@@ -246,15 +256,26 @@
         body.innerHTML = '';
         body.appendChild(App.loading());
 
+        var gen = App.navGeneration();
         try {
             var data = await API.get('cards/' + encodeURIComponent(cardNumber)
                 + '/transactions?skip=' + skip + '&take=' + TX_PAGE_SIZE);
-            if (cardNumber !== lastQuery) return;
+            if (App.navGeneration() !== gen || cardNumber !== lastQuery) return;
 
             body.innerHTML = '';
             var txs = data.transactions || [];
-            if (txs.length === 0 && skip === 0) {
-                body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'No transactions on this card.' }));
+            var total = typeof data.totalCount === 'number' ? data.totalCount : null;
+            var skipped = typeof data.skipped === 'number' ? data.skipped : skip;
+
+            if (txs.length === 0) {
+                if (skip === 0) {
+                    body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'No transactions on this card.' }));
+                } else {
+                    // Walked one page past the end (total unknown, previous
+                    // page was exactly full) — offer the way back.
+                    body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'No more transactions.' }));
+                    body.appendChild(buildTxPager(cardNumber, skip, 'End of history', false));
+                }
                 return;
             }
 
@@ -270,41 +291,48 @@
                 ]),
                 App.el('tbody', {}, txs.map(renderTxRow))
             ]);
-            body.appendChild(table);
+            body.appendChild(App.el('div', { className: 'table-scroll' }, [table]));
 
-            // Pagination
-            var total = typeof data.totalCount === 'number' ? data.totalCount : null;
-            var pager = App.el('div', { className: 'flex-between', style: { marginTop: '0.75rem' } });
-            var skipped = data.skipped || 0;
-            var pageInfo = total !== null
-                ? 'Showing ' + (skipped + 1) + '–' + (skipped + txs.length) + ' of ' + total
-                : 'Showing ' + (skipped + 1) + '–' + (skipped + txs.length);
-            pager.appendChild(App.el('span', { className: 'text-sm text-secondary', textContent: pageInfo }));
-
-            var pageBtns = App.el('div', { className: 'flex gap-sm' });
-            if (skip > 0) {
-                pageBtns.appendChild(App.el('button', {
-                    className: 'btn btn-sm btn-ghost',
-                    textContent: 'Previous',
-                    onClick: function() { loadTransactions(cardNumber, Math.max(0, skip - TX_PAGE_SIZE)); }
-                }));
+            // Pagination: the shared bar needs a known total for its page
+            // math; CenterEdge doesn't always report one, so fall back to a
+            // Previous/Next bar in the same pagination-bar dress when null.
+            if (total !== null) {
+                var pagerState = { page: Math.floor(skip / TX_PAGE_SIZE) + 1, pageSize: TX_PAGE_SIZE, totalItems: total };
+                body.appendChild(App.buildPaginationBar(pagerState, function() {
+                    loadTransactions(cardNumber, (pagerState.page - 1) * TX_PAGE_SIZE);
+                }, { itemLabel: 'transactions', pageSizeOptions: [TX_PAGE_SIZE] }));
+            } else {
+                var pageInfo = 'Showing ' + (skipped + 1) + '–' + (skipped + txs.length);
+                body.appendChild(buildTxPager(cardNumber, skip, pageInfo, txs.length === TX_PAGE_SIZE));
             }
-            var moreLikely = txs.length === TX_PAGE_SIZE && (total === null || skipped + txs.length < total);
-            if (moreLikely) {
-                pageBtns.appendChild(App.el('button', {
-                    className: 'btn btn-sm btn-ghost',
-                    textContent: 'Next',
-                    onClick: function() { loadTransactions(cardNumber, skip + TX_PAGE_SIZE); }
-                }));
-            }
-            pager.appendChild(pageBtns);
-            body.appendChild(pager);
 
         } catch (err) {
-            if (cardNumber !== lastQuery) return;
+            if (App.navGeneration() !== gen || cardNumber !== lastQuery) return;
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-secondary', textContent: 'Failed to load transactions: ' + err.message }));
         }
+    }
+
+    function buildTxPager(cardNumber, skip, infoText, hasNext) {
+        return App.el('div', { className: 'pagination-bar' }, [
+            App.el('div', { className: 'pagination-info' }, [
+                App.el('span', { textContent: infoText })
+            ]),
+            App.el('div', { className: 'pagination-controls' }, [
+                App.el('button', {
+                    className: 'btn btn-ghost btn-sm',
+                    textContent: 'Previous',
+                    disabled: skip <= 0,
+                    onClick: function() { loadTransactions(cardNumber, Math.max(0, skip - TX_PAGE_SIZE)); }
+                }),
+                App.el('button', {
+                    className: 'btn btn-ghost btn-sm',
+                    textContent: 'Next',
+                    disabled: !hasNext,
+                    onClick: function() { loadTransactions(cardNumber, skip + TX_PAGE_SIZE); }
+                })
+            ])
+        ]);
     }
 
     function renderTxRow(tx) {
@@ -323,7 +351,7 @@
                 detailLines.push(adjustmentLabel(a));
             });
             if ((tx.amountPaid || 0) > 0) {
-                detailLines.push('Paid: ' + tx.amountPaid);
+                detailLines.push('Paid: $' + Number(tx.amountPaid).toFixed(2));
             }
             // Who performed it — CenterEdge includes the operator on
             // adjustments when the card system persisted it. Answers
@@ -378,12 +406,20 @@
     function showPinModal(cardNumber) {
         var probe = App.el('div', { id: 'pin-probe' }, [App.loading()]);
         var pinInput = App.el('input', {
-            type: 'text',
+            type: 'password',
             inputmode: 'numeric',
+            autocomplete: 'off',
             className: 'form-input',
             placeholder: 'PIN to validate',
+            'aria-label': 'PIN to validate',
             id: 'pin-validate-input',
-            style: { width: '100%', marginTop: '0.75rem' }
+            style: { width: '100%', marginTop: '0.75rem' },
+            onKeydown: function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    doPinValidate(cardNumber);
+                }
+            }
         });
         var validateResult = App.el('div', { id: 'pin-validate-result', style: { marginTop: '0.5rem' } });
 
