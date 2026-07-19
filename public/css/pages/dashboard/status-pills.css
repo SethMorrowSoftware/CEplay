@@ -50,8 +50,26 @@
     background: color-mix(in srgb, var(--success) 10%, transparent);
 }
 @media (max-width: 720px) {
+    /* Stack the Command Center header on phones: the title block takes its
+       own row, then the clock/next-action pills and the Sync button flow
+       below it, wrapping freely — nothing overlaps or truncates at 390px. */
+    .dash-page-header { flex-wrap: wrap; row-gap: 0.55rem; }
+    .dash-page-header .page-header-titleblock { flex: 1 1 100%; }
+    .dash-page-header .page-subtitle {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        font-size: 0.78rem;
+    }
     .page-header-actions { width: 100%; justify-content: flex-start; }
-    .header-pill { font-size: 0.72rem; padding: 0.3rem 0.6rem; }
+    .header-pill {
+        font-size: 0.72rem;
+        padding: 0.3rem 0.6rem;
+        min-width: 0;
+        max-width: 100%;
+    }
+    /* Long "Pause <group> at 9:00 PM" pill text wraps instead of pushing
+       the pill (and the Sync button) out of the viewport. */
+    .header-pill-text { white-space: normal; overflow-wrap: anywhere; }
 }
 
 /* ============================================

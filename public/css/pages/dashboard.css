@@ -1,4 +1,44 @@
 /* ============================================
+   Game status toolbar — compact search box
+   ============================================
+   Desktop keeps the compact sizing that used to be inline styles; on
+   phones the rules step aside so the global ≤720px 16px .form-input rule
+   applies (inline font-size would re-trigger iOS Safari focus-zoom).
+   ============================================ */
+#game-search { max-width: 240px; }
+@media (min-width: 721px) {
+    #game-search {
+        font-size: 0.82rem;
+        padding: 0.4rem 0.65rem;
+    }
+}
+@media (max-width: 720px) {
+    #game-search { max-width: none; }
+}
+
+/* Game-name drill-down link in the status table — same affordance as the
+   grid tiles, styled as the plain name text it replaced. */
+.game-table-name-link {
+    display: block;
+    font-weight: 500;
+    color: var(--text-primary);
+    text-decoration: none;
+}
+.game-table-name-link:hover,
+.game-table-name-link:focus-visible {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+/* Both dashboard tables live in a .table-scroll-container; make the
+   sideways overflow explicit so narrow phones pan the table, never the page. */
+#game-content .table-scroll-container,
+#ticket-watch-body .table-scroll-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================
    Game Grid (Dashboard)
    ============================================ */
 .game-grid {
