@@ -59,12 +59,25 @@
 
         container.appendChild(App.el('div', { id: 'groups-pagination' }));
 
+        await loadGroupList();
+    }
+
+    async function loadGroupList() {
+        var gen = App.navGeneration();
         try {
             const data = await API.get('groups') || {};
+            if (App.navGeneration() !== gen) return;
             allGroups = data.groups || [];
             renderGroupCards();
         } catch (err) {
-            listEl.innerHTML = '';
+            if (App.navGeneration() !== gen) return;
+            const listEl = document.getElementById('groups-list');
+            if (listEl) {
+                listEl.innerHTML = '';
+                listEl.appendChild(App.emptyState('⚠️', 'Failed to load groups: ' + err.message,
+                    App.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Retry',
+                        onClick: function() { listEl.innerHTML = ''; listEl.appendChild(App.loading()); loadGroupList(); } })));
+            }
             App.toast(err.message, 'error');
         }
     }
@@ -204,9 +217,9 @@
             ].filter(Boolean)) : null;
 
         const card = App.el('div', { className: 'card', style: { marginBottom: '0.75rem' } }, [
-            App.el('div', { className: 'flex-between' }, [
-                App.el('div', { style: { flex: '1', minWidth: '0' } }, [
-                    App.el('div', { className: 'flex-center gap-sm' }, [
+            App.el('div', { className: 'flex-between', style: { flexWrap: 'wrap', rowGap: '0.5rem', columnGap: '0.75rem' } }, [
+                App.el('div', { style: { flex: '1 1 220px', minWidth: '0' } }, [
+                    App.el('div', { className: 'flex-center gap-sm', style: { flexWrap: 'wrap', rowGap: '0.25rem' } }, [
                         App.el('span', { className: 'status-dot status-dot-' + (isActive ? state : 'empty') }),
                         App.el('span', { className: 'card-title', textContent: group.name }),
                         App.el('span', { className: 'badge ' + (isActive ? 'badge-active' : 'badge-inactive'),
@@ -215,7 +228,7 @@
                     ].filter(Boolean)),
                     group.description ? App.el('p', { className: 'text-sm text-secondary mt-1', textContent: group.description }) : null
                 ].filter(Boolean)),
-                App.el('div', { className: 'flex-center' }, [
+                App.el('div', { className: 'flex-center', style: { flexWrap: 'wrap' } }, [
                     App.el('div', { className: 'text-sm text-secondary', style: { textAlign: 'right' } }, [
                         App.el('div', { textContent: formatGroupMembers(group) }),
                         App.el('div', { textContent: pluralize(group.schedule_count || 0, 'schedule') })
@@ -257,6 +270,15 @@
         return n + ' ' + word;
     }
 
+    // Kiosks share the games' GameOperationStatus enum — keep the label
+    // mapping in sync with the card list's state badges (buildGroupCard).
+    function humanizeOperationStatus(status) {
+        return status === 'enabled' ? 'Running'
+            : status === 'paused' ? 'Paused'
+            : status === 'outOfService' ? 'Out of service'
+            : (status || 'Unknown');
+    }
+
     async function renderGroupForm(container, params) {
         // Creating/editing groups is manager/admin only (the API enforces the
         // same policy). Techs keep the list view with pause/unpause controls.
@@ -268,6 +290,7 @@
 
         const isEdit = params.id && params.id !== 'new';
         const groupId = isEdit ? params.id : null;
+        var formDirty = false;
 
         container.appendChild(App.el('div', { className: 'page-header' }, [
             App.el('div', {}, [
@@ -276,7 +299,17 @@
             ]),
             App.el('button', {
                 className: 'btn btn-ghost', textContent: '\u2190 Back',
-                onClick: () => { window.location.hash = '#/groups'; }
+                onClick: async () => {
+                    if (formDirty) {
+                        const yes = await App.confirm({
+                            message: 'You have unsaved changes. Discard them and go back?',
+                            confirmLabel: 'Discard changes',
+                            danger: true
+                        });
+                        if (!yes) return;
+                    }
+                    window.location.hash = '#/groups';
+                }
             })
         ]));
 
@@ -284,54 +317,70 @@
         formWrap.appendChild(App.loading());
         container.appendChild(formWrap);
 
-        try {
-            // Load data in parallel. Kiosks are best-effort: not every card
-            // system supports the /kiosks endpoint, so a failure here just
-            // means the kiosk picker stays empty.
-            const promises = [
-                API.get('games'),
-                API.get('games/categories'),
-                API.get('kiosks').catch(function() { return { kiosks: [] }; })
-            ];
-            if (isEdit) promises.push(API.get('groups/' + encodeURIComponent(groupId)));
-            const results = await Promise.all(promises);
+        await loadForm();
 
-            const allGames = (results[0] || {}).games || [];
-            const allCategories = (results[1] || {}).categories || [];
-            const allKiosks = (results[2] || {}).kiosks || [];
-            const existing = isEdit ? results[3] : null;
+        async function loadForm() {
+            var gen = App.navGeneration();
+            try {
+                // Load data in parallel. Kiosks are best-effort: not every card
+                // system supports the /kiosks endpoint, so a failure here just
+                // means the kiosk picker stays empty.
+                const promises = [
+                    API.get('games'),
+                    API.get('games/categories'),
+                    API.get('kiosks').catch(function() { return { kiosks: [] }; })
+                ];
+                if (isEdit) promises.push(API.get('groups/' + encodeURIComponent(groupId)));
+                const results = await Promise.all(promises);
+                if (App.navGeneration() !== gen) return;
 
-            formWrap.innerHTML = '';
-            renderForm(formWrap, allGames, allCategories, allKiosks, existing, groupId);
-        } catch (err) {
-            formWrap.innerHTML = '';
-            App.toast(err.message, 'error');
+                const allGames = (results[0] || {}).games || [];
+                const allCategories = (results[1] || {}).categories || [];
+                const allKiosks = (results[2] || {}).kiosks || [];
+                const existing = isEdit ? results[3] : null;
+
+                formWrap.innerHTML = '';
+                renderForm(formWrap, allGames, allCategories, allKiosks, existing, groupId, function() { formDirty = true; });
+            } catch (err) {
+                if (App.navGeneration() !== gen) return;
+                formWrap.innerHTML = '';
+                formWrap.appendChild(App.emptyState('\u26a0\ufe0f', 'Failed to load group form: ' + err.message,
+                    App.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Retry',
+                        onClick: function() { formWrap.innerHTML = ''; formWrap.appendChild(App.loading()); loadForm(); } })));
+                App.toast(err.message, 'error');
+            }
         }
     }
 
-    function renderForm(container, allGames, allCategories, allKiosks, existing, groupId) {
+    function renderForm(container, allGames, allCategories, allKiosks, existing, groupId, markDirty) {
+        const dirty = typeof markDirty === 'function' ? markDirty : function() {};
+        const gameIdSet = new Set(allGames.map(g => g.game_id));
+        const kioskIdSet = new Set(allKiosks.map(k => k.id));
         const selectedCategories = new Set((existing?.categories || []).map(c => c.category_id));
-        const selectedGames = new Set((existing?.games || []).map(g => g.game_id));
-        const selectedKiosks = new Set((existing?.kiosks || []).map(k => k.kiosk_id));
+        const selectedGames = new Set((existing?.games || []).map(g => g.game_id).filter(id => gameIdSet.has(id)));
+        const selectedKiosks = new Set((existing?.kiosks || []).map(k => k.kiosk_id).filter(id => kioskIdSet.has(id)));
 
         // Name
-        const nameInput = App.el('input', { className: 'form-input', type: 'text', value: existing?.name || '', placeholder: 'e.g., Redemption Games' });
+        const nameInput = App.el('input', { className: 'form-input', type: 'text', id: 'group-name-input', value: existing?.name || '', placeholder: 'e.g., Redemption Games' });
+        nameInput.addEventListener('input', dirty);
         container.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Group Name' }),
+            App.el('label', { className: 'form-label', for: 'group-name-input', textContent: 'Group Name' }),
             nameInput
         ]));
 
         // Description
-        const descInput = App.el('textarea', { className: 'form-textarea', placeholder: 'Optional description...' });
+        const descInput = App.el('textarea', { className: 'form-textarea', id: 'group-description-input', placeholder: 'Optional description...' });
         descInput.value = existing?.description || '';
+        descInput.addEventListener('input', dirty);
         container.appendChild(App.el('div', { className: 'form-group' }, [
-            App.el('label', { className: 'form-label', textContent: 'Description' }),
+            App.el('label', { className: 'form-label', for: 'group-description-input', textContent: 'Description' }),
             descInput
         ]));
 
         // Active toggle
         const activeCheck = App.el('input', { type: 'checkbox', className: 'toggle-input', id: 'group-active' });
         activeCheck.checked = existing ? !!existing.is_active : true;
+        activeCheck.addEventListener('change', dirty);
         container.appendChild(App.el('div', { className: 'form-group' }, [
             App.el('label', { className: 'toggle-label', for: 'group-active' }, [
                 activeCheck,
@@ -353,6 +402,7 @@
             cb.addEventListener('change', () => {
                 if (cb.checked) selectedCategories.add(cat.id);
                 else selectedCategories.delete(cat.id);
+                dirty();
             });
             catList.appendChild(App.el('label', { className: 'checkbox-label' }, [
                 cb,
@@ -377,23 +427,29 @@
         const pickerToolbar = App.el('div', { className: 'game-picker-toolbar' });
 
         const gameSearch = App.el('input', {
-            className: 'form-input', type: 'text', placeholder: 'Search games...'
+            className: 'form-input', type: 'text', placeholder: 'Search games...',
+            'aria-label': 'Search games'
         });
 
         const showFilter = App.el('select', {
             className: 'form-select',
-            style: { width: 'auto', minWidth: '130px', padding: '0.35rem 0.6rem', fontSize: '0.82rem' }
+            style: { width: 'auto', minWidth: '130px', padding: '0.35rem 0.6rem', fontSize: '0.82rem' },
+            'aria-label': 'Filter games by selection'
         });
         showFilter.appendChild(App.el('option', { value: 'all', textContent: 'All Games' }));
         showFilter.appendChild(App.el('option', { value: 'selected', textContent: 'Selected Only' }));
         showFilter.appendChild(App.el('option', { value: 'unselected', textContent: 'Unselected Only' }));
 
+        // "Visible" means the current picker PAGE (what's actually on
+        // screen), not every game matching the search/filter across all
+        // pages — getCurrentPageGames() (defined below) applies the same
+        // filter+sort+page slice renderGamePicker() renders.
         const selectAllBtn = App.el('button', {
             className: 'btn btn-sm btn-secondary',
             textContent: 'Select Visible',
             onClick: () => {
-                const visible = getVisibleGames(allGames, gameSearch.value.toLowerCase(), showFilter.value, selectedGames);
-                visible.forEach(g => selectedGames.add(g.game_id));
+                getCurrentPageGames().forEach(g => selectedGames.add(g.game_id));
+                dirty();
                 renderGamePicker();
             }
         });
@@ -402,8 +458,8 @@
             className: 'btn btn-sm btn-ghost',
             textContent: 'Deselect Visible',
             onClick: () => {
-                const visible = getVisibleGames(allGames, gameSearch.value.toLowerCase(), showFilter.value, selectedGames);
-                visible.forEach(g => selectedGames.delete(g.game_id));
+                getCurrentPageGames().forEach(g => selectedGames.delete(g.game_id));
+                dirty();
                 renderGamePicker();
             }
         });
@@ -444,6 +500,17 @@
             return sorted;
         }
 
+        // The slice of games actually rendered on the current picker page —
+        // same filter/sort/clamp logic renderGamePicker() uses.
+        function getCurrentPageGames() {
+            const visible = getVisibleGames(allGames, gameSearch.value.toLowerCase(), showFilter.value, selectedGames);
+            const totalPages = Math.max(1, Math.ceil(visible.length / pickerPageSize));
+            if (pickerPage > totalPages) pickerPage = totalPages;
+            if (pickerPage < 1) pickerPage = 1;
+            const startIdx = (pickerPage - 1) * pickerPageSize;
+            return visible.slice(startIdx, startIdx + pickerPageSize);
+        }
+
         function renderGamePicker() {
             gameListEl.innerHTML = '';
             const filter = gameSearch.value.toLowerCase();
@@ -459,17 +526,19 @@
             const pageItems = visible.slice(startIdx, startIdx + pickerPageSize);
 
             pageItems.forEach(game => {
-                const item = App.el('div', { className: 'game-picker-item' });
                 const cb = App.el('input', { type: 'checkbox', value: game.game_id });
                 cb.checked = selectedGames.has(game.game_id);
                 cb.addEventListener('change', () => {
                     if (cb.checked) selectedGames.add(game.game_id);
                     else selectedGames.delete(game.game_id);
+                    dirty();
                     updatePickerStats();
                 });
-                item.appendChild(cb);
-                item.appendChild(App.el('span', { className: 'game-name', textContent: game.game_name }));
-                item.appendChild(App.el('span', { className: 'game-status', textContent: game.operation_status }));
+                const item = App.el('label', { className: 'game-picker-item' }, [
+                    cb,
+                    App.el('span', { className: 'game-name', textContent: game.game_name }),
+                    App.el('span', { className: 'game-status', textContent: humanizeOperationStatus(game.operation_status) })
+                ]);
                 gameListEl.appendChild(item);
             });
 
@@ -542,19 +611,25 @@
             allKiosks.forEach(function(k) {
                 // Per the kiosk API spec, a kiosk reporting no operationStatus
                 // must NOT be pause-controlled — disable the checkbox so it
-                // can't be added to a pause group by mistake.
+                // can't be ADDED to a pause group by mistake. But if it's
+                // already a member (e.g. went status-unknown after being
+                // added), leave it enabled so it can still be UNCHECKED —
+                // otherwise it can never be removed and keeps re-submitting.
                 const unknown = !k.operationStatus;
                 const cb = App.el('input', { type: 'checkbox', value: String(k.id) });
                 cb.checked = selectedKiosks.has(k.id);
-                if (unknown) {
+                if (unknown && !cb.checked) {
                     cb.disabled = true;
                     cb.title = 'Kiosk operation status unknown — cannot pause via API';
+                } else if (unknown) {
+                    cb.title = 'Kiosk operation status unknown — cannot pause via API. Uncheck to remove from group.';
                 }
                 cb.addEventListener('change', function() {
                     if (cb.checked) selectedKiosks.add(k.id);
                     else selectedKiosks.delete(k.id);
+                    dirty();
                 });
-                const labelTxt = (k.name || k.id) + (unknown ? ' (status unknown)' : (' (' + k.operationStatus + ')'));
+                const labelTxt = (k.name || k.id) + (unknown ? ' (status unknown)' : (' (' + humanizeOperationStatus(k.operationStatus) + ')'));
                 kioskList.appendChild(App.el('label', { className: 'checkbox-label' }, [
                     cb,
                     App.el('span', { textContent: labelTxt })
@@ -578,6 +653,7 @@
         const actions = App.el('div', { className: 'form-actions' }, [saveBtn, deleteBtn].filter(Boolean));
         container.appendChild(actions);
 
+        const saveBtnLabel = saveBtn.textContent;
         saveBtn.addEventListener('click', async () => {
             const name = nameInput.value.trim();
             if (!name) { App.toast('Name is required.', 'error'); return; }
@@ -592,6 +668,7 @@
             };
 
             saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
             try {
                 if (groupId) {
                     await API.put('groups/' + encodeURIComponent(groupId), body);
@@ -604,6 +681,7 @@
             } catch (err) {
                 App.toast(err.message, 'error');
                 saveBtn.disabled = false;
+                saveBtn.textContent = saveBtnLabel;
             }
         });
     }
@@ -613,28 +691,44 @@
         const confirmed = await App.confirm(verb + ' "' + groupName + '"?');
         if (!confirmed) return;
 
+        var gen = App.navGeneration();
+
         // Disable all quick-action buttons
         listEl.querySelectorAll('.btn-success, .btn-warning').forEach(b => { b.disabled = true; });
 
+        var result;
         try {
-            const result = await API.post('groups/' + encodeURIComponent(groupId) + '/' + encodeURIComponent(action)) || {};
-            const changed = result.changed || 0;
-            const errors = result.errors || 0;
+            result = await API.post('groups/' + encodeURIComponent(groupId) + '/' + encodeURIComponent(action)) || {};
+        } catch (err) {
+            if (App.navGeneration() !== gen) return;
+            App.toast(verb + ' failed: ' + err.message, 'error');
+            listEl.querySelectorAll('.btn-success, .btn-warning').forEach(b => { b.disabled = false; });
+            return;
+        }
+        if (App.navGeneration() !== gen) return;
 
-            if (errors > 0) {
-                App.toast(verb + ' partially failed: ' + changed + ' changed, ' + errors + ' error(s).', 'warning');
-            } else if (changed > 0) {
-                App.toast(groupName + ': ' + pluralize(changed, 'item') + ' ' + action + 'd.', 'success');
-            } else {
-                App.toast(groupName + ': already ' + action + 'd.', 'info');
-            }
+        const changed = result.changed || 0;
+        const errors = result.errors || 0;
 
-            // Reload group list to reflect new state
+        if (errors > 0) {
+            App.toast(verb + ' partially failed: ' + changed + ' changed, ' + errors + ' error(s).', 'warning');
+        } else if (changed > 0) {
+            App.toast(groupName + ': ' + pluralize(changed, 'item') + ' ' + action + 'd.', 'success');
+        } else {
+            App.toast(groupName + ': already ' + action + 'd.', 'info');
+        }
+
+        // The action itself already succeeded above — a failure here only
+        // means the list may show stale state until the next reload, not
+        // that the pause/unpause failed.
+        try {
             const data = await API.get('groups') || {};
+            if (App.navGeneration() !== gen) return;
             allGroups = data.groups || [];
             renderGroupCards();
         } catch (err) {
-            App.toast(verb + ' failed: ' + err.message, 'error');
+            if (App.navGeneration() !== gen) return;
+            App.toast('Group list refresh failed (state may be stale): ' + err.message, 'warning');
             listEl.querySelectorAll('.btn-success, .btn-warning').forEach(b => { b.disabled = false; });
         }
     }
