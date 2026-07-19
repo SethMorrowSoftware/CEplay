@@ -1551,7 +1551,10 @@ const App = {
             th.classList.add('sortable');
             th.setAttribute('tabindex', '0');
             th.setAttribute('aria-sort', 'none');
-            th.setAttribute('title', 'Sort by ' + th.textContent.trim());
+            // Don't clobber an existing explanatory tooltip.
+            if (!th.hasAttribute('title')) {
+                th.setAttribute('title', 'Sort by ' + th.textContent.trim());
+            }
             const icon = this.el('span', { className: 'sort-icon', 'aria-hidden': 'true', textContent: '↕' });
             th.appendChild(icon);
             th._sortIcon = icon;
