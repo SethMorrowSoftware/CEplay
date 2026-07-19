@@ -762,8 +762,8 @@
                     + (r.is_wiped ? ' · wiped' : '');
             }
             tbody.appendChild(App.el('tr', {}, [
-                App.el('td', { textContent: App.formatDatetime(r.transaction_time) }),
-                App.el('td', {}, [
+                App.el('td', { textContent: App.formatDatetime(r.transaction_time), 'data-sort': r.transaction_time || '' }),
+                App.el('td', { 'data-sort': r.type }, [
                     App.el('span', {
                         className: r.type === 'merge' ? 'badge badge-info' : 'badge badge-paused',
                         textContent: r.type === 'merge' ? 'Merge' : 'Expiration'
@@ -773,7 +773,8 @@
             ]));
         });
         table.appendChild(tbody);
-        box.appendChild(table);
+        App.enhanceTableSort(table, { defaultSort: { index: 0, dir: 'desc' } });
+        box.appendChild(App.el('div', { className: 'table-scroll' }, [table]));
     }
 
     // ------------------------------------------------------------------
@@ -1426,7 +1427,7 @@
             // failure's source so the operator sees the full sequence around
             // the error rather than just one cherry-picked entry.
             var row = App.el('tr', { className: 'clickable-row' }, [
-                App.el('td', { textContent: App.formatDatetime(r.timestamp) }),
+                App.el('td', { textContent: App.formatDatetime(r.timestamp), 'data-sort': r.timestamp || '' }),
                 App.el('td', { textContent: SOURCE_LABEL[r.source] || r.source || '-' }),
                 App.el('td', { textContent: r.action || '-' }),
                 App.el('td', { textContent: r.group_name || '-' }),
@@ -1441,7 +1442,8 @@
             tbody.appendChild(row);
         });
         table.appendChild(tbody);
-        box.appendChild(table);
+        App.enhanceTableSort(table, { defaultSort: { index: 0, dir: 'desc' } });
+        box.appendChild(App.el('div', { className: 'table-scroll' }, [table]));
     }
 
     // ------------------------------------------------------------------

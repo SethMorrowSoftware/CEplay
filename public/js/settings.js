@@ -546,7 +546,7 @@
             App.el('th', { textContent: 'Role' }),
             App.el('th', { textContent: 'Status' }),
             App.el('th', { textContent: 'Created' }),
-            App.el('th', { textContent: 'Actions', className: 'text-right' })
+            App.el('th', { textContent: 'Actions', className: 'text-right', 'data-nosort': '' })
         ]));
         table.appendChild(thead);
 
@@ -581,8 +581,8 @@
             tbody.appendChild(App.el('tr', {}, [
                 App.el('td', { textContent: u.username }),
                 App.el('td', { textContent: u.display_name || '—' }),
-                App.el('td', {}, [roleBadge(u.role || 'admin')]),
-                App.el('td', {}, [
+                App.el('td', { 'data-sort': u.role || 'admin' }, [roleBadge(u.role || 'admin')]),
+                App.el('td', { 'data-sort': u.is_active ? '1' : '0' }, [
                     App.el('span', {
                         className: 'badge ' + (u.is_active ? 'badge-active' : 'badge-inactive'),
                         textContent: u.is_active ? 'Active' : 'Inactive'
@@ -590,14 +590,16 @@
                 ]),
                 App.el('td', {
                     textContent: App.formatDate(u.created_at),
+                    'data-sort': u.created_at || '',
                     style: { fontSize: '0.8rem' }
                 }),
-                App.el('td', { className: 'text-right' }, [
+                App.el('td', { className: 'text-right', 'data-nosort': '' }, [
                     App.el('div', { className: 'flex gap-sm', style: { justifyContent: 'flex-end' } }, actions)
                 ])
             ]));
         });
         table.appendChild(tbody);
+        App.enhanceTableSort(table);
 
         const wrapper = App.el('div', { className: 'table-responsive' });
         wrapper.appendChild(table);
@@ -904,7 +906,7 @@
                 App.el('th', { textContent: 'Description' }),
                 App.el('th', { textContent: 'Permissions' }),
                 App.el('th', { textContent: 'Users', className: 'text-right' }),
-                App.el('th', { textContent: 'Actions', className: 'text-right' })
+                App.el('th', { textContent: 'Actions', className: 'text-right', 'data-nosort': '' })
             ])
         ]));
 
@@ -939,7 +941,7 @@
             }
 
             tbody.appendChild(App.el('tr', {}, [
-                App.el('td', {}, [
+                App.el('td', { 'data-sort': role.slug }, [
                     App.el('div', { className: 'flex-center gap-sm' }, [
                         roleBadge(role.slug),
                         role.is_system ? App.el('span', { className: 'badge badge-info', textContent: 'System',
@@ -947,14 +949,16 @@
                     ].filter(Boolean))
                 ]),
                 App.el('td', { className: 'text-sm text-secondary', textContent: role.description || '—' }),
-                App.el('td', { className: 'text-sm', textContent: permSummary, title: permTitle }),
+                App.el('td', { className: 'text-sm', textContent: permSummary, title: permTitle,
+                    'data-sort': role.slug === 'admin' ? String(Object.keys(permCatalog).length) : String(permCount) }),
                 App.el('td', { className: 'text-right', textContent: String(role.user_count || 0) }),
-                App.el('td', { className: 'text-right' }, [
+                App.el('td', { className: 'text-right', 'data-nosort': '' }, [
                     App.el('div', { className: 'flex gap-sm', style: { justifyContent: 'flex-end' } }, actions)
                 ])
             ]));
         });
         table.appendChild(tbody);
+        App.enhanceTableSort(table);
 
         const wrapper = App.el('div', { className: 'table-responsive' });
         wrapper.appendChild(table);

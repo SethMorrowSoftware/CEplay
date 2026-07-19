@@ -97,7 +97,11 @@
             // Auto-refresh when overrides are active
             setupAutoRefresh(cached.active);
         } catch (err) {
+            if (App.navGeneration() !== gen) return;
             content.innerHTML = '';
+            content.appendChild(App.emptyState('⚠️', 'Could not load overrides: ' + err.message,
+                App.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Retry',
+                    onClick: function() { content.innerHTML = ''; content.appendChild(App.loading()); loadOverrides(); } })));
             App.toast(err.message, 'error');
         }
     }

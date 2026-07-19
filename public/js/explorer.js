@@ -628,57 +628,31 @@
     }
 
     /**
-     * Generic results table with click-to-sort headers (numeric-aware).
-     * Sorting is client-side over the rows already fetched.
+     * Generic results table with click/keyboard-to-sort headers
+     * (numeric-aware) via the shared App.enhanceTableSort helper. Sorting is
+     * client-side over the rows already fetched; NULL cells carry an empty
+     * data-sort so they sink to the bottom in both directions.
      */
     function buildResultTable(columns, rows) {
-        var sortCol = -1;
-        var sortDir = 1;
         var table = App.el('table', { className: 'data-table explorer-results' });
-        var thead = App.el('thead', {});
-        var tbody = App.el('tbody', {});
-
-        function paint() {
-            var view = rows.slice();
-            if (sortCol >= 0) {
-                view.sort(function(a, b) {
-                    var av = a[sortCol], bv = b[sortCol];
-                    if (av === null || av === undefined) return 1;
-                    if (bv === null || bv === undefined) return -1;
-                    var an = parseFloat(String(av).replace(/[$,]/g, ''));
-                    var bn = parseFloat(String(bv).replace(/[$,]/g, ''));
-                    var cmp = (isFinite(an) && isFinite(bn) && String(av).trim() !== '' && String(bv).trim() !== '')
-                        ? an - bn
-                        : String(av).localeCompare(String(bv));
-                    return cmp * sortDir;
+        table.appendChild(App.el('thead', {}, [
+            App.el('tr', {}, columns.map(function(c) {
+                return App.el('th', { textContent: String(c) });
+            }))
+        ]));
+        var tbody = App.el('tbody', {}, rows.map(function(r) {
+            return App.el('tr', {}, r.map(function(v) {
+                var isNull = v === null || v === undefined;
+                return App.el('td', {
+                    textContent: isNull ? 'NULL' : String(v),
+                    // Empty data-sort => treated as blank => sinks; keeps
+                    // "NULL" text out of the numeric/string comparison.
+                    'data-sort': isNull ? '' : null
                 });
-            }
-            tbody.innerHTML = '';
-            view.forEach(function(r) {
-                tbody.appendChild(App.el('tr', {}, r.map(function(v) {
-                    return App.el('td', { textContent: v === null || v === undefined ? 'NULL' : String(v) });
-                })));
-            });
-        }
-
-        var headRow = App.el('tr', {}, columns.map(function(c, i) {
-            return App.el('th', {
-                className: 'explorer-sortable',
-                title: 'Sort by ' + c,
-                onClick: function() {
-                    if (sortCol === i) { sortDir = -sortDir; } else { sortCol = i; sortDir = 1; }
-                    Array.prototype.forEach.call(headRow.children, function(th, j) {
-                        th.textContent = columns[j] + (j === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : '');
-                    });
-                    paint();
-                },
-                textContent: c
-            });
+            }));
         }));
-        thead.appendChild(headRow);
-        table.appendChild(thead);
         table.appendChild(tbody);
-        paint();
+        App.enhanceTableSort(table);
         return table;
     }
 
