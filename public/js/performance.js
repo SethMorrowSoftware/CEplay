@@ -26,11 +26,13 @@
         data: null,          // last leaderboard payload
         charts: [],          // page-level Chart.js instances
         modalChart: null,    // per-game detail Chart.js instance
+        modalDetail: null,   // last per-game detail payload (for theme repaints)
         themeObserver: null,
         gen: 0               // guards stale async renders
     };
 
     var RANGE_LABELS = { day: 'Day', week: 'Week', month: 'Month', year: 'Year', custom: 'Custom' };
+    var RESET_LABELS = { day: 'Today', week: 'This week', month: 'This month', year: 'This year' };
 
     async function renderPerformancePage(container, params) {
         var query = (params && params._query) || {};
@@ -67,7 +69,7 @@
                 buildMetricToggle()
             ]),
             App.el('div', { className: 'card-body' }, [
-                App.el('div', { className: 'perf-chart-holder' }, [
+                App.el('div', { className: 'perf-chart-holder', id: 'perf-trend-holder' }, [
                     App.el('canvas', { id: 'perf-trend-canvas' })
                 ])
             ])
@@ -85,7 +87,7 @@
         });
         searchInput.style.flex = '1';
 
-        container.appendChild(App.el('div', { className: 'card' }, [
+        container.appendChild(App.el('div', { className: 'card perf-board-card' }, [
             App.el('div', { className: 'card-header flex-between' }, [
                 App.el('div', {}, [
                     App.el('div', { className: 'flex-center gap-sm' }, [
@@ -108,22 +110,43 @@
             for (var i = 0; i < records.length; i++) {
                 if (records[i].attributeName === 'data-theme') {
                     renderTrendChart();
+                    if (state.modalChart && state.modalDetail) renderDetailChart(state.modalDetail);
                     break;
                 }
             }
         });
         state.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
-        await load();
+        // A ?range=custom deep link with no dates yet would 422 server-side;
+        // prompt for a range instead of opening straight into an error.
+        var customPending = state.range === 'custom' && (!state.custom.from || !state.custom.to);
+        if (customPending) {
+            renderCustomPrompt();
+        } else {
+            await load();
+        }
 
-        if (pendingDetailId) showGameDetail(pendingDetailId);
+        if (pendingDetailId && !customPending) showGameDetail(pendingDetailId);
 
         // Cleanup when navigating away.
         return function cleanup() {
             destroyCharts();
             if (state.modalChart) { try { state.modalChart.destroy(); } catch (e) {} state.modalChart = null; }
+            state.modalDetail = null;
             if (state.themeObserver) { state.themeObserver.disconnect(); state.themeObserver = null; }
         };
+    }
+
+    /** Empty state shown when Custom is selected but no dates are applied yet. */
+    function renderCustomPrompt() {
+        var t = document.getElementById('perf-table');
+        if (t) {
+            t.innerHTML = '';
+            t.appendChild(App.emptyState('📅', 'Pick a start and end date above, then press Apply.'));
+        }
+        var k = document.getElementById('perf-kpis');
+        if (k) k.innerHTML = '';
+        setTrendNote('Pick a date range to see the trend.');
     }
 
     // ------------------------------------------------------------------
@@ -135,6 +158,7 @@
                 return App.el('button', {
                     className: 'btn btn-sm ' + (key === state.range ? 'btn-primary' : 'btn-ghost'),
                     textContent: RANGE_LABELS[key],
+                    'aria-pressed': key === state.range ? 'true' : 'false',
                     onClick: function() {
                         if (state.range === key && key !== 'custom') return;
                         state.range = key;
@@ -148,7 +172,7 @@
             })
         );
 
-        var nav = App.el('div', { className: 'perf-nav', id: 'perf-nav' }, [
+        var nav = App.el('div', { className: 'perf-nav', id: 'perf-nav', style: { display: state.range === 'custom' ? 'none' : '' } }, [
             App.el('button', {
                 className: 'btn btn-sm btn-ghost perf-nav-btn',
                 textContent: '‹',
@@ -168,16 +192,16 @@
             App.el('button', {
                 className: 'btn btn-sm btn-ghost',
                 id: 'perf-nav-reset',
-                textContent: 'Today',
+                textContent: RESET_LABELS[state.range] || 'Current',
                 title: 'Jump to the current period',
                 onClick: function() { if (state.offset === 0) return; state.offset = 0; state.page = 1; load(); }
             })
         ]);
 
         var custom = App.el('div', { className: 'perf-custom', id: 'perf-custom', style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'perf-custom-from', textContent: 'From' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'perf-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'perf-custom-to', textContent: 'To' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'perf-custom-to', value: state.custom.to }),
             App.el('button', {
                 className: 'btn btn-sm btn-primary',
@@ -207,6 +231,7 @@
         Array.prototype.forEach.call(wrap.children, function(btn, i) {
             var active = keys[i] === state.range;
             btn.className = 'btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost');
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
     }
 
@@ -225,11 +250,15 @@
                 return App.el('button', {
                     className: 'btn btn-sm ' + (m[0] === state.metric ? 'btn-secondary' : 'btn-ghost'),
                     textContent: m[1],
+                    'data-metric': m[0],
+                    'aria-pressed': m[0] === state.metric ? 'true' : 'false',
                     onClick: function() {
                         state.metric = m[0];
                         var wrap = document.getElementById('perf-metric-toggle');
                         if (wrap) Array.prototype.forEach.call(wrap.children, function(btn) {
-                            btn.className = 'btn btn-sm ' + (btn.textContent === m[1] ? 'btn-secondary' : 'btn-ghost');
+                            var active = btn.getAttribute('data-metric') === m[0];
+                            btn.className = 'btn btn-sm ' + (active ? 'btn-secondary' : 'btn-ghost');
+                            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
                         });
                         renderTrendChart();
                     }
@@ -258,10 +287,13 @@
 
     async function load() {
         var gen = ++state.gen;
+        syncHash();
+        setBusy(true);
         try {
             var data = await API.get('analytics/games?' + buildQuery());
             if (gen !== state.gen) return; // superseded by a newer request
             state.data = data;
+            if (data.sort) state.sort = data.sort; // server may coerce (e.g. cash when money hidden)
             updateNav();
             renderInsights();
             renderKpis();
@@ -269,11 +301,56 @@
             renderTable();
         } catch (err) {
             if (gen !== state.gen) return;
-            var t = document.getElementById('perf-table');
-            if (t) { t.innerHTML = ''; t.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Failed to load performance data: ' + err.message })); }
-            var k = document.getElementById('perf-kpis');
-            if (k) k.innerHTML = '';
+            renderLoadError(err);
+        } finally {
+            if (gen === state.gen) setBusy(false);
         }
+    }
+
+    /** Dim the data panels while a reload is in flight (prevents double-fires). */
+    function setBusy(on) {
+        ['perf-table', 'perf-kpis', 'perf-insights', 'perf-pagination'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle('perf-busy', on);
+            if (on) el.setAttribute('aria-busy', 'true');
+            else el.removeAttribute('aria-busy');
+        });
+    }
+
+    /** Reflect range + search into the hash so the view is bookmarkable. */
+    function syncHash() {
+        var cur = window.location.hash || '';
+        if (cur.indexOf('#/performance') !== 0) return;
+        var q = ['range=' + encodeURIComponent(state.range)];
+        if (state.search) q.push('search=' + encodeURIComponent(state.search));
+        var next = '#/performance?' + q.join('&');
+        if (cur === next) return;
+        try { history.replaceState(null, '', window.location.pathname + window.location.search + next); } catch (e) {}
+    }
+
+    /** Error state: clear every stale panel and offer a retry. */
+    function renderLoadError(err) {
+        var t = document.getElementById('perf-table');
+        if (t) {
+            t.innerHTML = '';
+            t.appendChild(App.el('div', { className: 'perf-load-error' }, [
+                App.el('p', { className: 'text-sm text-secondary', textContent: 'Failed to load performance data: ' + err.message }),
+                App.el('button', { className: 'btn btn-sm btn-secondary', textContent: 'Retry', onClick: function() { load(); } })
+            ]));
+        }
+        ['perf-kpis', 'perf-insights', 'perf-pagination'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.innerHTML = '';
+        });
+        var meta = document.getElementById('perf-table-meta');
+        if (meta) meta.textContent = '';
+        var summary = document.getElementById('perf-payout-summary');
+        if (summary) summary.textContent = '';
+        var sub = document.getElementById('perf-trend-sub');
+        if (sub) sub.textContent = '';
+        destroyCharts();
+        setTrendNote('No trend — the last load failed.');
     }
 
     function updateNav() {
@@ -282,7 +359,10 @@
         var next = document.getElementById('perf-nav-next');
         if (next) next.disabled = (state.range === 'custom' || state.offset >= 0);
         var reset = document.getElementById('perf-nav-reset');
-        if (reset) reset.disabled = (state.offset === 0);
+        if (reset) {
+            reset.disabled = (state.offset === 0);
+            reset.textContent = RESET_LABELS[state.range] || 'Current';
+        }
         var sub = document.getElementById('perf-trend-sub');
         if (sub && state.data) sub.textContent = granularityNote(state.data.range.granularity);
     }
@@ -437,18 +517,50 @@
         state.charts = [];
     }
 
+    /** Swap the trend chart area for a short "nothing to plot" note. */
+    function setTrendNote(msg) {
+        var holder = document.getElementById('perf-trend-holder');
+        if (!holder) return;
+        holder.innerHTML = '';
+        holder.appendChild(App.el('div', { className: 'perf-chart-note text-sm text-secondary', textContent: msg }));
+    }
+
+    /** Restore the trend canvas after a note may have replaced it. */
+    function ensureTrendCanvas() {
+        var canvas = document.getElementById('perf-trend-canvas');
+        if (canvas) return canvas;
+        var holder = document.getElementById('perf-trend-holder');
+        if (!holder) return null;
+        holder.innerHTML = '';
+        canvas = App.el('canvas', { id: 'perf-trend-canvas' });
+        holder.appendChild(canvas);
+        return canvas;
+    }
+
     async function renderTrendChart() {
         if (!state.data) return;
-        var ok = await ensureChart();
-        var canvas = document.getElementById('perf-trend-canvas');
-        if (!ok || !canvas) return;
-        destroyCharts();
 
         var points = (state.data.series && state.data.series.points) || [];
         var labels = points.map(function(p) { return p.label; });
         var metric = state.metric;
         if (metric === 'cash' && !App.canSeeMoney()) metric = 'tickets';
         var values = points.map(function(p) { return metric === 'cash' ? Number(p.cash) : (metric === 'plays' ? Number(p.plays) : Number(p.tickets)); });
+
+        var hasData = false;
+        for (var i = 0; i < values.length; i++) {
+            if (values[i] > 0) { hasData = true; break; }
+        }
+        if (!hasData) {
+            destroyCharts();
+            setTrendNote('No activity to chart for this period.');
+            return;
+        }
+
+        var ok = await ensureChart();
+        if (!ok) return;
+        var canvas = ensureTrendCanvas();
+        if (!canvas) return;
+        destroyCharts();
 
         var theme = readThemeColors();
         var barColor = metric === 'plays' ? theme.accent : (metric === 'cash' ? theme.success : theme.tickets);
@@ -490,6 +602,17 @@
             }
         });
         state.charts.push(chart);
+
+        // Text alternative for screen readers: metric, window, and the peak.
+        var maxIdx = 0;
+        for (var j = 1; j < values.length; j++) { if (values[j] > values[maxIdx]) maxIdx = j; }
+        var metricName = metric === 'plays' ? 'Plays' : (metric === 'cash' ? 'Reader CC payments' : 'Tickets');
+        var rangeLabel = (state.data.range && state.data.range.label) || '';
+        canvas.setAttribute('role', 'img');
+        canvas.setAttribute('aria-label', metricName + ' ' + granularityNote(state.data.series.granularity)
+            + (rangeLabel ? ' for ' + rangeLabel : '')
+            + '; peak ' + (metric === 'cash' ? formatCurrency(values[maxIdx]) : formatInt(values[maxIdx]))
+            + ' at ' + labels[maxIdx]);
     }
 
     // ------------------------------------------------------------------
@@ -537,38 +660,34 @@
             return;
         }
 
-        var target = state.data.payout_target_pct || 33;
         var columns = [
             { key: '_rank', label: '#', sortable: false },
-            { key: 'name', label: 'Game', sortable: true },
+            { key: 'name', label: 'Game', type: 'string' },
             { key: 'status', label: 'Status', sortable: false },
-            { key: 'plays', label: 'Plays', sortable: true, right: true, tip: 'Times the game was played in this period' },
-            { key: 'tickets', label: 'Tickets', sortable: true, right: true, tip: 'Tickets the game dispensed in this period' },
-            { key: 'payout', label: 'Payout %', sortable: true, right: true, tip: 'Tickets paid out per 100 points charged on this game — above the venue target shows red' },
-            { key: 'points_share', label: '% of pts', sortable: true, right: true, tip: 'This game’s share of all points spent on redemption games — big shares move the venue payout most' },
-            { key: 'active_days', label: 'Active', sortable: true, right: true, tip: 'Days this game recorded at least one play, out of the days in this period' }
+            { key: 'plays', label: 'Plays', type: 'number', className: 'text-right', tip: 'Times the game was played in this period' },
+            { key: 'tickets', label: 'Tickets', type: 'number', className: 'text-right', tip: 'Tickets the game dispensed in this period' },
+            { key: 'payout', label: 'Payout %', type: 'number', className: 'text-right', tip: 'Tickets paid out per 100 points charged on this game — above the venue target shows red' },
+            { key: 'points_share', label: '% of pts', type: 'number', className: 'text-right', tip: 'This game’s share of all points spent on redemption games — big shares move the venue payout most' },
+            { key: 'active_days', label: 'Active', type: 'number', className: 'text-right', tip: 'Days this game recorded at least one play, out of the days in this period' }
         ];
-        if (money) columns.push({ key: 'cash', label: 'Reader CC', sortable: true, right: true, tip: 'Credit-card payments taken at this game’s reader' });
-        columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, right: true, tip: 'Average tickets dispensed per play' });
-        columns.push({ key: '_delta', label: 'vs prev', sortable: false, right: true, tip: 'Tickets compared with the previous period' });
+        if (money) columns.push({ key: 'cash', label: 'Reader CC', type: 'number', className: 'text-right', tip: 'Credit-card payments taken at this game’s reader' });
+        columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, className: 'text-right', tip: 'Average tickets dispensed per play' });
+        columns.push({ key: '_delta', label: 'vs prev', sortable: false, className: 'text-right', tip: 'Tickets compared with the previous period' });
 
+        // Sorting is server-side with a fixed direction per column (metrics
+        // descending, name ascending); the header arrows reflect that real
+        // direction. Re-clicking the active column is a no-op because the
+        // API has no direction parameter.
+        var sortState = { key: state.sort, dir: state.sort === 'name' ? 'asc' : 'desc' };
         var thead = App.el('thead', {}, [
             App.el('tr', {}, columns.map(function(col) {
-                var classes = [];
-                if (col.sortable) classes.push('sortable');
-                if (col.key === state.sort) classes.push('sorted');
-                if (col.right) classes.push('text-right');
-                var arrow = col.key === state.sort ? (col.key === 'name' ? ' ▲' : ' ▼') : '';
-                var thAttrs = { className: classes.join(' '), textContent: col.label + arrow };
-                if (col.tip) thAttrs.title = col.tip;
-                var th = App.el('th', thAttrs);
-                if (col.sortable) {
-                    th.addEventListener('click', function() {
-                        state.sort = col.key;
-                        state.page = 1;
-                        load();
-                    });
-                }
+                var th = App.sortableTh(col, sortState, function(next) {
+                    if (next.key === state.sort) return;
+                    state.sort = next.key;
+                    state.page = 1;
+                    load();
+                });
+                if (col.tip) th.title = col.tip;
                 return th;
             }))
         ]);
@@ -630,13 +749,18 @@
                 textContent: g.avg_tickets_per_play > 0 ? Number(g.avg_tickets_per_play).toFixed(1) : '—' }));
             cells.push(App.el('td', { className: 'text-right' }, [delta(g.tickets, g.prev_tickets)]));
 
-            return App.el('tr', {
-                className: 'clickable-row',
-                onClick: function() { showGameDetail(g.game_id); }
-            }, cells);
+            var tr = App.el('tr', { className: 'clickable-row' }, cells);
+            App.makeCardClickable(tr, function() { showGameDetail(g.game_id); });
+            return tr;
         }));
 
-        el.appendChild(App.el('table', { className: 'data-table directory-table' }, [thead, tbody]));
+        // Visible legend for the column semantics the title tooltips carry —
+        // touch devices never see title attributes.
+        el.appendChild(App.el('p', { className: 'perf-table-legend text-xs text-muted',
+            textContent: 'Payout % = tickets paid per 100 points charged (red = above target) · % of pts = share of all redemption points spent · Active = days with at least one play · vs prev = tickets vs previous period' }));
+        el.appendChild(App.el('div', { className: 'table-scroll' }, [
+            App.el('table', { className: 'data-table directory-table' }, [thead, tbody])
+        ]));
 
         if (pager) {
             pager.innerHTML = '';
@@ -659,7 +783,10 @@
                 onClick: function() { App.hideModal(); window.location.hash = '#/games?game=' + encodeURIComponent(gameId); } }),
             App.el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: function() { App.hideModal(); } })
         ]);
-        App.showModal('Game performance', body, footer);
+        App.showModal('Game performance', body, footer, { onClose: function() {
+            if (state.modalChart) { try { state.modalChart.destroy(); } catch (e) {} state.modalChart = null; }
+            state.modalDetail = null;
+        } });
 
         var q = ['game_id=' + encodeURIComponent(gameId), 'range=' + encodeURIComponent(state.range)];
         if (state.range === 'custom') { q.push('from=' + encodeURIComponent(state.custom.from)); q.push('to=' + encodeURIComponent(state.custom.to)); }
@@ -677,6 +804,7 @@
     function renderGameDetail(d) {
         var body = document.getElementById('perf-detail-body');
         if (!body) return;
+        state.modalDetail = d;
         body.innerHTML = '';
         var money = App.canSeeMoney() && !d.hide_money;
         var t = d.totals, p = d.previous_totals;
@@ -720,6 +848,10 @@
         var labels = points.map(function(p) { return p.label; });
         var theme = readThemeColors();
         var showCash = App.canSeeMoney() && !d.hide_money;
+
+        canvas.setAttribute('role', 'img');
+        canvas.setAttribute('aria-label', 'Tickets and plays ' + granularityNote(d.range.granularity)
+            + ' for ' + (d.game.game_name || ('Game ' + d.game.game_id)) + ', ' + d.range.label);
 
         var datasets = [
             { type: 'bar', label: 'Tickets', data: points.map(function(p) { return Number(p.tickets); }),
