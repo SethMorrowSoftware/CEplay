@@ -94,17 +94,19 @@
                 onClick: function() { if (state.range === 'custom') return; state.offset -= 1; load(); } }),
             App.el('div', { className: 'perf-nav-label', id: 'revenue-nav-label', textContent: '…' }),
             App.el('button', { className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '›',
-                title: 'Next period', 'aria-label': 'Next period',
+                id: 'revenue-nav-next', title: 'Next period', 'aria-label': 'Next period',
+                disabled: state.range === 'custom' || state.offset >= 0,
                 onClick: function() { if (state.range === 'custom' || state.offset >= 0) return; state.offset += 1; load(); } }),
             App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'Today',
-                title: 'Jump to the current period',
+                id: 'revenue-nav-today', title: 'Jump to the current period',
+                disabled: state.offset === 0,
                 onClick: function() { if (state.offset === 0) return; state.offset = 0; load(); } })
         ]);
         var custom = App.el('div', { className: 'perf-custom', id: 'revenue-custom',
             style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'revenue-custom-from', textContent: 'From' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'revenue-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'revenue-custom-to', textContent: 'To' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'revenue-custom-to', value: state.custom.to }),
             App.el('button', { className: 'btn btn-sm btn-primary', textContent: 'Apply',
                 onClick: function() {
@@ -134,6 +136,12 @@
         if (custom) custom.style.display = state.range === 'custom' ? '' : 'none';
         if (nav) nav.style.display = state.range === 'custom' ? 'none' : '';
     }
+    function updateNav() {
+        var next = document.getElementById('revenue-nav-next');
+        if (next) next.disabled = (state.range === 'custom' || state.offset >= 0);
+        var today = document.getElementById('revenue-nav-today');
+        if (today) today.disabled = (state.offset === 0);
+    }
 
     function insightCard(emoji, cls, label, value, sub) {
         return App.el('div', { className: 'insight-card ' + cls }, [
@@ -150,6 +158,7 @@
     async function load() {
         var box = document.getElementById('revenue-results');
         if (!box) return;
+        updateNav();
         var seq = ++loadSeq;
         box.innerHTML = '';
         box.appendChild(App.loading());
@@ -247,23 +256,23 @@
         var maxAmt = categories.reduce(function(m, c) { return Math.max(m, c.amount || 0); }, 0);
         var table = App.el('table', { className: 'data-table' }, [
             App.el('thead', {}, [App.el('tr', {}, [
-                App.el('th', { textContent: 'Category' }),
-                App.el('th', { textContent: 'Revenue' }),
-                App.el('th', { textContent: 'Share' }),
-                App.el('th', { textContent: 'Discount rate', title: 'Discount dollars as a share of gross (revenue + discounts)' }),
-                App.el('th', { textContent: 'Units' }),
-                App.el('th', { textContent: '' })
+                App.el('th', { scope: 'col', textContent: 'Category' }),
+                App.el('th', { scope: 'col', textContent: 'Revenue' }),
+                App.el('th', { scope: 'col', textContent: 'Share' }),
+                App.el('th', { scope: 'col', textContent: 'Discount rate', title: 'Discount dollars as a share of gross (revenue + discounts)' }),
+                App.el('th', { scope: 'col', textContent: 'Units' }),
+                App.el('th', { scope: 'col', 'aria-label': 'Relative revenue (bar)', 'data-nosort': '' })
             ])]),
             App.el('tbody', {}, categories.map(function(c) {
                 var w = maxAmt > 0 ? Math.max(c.amount > 0 ? 2 : 0, Math.round((c.amount || 0) / maxAmt * 100)) : 0;
                 var dr = (c.discount_pct != null && c.discount_pct > 0) ? fmtRate(c.discount_pct) : '—';
                 return App.el('tr', {}, [
-                    App.el('td', {}, [App.el('strong', { textContent: catLabel(c) }),
+                    App.el('td', { 'data-sort': catLabel(c) }, [App.el('strong', { textContent: catLabel(c) }),
                         App.el('span', { className: 'text-muted text-xs', textContent: ' #' + c.cat })]),
-                    App.el('td', {}, [App.el('span', { className: 'revenue-amount', textContent: fmtMoney(c.amount) })]),
-                    App.el('td', { textContent: (c.share * 100).toFixed(1) + '%' }),
-                    App.el('td', {}, [App.el('span', { className: (c.discount_pct > 0.1 ? 'revenue-discount-hot' : 'text-muted'), textContent: dr })]),
-                    App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: fmtInt(Math.round(c.qty)) })]),
+                    App.el('td', { 'data-sort': c.amount == null ? null : c.amount }, [App.el('span', { className: 'revenue-amount', textContent: fmtMoney(c.amount) })]),
+                    App.el('td', { 'data-sort': c.share == null ? null : c.share, textContent: (c.share * 100).toFixed(1) + '%' }),
+                    App.el('td', { 'data-sort': (c.discount_pct != null && c.discount_pct > 0) ? c.discount_pct : null }, [App.el('span', { className: (c.discount_pct > 0.1 ? 'revenue-discount-hot' : 'text-muted'), textContent: dr })]),
+                    App.el('td', { 'data-sort': c.qty == null ? null : c.qty }, [App.el('span', { className: 'text-muted', textContent: fmtInt(Math.round(c.qty)) })]),
                     App.el('td', { style: { width: '28%' } }, [
                         App.el('div', { className: 'labor-bar-track', title: fmtMoney2(c.amount) }, [
                             App.el('div', { className: 'revenue-bar-fill', style: { width: w + '%' } })
@@ -272,9 +281,12 @@
                 ]);
             }))
         ]);
+        // Fully rendered, non-paginated — headers sort in place. The server's
+        // revenue-DESC arrival order stays the default (stable sort).
+        App.enhanceTableSort(table, { defaultSort: { index: 1, dir: 'desc' } });
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Revenue by category' })]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Sales dollars come from the POS Sales table, grouped by category (CatNo). This is a business-day roll-up (ShiftDate), so there is no hour-of-day here.' })
             ])
@@ -289,7 +301,7 @@
             var w = Math.max(r.amount > 0 ? 1 : 0, Math.round((r.amount || 0) / maxAmt * 100));
             var label = r.month ? monthLabel(r.month) : dayLabel(r.date);
             return App.el('div', { className: 'labor-hour-row', title: fmtMoney2(r.amount) }, [
-                App.el('span', { className: 'labor-hour-label', style: { minWidth: '7.5rem' }, textContent: label }),
+                App.el('span', { className: 'labor-hour-label', textContent: label }),
                 App.el('span', { className: 'labor-hour-track' }, [
                     App.el('span', { className: 'revenue-bar-fill', style: { width: w + '%' } })
                 ]),
@@ -298,7 +310,7 @@
         });
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Revenue by ' + grain })]),
-            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'labor-hour-list' }, list)])
+            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'labor-hour-list revenue-trend-list' }, list)])
         ]));
     }
 
@@ -317,8 +329,25 @@
     // Admin: editable query + test (settings only)
     // ------------------------------------------------------------------
     async function loadAdmin() {
-        try { state.settings = await API.get('revenue/settings'); renderAdmin(); }
-        catch (err) { console.error('revenue settings load failed:', err); }
+        var gen = App.navGeneration();
+        try {
+            var settings = await API.get('revenue/settings');
+            if (App.navGeneration() !== gen) return;
+            state.settings = settings;
+            renderAdmin();
+        } catch (err) {
+            if (App.navGeneration() !== gen) return;
+            console.error('revenue settings load failed:', err);
+            var box = document.getElementById('revenue-admin');
+            if (!box) return;
+            box.innerHTML = '';
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent:
+                        'Could not load the admin query settings: ' + (err && err.message ? err.message : 'unknown error') })
+                ])
+            ]));
+        }
     }
 
     function renderAdmin() {
@@ -326,26 +355,30 @@
         if (!box || !state.settings) return;
         var s = state.settings;
         box.innerHTML = '';
-        var rangeTa = App.el('textarea', { className: 'form-input labor-sql', rows: 11 });
+        var rangeTa = App.el('textarea', { className: 'form-input labor-sql', id: 'revenue-range-sql', rows: 11 });
         rangeTa.value = s.range_sql || '';
-        var statusEl = App.el('span', { className: 'text-sm text-secondary' });
+        var statusEl = App.el('span', { className: 'text-sm text-secondary', 'aria-live': 'polite' });
 
         var saveBtn = App.el('button', { className: 'btn btn-primary', textContent: 'Save query',
             onClick: async function() {
+                saveBtn.disabled = true;
                 statusEl.textContent = 'Saving…';
                 try { await API.put('revenue/settings', { range_sql: rangeTa.value });
                     statusEl.textContent = 'Saved.'; App.toast('Revenue-mix query saved.', 'success'); load();
                 } catch (err) { statusEl.textContent = ''; App.toast('Save failed: ' + (err && err.message ? err.message : 'unknown error'), 'error'); }
+                finally { saveBtn.disabled = false; }
             } });
         var resetBtn = App.el('button', { className: 'btn btn-ghost', textContent: 'Reset to default',
             title: 'Fill the box with the shipped Sales-by-category query. Nothing is saved until you press Save query.',
             onClick: function() { if (s.defaults && s.defaults.range_sql) { rangeTa.value = s.defaults.range_sql; statusEl.textContent = 'Default restored — review, then Save query.'; } } });
         var diagEl = App.el('pre', { className: 'labor-diagnostics', style: { display: 'none' } });
         var probeDateIn = App.el('input', { className: 'form-input', type: 'date',
+            'aria-label': 'Probe date to reconcile (blank = yesterday)',
             title: 'Reconcile this date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
 
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test & reconcile',
             onClick: async function() {
+                testBtn.disabled = true;
                 statusEl.textContent = 'Testing…'; diagEl.style.display = 'none';
                 try {
                     var body = {}; if (probeDateIn.value) body.probe_date = probeDateIn.value;
@@ -365,6 +398,7 @@
                         App.toast('Query works.', 'success');
                     } else { statusEl.textContent = '✗ ' + r.error; }
                 } catch (err) { statusEl.textContent = '✗ ' + (err && err.message ? err.message : 'test failed'); }
+                finally { testBtn.disabled = false; }
             } });
 
         var connNote = s.connection && s.connection.host
@@ -372,8 +406,11 @@
             : 'No MSSQL connection yet — set it up on the Go-Kart Labor page first; this report shares it.';
 
         function field(label, el) {
-            return App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: label }), el]);
+            return App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': el.id || null, textContent: label }), el]);
         }
+        // The test endpoint needs data_explorer (settings alone isn't enough) —
+        // don't show a button that can only fail.
+        var canTest = App.canAccess('data_explorer');
         box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
             App.el('summary', { className: 'labor-admin-summary', textContent: '⚙️ Revenue query (admin setup)' }),
             App.el('div', { className: 'card-body' }, [
@@ -381,7 +418,8 @@
                 field('Revenue by day & category (:from … :to) — one row per (day, CatNo) with amount, discounts, qty', rangeTa),
                 App.el('p', { className: 'text-xs text-muted', textContent:
                     'Must be a single SELECT and contain :from and :to. Runs read-only with the shared SQL login. Default: Sales grouped by CatNo. Adjust here if this install differs, then reconcile with Test.' }),
-                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, [saveBtn, testBtn, probeDateIn, resetBtn, statusEl]),
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } },
+                    canTest ? [saveBtn, testBtn, probeDateIn, resetBtn, statusEl] : [saveBtn, resetBtn, statusEl]),
                 diagEl
             ])
         ]));

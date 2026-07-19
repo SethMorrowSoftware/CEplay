@@ -43,3 +43,16 @@
     background: linear-gradient(90deg, var(--revenue) 0%, color-mix(in srgb, var(--revenue) 70%, var(--accent)) 100%);
     transition: width 0.3s ease;
 }
+
+/* Trend rows ("Revenue by day/month") borrow the shared .labor-hour-* rails,
+   but their date labels need more room than Labor's hour labels — and must
+   give that room back on phones, or the fixed-width label + value spans
+   squeeze the bar track into an unreadable sliver. */
+.revenue-trend-list .labor-hour-label { min-width: 7.5rem; }
+@media (max-width: 480px) {
+    .revenue-trend-list .labor-hour-label {
+        min-width: 4.5rem;
+        white-space: normal; /* "Sat, Jul 19" may wrap to two short lines */
+    }
+    .revenue-trend-list .labor-hour-val { min-width: 3.5rem; }
+}
