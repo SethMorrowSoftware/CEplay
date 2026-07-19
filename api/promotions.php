@@ -323,9 +323,16 @@ function promoCreate(?array $input): void {
 }
 
 function promoUpdate(int $batchId, ?array $input): void {
-    $existing = DB::queryOne('SELECT id FROM promo_batches WHERE id = :p0', [$batchId]);
+    $existing = DB::queryOne('SELECT id, initial_value FROM promo_batches WHERE id = :p0', [$batchId]);
     if (!$existing) { http_response_code(404); echo json_encode(['error' => 'Batch not found']); return; }
     list($name, $from, $to, $giveaway, $initial, $notes) = promoValidateInput($input);
+    // A role with promotions_manage but WITHOUT view_revenue never saw the
+    // real starting value (promoScrubMoney nulls it on GET) — accepting the
+    // round-tripped input would silently zero the stored dollars on every
+    // edit. Money-blind editors keep the batch's existing value.
+    if (!Auth::hasPermission('view_revenue')) {
+        $initial = (float)$existing['initial_value'];
+    }
     DB::execute(
         'UPDATE promo_batches SET name = :p0, card_from = :p1, card_to = :p2, giveaway_date = :p3,
              initial_value = :p4, notes = :p5, updated_at = datetime(\'now\') WHERE id = :p6',
