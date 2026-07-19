@@ -72,3 +72,52 @@
     border-style: solid;
 }
 
+/* The hint spans are keyboard-focusable (tabindex="0", kiosks.js) since
+   their explanation also lives in aria-label, not just title="" — give them
+   a visible focus ring so keyboard users can find them. */
+.kiosk-rpc-unadvertised:focus-visible,
+.kiosk-rpc-unsupported:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Badge shown on a kiosk card when a watchdog retry is queued (a 422 action
+   failure). Same warning coloring as .badge-paused (components/badges.css). */
+.kiosk-retry-badge {
+    background: var(--warning-subtle);
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+/* ============================================
+   Kiosk card layout
+   ============================================
+   Each card row is a title/meta block + an action-button group
+   (kiosks.js buildKioskCard). Neither .flex-between nor .flex sets
+   flex-wrap, and .btn is white-space:nowrap, so on a phone-width card the
+   2-3 unshrinkable status buttons (Pause/Unpause/Out of service, plus RPC
+   buttons or a hint span) squeeze the title to nothing and overflow the
+   card. Let the row wrap at <=720px instead. */
+.kiosk-card-info {
+    flex: 1;
+    min-width: 0;
+}
+.kiosk-card-actions {
+    flex-shrink: 0;
+    margin-left: 0.75rem;
+}
+
+@media (max-width: 720px) {
+    .kiosk-card-row {
+        flex-wrap: wrap;
+        row-gap: 0.6rem;
+    }
+    .kiosk-card-info {
+        flex: 1 1 100%;
+    }
+    .kiosk-card-actions {
+        flex: 1 1 100%;
+        flex-wrap: wrap;
+        margin-left: 0;
+    }
+}
