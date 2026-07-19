@@ -33,3 +33,14 @@
     background: linear-gradient(90deg, var(--redemption) 0%, color-mix(in srgb, var(--redemption) 70%, var(--accent)) 100%);
     transition: width 0.3s ease;
 }
+
+/* Comfortable touch targets for the period-nav buttons on phones. The shared
+   .perf-nav-btn rule (performance.css) only applies ≤640px and skips "Today",
+   so this page-scoped rule covers the 641–720px gap without leaking to the
+   sibling reports. */
+@media (max-width: 720px) {
+    #redemption-nav .btn {
+        min-width: 2.5rem;
+        min-height: 2.5rem;
+    }
+}
