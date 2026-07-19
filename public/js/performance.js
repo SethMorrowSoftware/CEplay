@@ -20,6 +20,7 @@
         custom: { from: '', to: '' },
         search: '',
         sort: 'tickets',
+        dir: 'desc',
         page: 1,
         pageSize: 25,
         metric: 'tickets',   // which metric the venue trend chart plots
@@ -280,6 +281,7 @@
         }
         if (state.search) q.push('search=' + encodeURIComponent(state.search));
         q.push('sort=' + encodeURIComponent(state.sort));
+        q.push('dir=' + encodeURIComponent(state.dir));
         q.push('page=' + state.page);
         q.push('page_size=' + state.pageSize);
         return q.join('&');
@@ -294,6 +296,7 @@
             if (gen !== state.gen) return; // superseded by a newer request
             state.data = data;
             if (data.sort) state.sort = data.sort; // server may coerce (e.g. cash when money hidden)
+            if (data.dir) state.dir = data.dir;
             updateNav();
             renderInsights();
             renderKpis();
@@ -663,7 +666,7 @@
         var columns = [
             { key: '_rank', label: '#', sortable: false },
             { key: 'name', label: 'Game', type: 'string' },
-            { key: 'status', label: 'Status', sortable: false },
+            { key: 'status', label: 'Status', type: 'string', tip: 'Running, then paused, then out of service' },
             { key: 'plays', label: 'Plays', type: 'number', className: 'text-right', tip: 'Times the game was played in this period' },
             { key: 'tickets', label: 'Tickets', type: 'number', className: 'text-right', tip: 'Tickets the game dispensed in this period' },
             { key: 'payout', label: 'Payout %', type: 'number', className: 'text-right', tip: 'Tickets paid out per 100 points charged on this game — above the venue target shows red' },
@@ -671,19 +674,18 @@
             { key: 'active_days', label: 'Active', type: 'number', className: 'text-right', tip: 'Days this game recorded at least one play, out of the days in this period' }
         ];
         if (money) columns.push({ key: 'cash', label: 'Reader CC', type: 'number', className: 'text-right', tip: 'Credit-card payments taken at this game’s reader' });
-        columns.push({ key: 'avg', label: 'Avg tix/play', sortable: false, className: 'text-right', tip: 'Average tickets dispensed per play' });
+        columns.push({ key: 'avg_tickets_per_play', label: 'Avg tix/play', type: 'number', className: 'text-right', tip: 'Average tickets dispensed per play' });
         columns.push({ key: '_delta', label: 'vs prev', sortable: false, className: 'text-right', tip: 'Tickets compared with the previous period' });
 
-        // Sorting is server-side with a fixed direction per column (metrics
-        // descending, name ascending); the header arrows reflect that real
-        // direction. Re-clicking the active column is a no-op because the
-        // API has no direction parameter.
-        var sortState = { key: state.sort, dir: state.sort === 'name' ? 'asc' : 'desc' };
+        // Sorting is server-side (the API sorts the full set before slicing
+        // the page): clicking a header sends sort+dir and reloads. Metrics
+        // open biggest-first, name/status A→Z; re-clicking flips direction.
+        var sortState = { key: state.sort, dir: state.dir };
         var thead = App.el('thead', {}, [
             App.el('tr', {}, columns.map(function(col) {
                 var th = App.sortableTh(col, sortState, function(next) {
-                    if (next.key === state.sort) return;
                     state.sort = next.key;
+                    state.dir = next.dir;
                     state.page = 1;
                     load();
                 });

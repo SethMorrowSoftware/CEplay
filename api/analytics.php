@@ -1644,8 +1644,14 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
 
     $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
     $sort = isset($_GET['sort']) ? (string)$_GET['sort'] : 'tickets';
-    if (!in_array($sort, ['tickets', 'plays', 'cash', 'name', 'payout', 'points_share', 'active_days'], true)) $sort = 'tickets';
+    if (!in_array($sort, ['tickets', 'plays', 'cash', 'name', 'status', 'payout', 'points_share', 'active_days', 'avg_tickets_per_play'], true)) $sort = 'tickets';
     if ($hideMoney && $sort === 'cash') $sort = 'tickets';
+    // Direction is optional; the default preserves each column's historical
+    // order (name A→Z, metrics biggest-first).
+    $dir = isset($_GET['dir']) ? (string)$_GET['dir'] : '';
+    if (!in_array($dir, ['asc', 'desc'], true)) {
+        $dir = ($sort === 'name' || $sort === 'status') ? 'asc' : 'desc';
+    }
     $page = max(1, (int)($_GET['page'] ?? 1));
     $pageSize = max(1, min(200, (int)($_GET['page_size'] ?? 25)));
 
@@ -1758,10 +1764,20 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
         }));
     }
 
-    usort($rows, function ($a, $b) use ($sort) {
-        if ($sort === 'name') return strcasecmp((string)$a['game_name'], (string)$b['game_name']);
+    $mul = $dir === 'desc' ? -1 : 1;
+    usort($rows, function ($a, $b) use ($sort, $mul) {
+        if ($sort === 'name') {
+            $cmp = strcasecmp((string)$a['game_name'], (string)$b['game_name']);
+            return $cmp !== 0 ? $mul * $cmp : ($b['plays'] <=> $a['plays']);
+        }
+        if ($sort === 'status') {
+            $rank = ['enabled' => 0, 'paused' => 1, 'outOfService' => 2];
+            $cmp = ($rank[$a['status']] ?? 3) <=> ($rank[$b['status']] ?? 3);
+            return $cmp !== 0 ? $mul * $cmp : ($b['plays'] <=> $a['plays']);
+        }
         // Nullable metric columns (payout %, points share): games the metric
-        // doesn't apply to sink below those that have a value, then by plays.
+        // doesn't apply to sink below those that have a value in BOTH
+        // directions, then by plays.
         if ($sort === 'payout' || $sort === 'points_share') {
             $key = $sort === 'payout' ? 'payout_pct' : 'points_share';
             $av = $a[$key]; $bv = $b[$key];
@@ -1769,13 +1785,14 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
             if ($av === null) return 1;
             if ($bv === null) return -1;
             if ($av == $bv) return $b['plays'] <=> $a['plays'];
-            return $bv <=> $av;
+            return $mul * ($av <=> $bv);
         }
         $key = $sort === 'plays' ? 'plays'
              : ($sort === 'cash' ? 'cash'
-             : ($sort === 'active_days' ? 'active_days' : 'tickets'));
+             : ($sort === 'avg_tickets_per_play' ? 'avg_tickets_per_play'
+             : ($sort === 'active_days' ? 'active_days' : 'tickets')));
         if ($a[$key] == $b[$key]) return $b['plays'] <=> $a['plays'];
-        return ($b[$key] <=> $a[$key]);
+        return $mul * ($a[$key] <=> $b[$key]);
     });
 
     $total = count($rows);
@@ -1792,6 +1809,7 @@ function analyticsGamesLeaderboard(bool $hideMoney): void {
         'series'          => $series,
         'games'           => $pageRows,
         'sort'            => $sort,
+        'dir'             => $dir,
         'search'          => $search,
         'pagination'      => [
             'page'        => $page,
