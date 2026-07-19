@@ -18,6 +18,7 @@
     var kioskSearch = '';
     var kioskStatusFilter = 'all';
     var kioskPaging = { page: 1, pageSize: 25, totalItems: 0 };
+    var refreshIntervalCleanup = null;
 
     // The kiosk /performAction endpoint is a CenterEdge vendor extension —
     // it isn't part of the official OpenAPI 1.8.0 spec. If we hit a 404 on
@@ -28,7 +29,7 @@
     // Reset on full reload (module reload), not on simple re-render.
     var rpcUnsupported = false;
 
-    async function renderKiosks(container, params) {
+    function renderKiosks(container, params) {
         // Apply ?status= and ?search= deep-links so an analytics fleet tile
         // or a sidebar shortcut can land directly on a filtered kiosk view.
         var query = (params && params._query) || {};
@@ -43,6 +44,7 @@
                 App.el('p', { className: 'page-subtitle', textContent: 'Pause, resume, and manage kiosks reported by the CenterEdge card system.' })
             ]),
             App.canAccess('manual_control') ? App.el('button', {
+                id: 'kiosks-sync-btn',
                 className: 'btn btn-ghost',
                 textContent: 'Sync now',
                 onClick: function() { syncAndReload(); }
@@ -77,7 +79,20 @@
 
         container.appendChild(App.el('div', { id: 'kiosks-pagination' }));
 
-        await loadList();
+        loadList();
+
+        // Live-status page — poll for out-of-band changes (scheduler,
+        // watchdog, or another operator), matching the dashboard/overrides
+        // auto-refresh pattern.
+        if (refreshIntervalCleanup) refreshIntervalCleanup();
+        refreshIntervalCleanup = App.createVisibilityAwareInterval(loadList, 30000, {
+            runImmediately: false, runOnVisible: true
+        });
+
+        return function cleanup() {
+            if (refreshIntervalCleanup) refreshIntervalCleanup();
+            refreshIntervalCleanup = null;
+        };
     }
 
     function buildKioskStatusFilter() {
@@ -107,28 +122,42 @@
     async function loadList() {
         var listEl = document.getElementById('kiosks-list');
         if (!listEl) return;
+        var gen = App.navGeneration();
 
         try {
+            var caps;
             if (capCache === null) {
                 try {
                     capCache = await API.get('capabilities');
                 } catch (e) {
-                    capCache = {};
+                    // Don't cache the failure: leave capCache null so the
+                    // next loadList (auto-refresh, Retry, or Sync now)
+                    // re-fetches instead of permanently hiding pause
+                    // controls behind a stale "unsupported" state. Assume
+                    // optimistic support for this render only — the server
+                    // re-checks on the actual action call regardless.
+                    caps = { isSupported: true, operationStatus: true };
                 }
             }
-
-            var caps = (capCache && capCache.kiosks) || {};
+            if (App.navGeneration() !== gen) return;
+            if (!caps) caps = (capCache && capCache.kiosks) || {};
             capsState.supportsList = caps.isSupported !== false; // assume supported if missing
             capsState.supportsPause = caps.operationStatus === true;
 
             var data = await API.get('kiosks') || {};
+            if (App.navGeneration() !== gen) return;
             allKiosks = data.kiosks || [];
             lastSyncedAt = data.last_synced || null;
 
             renderList();
         } catch (err) {
+            if (App.navGeneration() !== gen) return;
+            listEl = document.getElementById('kiosks-list');
+            if (!listEl) return;
             listEl.innerHTML = '';
-            listEl.appendChild(App.el('p', { className: 'text-secondary', textContent: 'Error: ' + err.message }));
+            listEl.appendChild(App.emptyState('⚠',
+                'Error: ' + err.message,
+                App.el('button', { className: 'btn btn-secondary', textContent: 'Retry', onClick: function() { loadList(); } })));
             App.toast(err.message, 'error');
         }
     }
@@ -169,6 +198,7 @@
             listEl.appendChild(App.emptyState('▢',
                 'No kiosks reported. If you just configured the card system, click "Sync now".',
                 App.canAccess('manual_control') ? App.el('button', {
+                    id: 'kiosks-sync-btn-empty',
                     className: 'btn btn-primary', textContent: 'Sync now',
                     onClick: function() { syncAndReload(); }
                 }) : null));
@@ -195,10 +225,16 @@
             listEl.appendChild(banner);
         }
 
-        // Meta line: counts + last sync timestamp
+        var filtered = getFilteredKiosks();
+
+        // Meta line: counts (filtered vs total when a filter is active) +
+        // last sync timestamp.
         if (metaEl) {
             var pieces = [];
-            pieces.push(allKiosks.length + ' kiosk' + (allKiosks.length !== 1 ? 's' : ''));
+            var filtersActive = kioskStatusFilter !== 'all' || !!kioskSearch;
+            pieces.push(filtersActive
+                ? (filtered.length + ' of ' + allKiosks.length + ' kiosk' + (allKiosks.length !== 1 ? 's' : ''))
+                : (allKiosks.length + ' kiosk' + (allKiosks.length !== 1 ? 's' : '')));
             if (lastSyncedAt) {
                 pieces.push('synced ' + App.formatDatetime(lastSyncedAt) + ' (' + App.appTimezone + ')');
             }
@@ -217,7 +253,6 @@
             ]));
         }
 
-        var filtered = getFilteredKiosks();
         kioskPaging.totalItems = filtered.length;
         var page = App.paginate(filtered, kioskPaging.page, kioskPaging.pageSize);
         kioskPaging.page = page.page;
@@ -262,7 +297,7 @@
                 : 'Unknown'
         });
 
-        var actionBtns = App.el('div', { className: 'flex gap-sm', style: { marginLeft: '0.75rem' } });
+        var actionBtns = App.el('div', { className: 'flex gap-sm kiosk-card-actions' });
 
         // Roles without manual_control (view-only) get live status chips
         // with no operate buttons; the server re-checks every action anyway.
@@ -303,10 +338,15 @@
         } else if (rpcUnsupported) {
             // Show a single muted explanation in place of the buttons so
             // operators understand why "Reboot" isn't available without
-            // having to click and read a toast.
+            // having to click and read a toast. tabindex + aria-label make
+            // the explanation reachable by keyboard/screen reader/touch,
+            // not just mouse hover (title alone is not).
+            var unsupportedHint = 'This CenterEdge install returned 404 for kiosk performAction. The endpoint is a vendor extension not present on every build.';
             actionBtns.appendChild(App.el('span', {
                 className: 'kiosk-rpc-unsupported',
-                title: 'This CenterEdge install returned 404 for kiosk performAction. The endpoint is a vendor extension not present on every build.',
+                tabindex: '0',
+                title: unsupportedHint,
+                'aria-label': unsupportedHint,
                 textContent: 'Remote actions n/a'
             }));
         } else if (supportedActions.length > 0) {
@@ -322,9 +362,12 @@
             // Pause-control works for this kiosk but the upstream advertised
             // no remote-action support. Helpful muted hint instead of the
             // previous silent omission.
+            var unadvertisedHint = 'The card system reports no remote actions (e.g. reboot) for this kiosk. Some CenterEdge builds expose them, this one doesn\'t for this device.';
             actionBtns.appendChild(App.el('span', {
                 className: 'kiosk-rpc-unadvertised',
-                title: 'The card system reports no remote actions (e.g. reboot) for this kiosk. Some CenterEdge builds expose them, this one doesn\'t for this device.',
+                tabindex: '0',
+                title: unadvertisedHint,
+                'aria-label': unadvertisedHint,
                 textContent: 'No remote actions'
             }));
         }
@@ -335,14 +378,25 @@
             meta.push('Categories: ' + kiosk.categories.join(', '));
         }
 
+        // Surface a queued watchdog retry (set on a 422 action failure) so
+        // operators don't re-click repeatedly or assume the action was lost.
+        var pendingRetry = kiosk.pending_retry || null;
+        var retryBadge = pendingRetry ? App.el('span', {
+            className: 'badge kiosk-retry-badge',
+            title: 'Automatic retry queued to set this kiosk "' + pendingRetry.desired_status + '" (attempt ' +
+                pendingRetry.attempts + ' of ' + pendingRetry.max_attempts + '). The watchdog retries it every minute.',
+            textContent: 'Retry queued'
+        }) : null;
+
         return App.el('div', {
             className: 'card', style: { marginBottom: '0.75rem' }
         }, [
-            App.el('div', { className: 'flex-between' }, [
-                App.el('div', { style: { flex: '1', minWidth: '0' } }, [
+            App.el('div', { className: 'flex-between kiosk-card-row' }, [
+                App.el('div', { className: 'kiosk-card-info' }, [
                     App.el('div', { className: 'flex-center gap-sm' }, [
                         App.el('span', { className: 'card-title', textContent: kiosk.name || ('Kiosk ' + kiosk.id) }),
-                        statusBadge
+                        statusBadge,
+                        retryBadge
                     ]),
                     App.el('p', { className: 'text-sm text-secondary mt-1', textContent: meta.join('  •  ') })
                 ]),
@@ -354,10 +408,21 @@
     // Guards against rapid double-clicks firing duplicate state changes /
     // RPC actions while a request is already in flight.
     var actionInFlight = false;
+    // Same guard for "Sync now" — also disables the button(s) while syncing.
+    var syncInFlight = false;
+
+    // Verb/past-tense labels per status action. Appending 'd' to the verb
+    // (the old approach) breaks for 'out-of-service' ("Take out of service"
+    // -> "Take out of serviced").
+    var STATUS_ACTION_LABELS = {
+        pause: { verb: 'Pause', past: 'Paused' },
+        unpause: { verb: 'Unpause', past: 'Unpaused' },
+        'out-of-service': { verb: 'Take out of service', past: 'Took out of service' }
+    };
 
     async function doStatusChange(kiosk, action) {
-        var verb = action === 'pause' ? 'Pause' : action === 'unpause' ? 'Unpause' : 'Take out of service';
-        var confirmed = await App.confirm(verb + ' "' + (kiosk.name || kiosk.id) + '"?');
+        var labels = STATUS_ACTION_LABELS[action] || { verb: action, past: action };
+        var confirmed = await App.confirm(labels.verb + ' "' + (kiosk.name || kiosk.id) + '"?');
         if (!confirmed) return;
         if (actionInFlight) return;
         actionInFlight = true;
@@ -365,12 +430,16 @@
         try {
             var result = await API.post('kiosks/' + encodeURIComponent(kiosk.id) + '/' + action);
             if (result && result.success) {
-                App.toast(verb + 'd ' + (kiosk.name || kiosk.id), 'success');
+                App.toast(labels.past + ' ' + (kiosk.name || kiosk.id), 'success');
             } else {
                 App.toast('Failed: ' + ((result && result.error) || 'unknown error'), 'error');
             }
         } catch (err) {
-            App.toast(err.message, 'error');
+            // A 422 here means the CenterEdge action failed but the server
+            // already queued a watchdog retry (api/kiosks.php) — say so
+            // instead of leaving the operator to guess whether it's gone.
+            var msg = err.message + (err && err.status === 422 ? ' A retry has been queued and will run automatically.' : '');
+            App.toast(msg, 'error');
         } finally {
             actionInFlight = false;
         }
@@ -395,6 +464,29 @@
             var msg = (err && err.message) || '';
 
             if (/HTTP\s*404/i.test(msg)) {
+                // A 404 here is ambiguous: CenterEdge also returns it for a
+                // stale kiosk id (e.g. removed upstream, cache row still
+                // local) — sanitizeApiError normalizes both cases to the
+                // same "HTTP 404" text (index.php). Disambiguate with a live
+                // GET on the kiosk before latching the session-wide flag, so
+                // one stale kiosk can't hide RPC buttons for every kiosk.
+                var kioskConfirmedPresent = false;
+                try {
+                    await API.get('kiosks/' + encodeURIComponent(kiosk.id));
+                    kioskConfirmedPresent = true;
+                } catch (probeErr) {
+                    kioskConfirmedPresent = false;
+                }
+
+                if (!kioskConfirmedPresent) {
+                    App.toast(
+                        '"' + kioskLabel + '" could not be confirmed on the card system — it may have been removed. Try "Sync now" to refresh the kiosk list.',
+                        'warning',
+                        8000
+                    );
+                    return;
+                }
+
                 // Remember the result for the rest of the session so we can
                 // hide RPC buttons across all kiosk cards and surface the
                 // banner — saves operators from clicking each one to learn
@@ -437,14 +529,36 @@
     }
 
     async function syncAndReload() {
+        if (syncInFlight) return;
+        syncInFlight = true;
+
+        var syncBtn = document.getElementById('kiosks-sync-btn');
+        var syncBtnEmpty = document.getElementById('kiosks-sync-btn-empty');
+        if (syncBtn) syncBtn.disabled = true;
+        if (syncBtnEmpty) syncBtnEmpty.disabled = true;
+
         var listEl = document.getElementById('kiosks-list');
+        var pagerEl = document.getElementById('kiosks-pagination');
+        var metaEl = document.getElementById('kiosks-meta');
         if (listEl) { listEl.innerHTML = ''; listEl.appendChild(App.loading()); }
+        if (pagerEl) pagerEl.innerHTML = '';
+        if (metaEl) metaEl.innerHTML = '';
+
         try {
             await API.post('kiosks/sync');
+            // The server invalidates its own capabilities cache on sync
+            // (api/kiosks.php) so newly supported actions show up — mirror
+            // that on the client instead of waiting for a hard reload.
+            capCache = null;
+            rpcUnsupported = false;
             App.toast('Kiosks synced.', 'success');
         } catch (err) {
             App.toast('Sync failed: ' + err.message, 'error');
         }
         await loadList();
+
+        syncInFlight = false;
+        if (syncBtn) syncBtn.disabled = false;
+        if (syncBtnEmpty) syncBtnEmpty.disabled = false;
     }
 })();
