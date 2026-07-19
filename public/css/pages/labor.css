@@ -153,3 +153,28 @@
     font-size: 0.78rem;
     font-variant-numeric: tabular-nums;
 }
+
+/* Screen-reader-only text (the split-bar column's header label). */
+.labor-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Narrow phones: shrink the hour rows' fixed-width parts so the bar
+   tracks keep real width inside card padding, and let the per-track
+   price rows wrap instead of overflowing. */
+@media (max-width: 640px) {
+    .labor-hour-row { gap: 0.45rem; }
+    .labor-hour-label { min-width: 2.9rem; font-size: 0.72rem; }
+    .labor-hour-val { min-width: 0; font-size: 0.72rem; }
+    .labor-rate-chip { min-width: 3.1rem; font-size: 0.72rem; }
+    .labor-track-row { flex-wrap: wrap; }
+    .labor-track-name { min-width: 8rem; }
+}

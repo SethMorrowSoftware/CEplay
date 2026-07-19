@@ -10,7 +10,7 @@
 }
 
 /* Right-align numeric table cells. */
-.text-right { text-align: right; }
+/* .text-right now lives in components/tables.css (shared) */
 
 /* Generic card body padding when used inside a .card without other modifiers. */
 .card-body { /* visual hook only — .card already handles padding */ }

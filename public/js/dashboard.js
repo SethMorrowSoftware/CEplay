@@ -52,6 +52,14 @@
         seenTxnIds: null     // null on first render, then a Set
     };
 
+    // Previous stat-card values (keyed by status filter) so the count-up
+    // animation only runs when a count actually changes, not on every poll.
+    var statPrev = {};
+
+    // Last load-failure message — suppresses duplicate error toasts while
+    // consecutive polls keep failing during an outage.
+    var lastLoadError = null;
+
     // Live feed cap — pull a generous slice from the cache so paging through
     // the dashboard's feed doesn't round-trip per page change.
     var FEED_LIMIT = 500;
@@ -73,6 +81,7 @@
     // dominate the viewport.
     var feedSearch = '';
     var feedPaging = { page: 1, pageSize: 10, totalItems: 0 };
+    var feedLastRenderKey = null; // page|search|size of the last render — scroll restore only when unchanged
 
     function scheduleNextPoll() {
         if (refreshIntervalCleanup) refreshIntervalCleanup();
@@ -263,7 +272,7 @@
             ])
         ]);
 
-        container.appendChild(App.el('div', { className: 'page-header' }, [
+        container.appendChild(App.el('div', { className: 'page-header dash-page-header' }, [
             App.el('div', { className: 'page-header-titleblock' }, [
                 App.el('h1', { className: 'page-title', textContent: 'Command Center' }),
                 App.el('p', { className: 'page-subtitle', id: 'last-sync', textContent: 'Getting the latest from the venue…' })
@@ -387,7 +396,11 @@
                 ]),
                 App.el('div', { id: 'dash-topplays-wrap', className: 'card' }, [
                     App.el('div', { className: 'card-header flex-between' }, [
-                        App.el('div', { className: 'card-title', textContent: 'Top by plays' })
+                        App.el('div', { className: 'card-title', textContent: 'Top by plays' }),
+                        // Echo the shared window selector's choice so this
+                        // card isn't silently re-scoped by the other card.
+                        App.el('span', { id: 'dash-topplays-window', className: 'text-sm text-secondary',
+                            textContent: topWindowLabel(topWindow) })
                     ]),
                     App.el('div', { id: 'dash-topplays-body', className: 'card-body' }, [App.loading()])
                 ])
@@ -449,12 +462,14 @@
                     className: 'view-toggle-btn' + (gameView === 'table' ? ' active' : ''),
                     textContent: 'Table',
                     'data-view': 'table',
+                    'aria-pressed': gameView === 'table' ? 'true' : 'false',
                     onClick: function() { switchView('table'); }
                 }),
                 App.el('button', {
                     className: 'view-toggle-btn' + (gameView === 'grid' ? ' active' : ''),
                     textContent: 'Grid',
                     'data-view': 'grid',
+                    'aria-pressed': gameView === 'grid' ? 'true' : 'false',
                     onClick: function() { switchView('grid'); }
                 })
             ])
@@ -465,6 +480,7 @@
         var searchInput = App.buildSearchInput({
             placeholder: 'Search games...',
             ariaLabel: 'Search games',
+            value: gameSearchTerm,
             onSearch: function(term) {
                 gameSearchTerm = term.toLowerCase();
                 gamePage = 1;
@@ -472,9 +488,6 @@
             }
         });
         searchInput.id = 'game-search';
-        searchInput.style.maxWidth = '240px';
-        searchInput.style.fontSize = '0.82rem';
-        searchInput.style.padding = '0.4rem 0.65rem';
         toolbar.appendChild(searchInput);
         toolbar.appendChild(App.el('div', { className: 'filter-pills', id: 'status-filters' }));
         gameCard.appendChild(toolbar);
@@ -531,17 +544,28 @@
             runImmediately: false, runOnVisible: true
         });
 
-        // Repaint the hero sparkline on window resize so it stays crisp at
-        // any container width. Debounced to avoid thrashing during drag-resize.
+        // Repaint both hand-painted canvases on window resize so they stay
+        // crisp at any container width. Debounced to avoid thrashing during
+        // drag-resize.
+        var repaintCanvases = function() {
+            var canvas = document.getElementById('hero-spark');
+            if (canvas) paintHeroSparkline(canvas, sparklineBuckets());
+            var payoutCanvas = document.getElementById('payout-canvas');
+            if (payoutCanvas && payoutData) paintPayoutBars(payoutCanvas, payoutData);
+        };
         var resizeTimer = null;
         var onResize = function() {
             if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                var canvas = document.getElementById('hero-spark');
-                if (canvas) paintHeroSparkline(canvas, sparklineBuckets());
-            }, 120);
+            resizeTimer = setTimeout(repaintCanvases, 120);
         };
         window.addEventListener('resize', onResize);
+
+        // Both canvases read theme CSS variables at paint time — repaint on
+        // dark/light toggle so they don't keep stale colors until next poll.
+        var themeObserver = new MutationObserver(repaintCanvases);
+        themeObserver.observe(document.documentElement, {
+            attributes: true, attributeFilter: ['data-theme']
+        });
 
         return function cleanup() {
             if (refreshIntervalCleanup) refreshIntervalCleanup();
@@ -553,11 +577,14 @@
             transitionTimers = [];
             window.removeEventListener('resize', onResize);
             if (resizeTimer) clearTimeout(resizeTimer);
+            themeObserver.disconnect();
             // Reset the hero state so a re-mount starts clean.
             heroPrev = {
                 tickets_today: 0, plays_today: 0, tickets_hour: 0, plays_hour: 0,
                 unique_cards_today: 0, active_now: 0, seenTxnIds: null
             };
+            statPrev = {};
+            lastLoadError = null;
         };
     }
 
@@ -630,7 +657,9 @@
         // Update toggle buttons
         var btns = document.querySelectorAll('#view-toggle .view-toggle-btn');
         btns.forEach(function(btn) {
-            btn.classList.toggle('active', btn.getAttribute('data-view') === view);
+            var isActive = btn.getAttribute('data-view') === view;
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
         gamePage = 1;
         renderGameView(allGames);
@@ -654,6 +683,7 @@
             var results = await Promise.all(requests);
             // If user navigated away while we were loading, discard results
             if (App.navGeneration() !== gen) return;
+            lastLoadError = null;
 
             var gamesData = results[0] || {};
             var overridesData = results[1] || {};
@@ -742,8 +772,39 @@
             loadKioskSnapshot();
             loadRecentActivity();
         } catch (err) {
-            App.toast(err.message, 'error');
+            if (App.navGeneration() !== gen) return;
+            // The widget loaders only run after a successful main load — on
+            // failure, swap any body still showing its first-load spinner
+            // for an honest inline message instead of spinning forever.
+            ['pace-body', 'dash-feed-body', 'dash-top-body', 'dash-topplays-body',
+                'ticket-watch-body', 'dash-activity-body'].forEach(function(id) {
+                var widgetBody = document.getElementById(id);
+                if (widgetBody && widgetBody.querySelector('.loading-overlay')) {
+                    widgetBody.innerHTML = '';
+                    widgetBody.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                        textContent: 'Unavailable — will retry on the next refresh.' }));
+                }
+            });
+            // Don't stack identical toasts while consecutive polls fail.
+            if (err.message !== lastLoadError) {
+                lastLoadError = err.message;
+                App.toast(err.message, 'error');
+            }
         }
+    }
+
+    var TOP_WINDOWS = [
+        ['hour', 'Last hour'],
+        ['today', 'Today'],
+        ['week', 'Last 7 days'],
+        ['all', 'All cached']
+    ];
+
+    function topWindowLabel(win) {
+        for (var i = 0; i < TOP_WINDOWS.length; i++) {
+            if (TOP_WINDOWS[i][0] === win) return TOP_WINDOWS[i][1];
+        }
+        return win;
     }
 
     function buildTopWindowSelector() {
@@ -755,12 +816,7 @@
                 loadTopGames();
             }
         });
-        [
-            ['hour', 'Last hour'],
-            ['today', 'Today'],
-            ['week', 'Last 7 days'],
-            ['all', 'All cached']
-        ].forEach(function(opt) {
+        TOP_WINDOWS.forEach(function(opt) {
             var o = App.el('option', { value: opt[0], textContent: opt[1] });
             if (opt[0] === topWindow) o.selected = true;
             sel.appendChild(o);
@@ -769,6 +825,10 @@
     }
 
     async function loadTopGames() {
+        // Keep the "Top by plays" header's window label in sync — the
+        // selector lives in the "Top by tickets" card but scopes both.
+        var windowLabel = document.getElementById('dash-topplays-window');
+        if (windowLabel) windowLabel.textContent = topWindowLabel(topWindow);
         // Two compact leaderboards side by side, sharing the window selector.
         await Promise.all([
             renderTopList('dash-top-body', 'tickets'),
@@ -850,6 +910,9 @@
             });
             body.appendChild(list);
         } catch (err) {
+            // Keep the last good leaderboard on a transient poll failure —
+            // only show the message when nothing has rendered yet.
+            if (body.querySelector('.top-games-list')) return;
             body.innerHTML = '';
             body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Top games unavailable.' }));
         }
@@ -919,8 +982,12 @@
             ]));
         } catch (err) {
             // Endpoint may not be available on legacy installs / tech without
-            // CenterEdge config — hide rather than show an error.
-            wrap.style.display = 'none';
+            // CenterEdge config — hide rather than show an error. But if a
+            // snapshot already rendered, keep it instead of blinking the
+            // whole card out on one flaky poll.
+            if (!body.querySelector('.kiosk-snapshot')) {
+                wrap.style.display = 'none';
+            }
         }
     }
 
@@ -1061,6 +1128,16 @@
             }
         }
 
+        // The list scrolls internally — remember how far the operator had
+        // scrolled so a poll-driven rebuild doesn't snatch it back to the
+        // top. Restore only when page/search/size are unchanged: a deliberate
+        // page turn or new search should still start at the top.
+        var prevList = body.querySelector('.feed-list-modern');
+        var prevScrollTop = prevList ? prevList.scrollTop : 0;
+        var renderKey = page.page + '|' + feedSearch + '|' + feedPaging.pageSize;
+        var restoreScroll = prevScrollTop > 0 && renderKey === feedLastRenderKey;
+        feedLastRenderKey = renderKey;
+
         body.innerHTML = '';
 
         if (allTransactions.length === 0) {
@@ -1093,6 +1170,7 @@
         var ul = App.el('ul', { className: 'plain-list feed-list-modern' });
         page.items.forEach(function(t) { ul.appendChild(buildFeedRow(t, !!freshIds[t.transaction_id])); });
         body.appendChild(ul);
+        if (restoreScroll) ul.scrollTop = prevScrollTop;
 
         // Re-build the seen-set from the entire (unpaged) cache so a row
         // doesn't re-flash every time it scrolls onto a different page.
@@ -1533,7 +1611,9 @@
         };
 
         var scroll = App.el('div', { className: 'table-scroll-container' });
-        var table = App.el('table', { className: 'data-table' }, [
+        // Same 'table' class as the game-status table so both dashboard
+        // tables share sticky headers + row styling in the scroll container.
+        var table = App.el('table', { className: 'table' }, [
             App.el('thead', {}, [
                 App.el('tr', {}, [
                     App.el('th', { textContent: 'Card' }),
@@ -1548,7 +1628,7 @@
         ]);
         var tbody = App.el('tbody', {});
         cards.forEach(function(c) {
-            var cardCell = App.el('td', {}, [
+            var cardCell = App.el('td', { 'data-sort': c.card_number }, [
                 c.watch ? App.el('span', { textContent: '⚠ ', title: 'Two or more farming signals' }) : null,
                 App.el('a', {
                     href: '#/cards?number=' + encodeURIComponent(c.card_number),
@@ -1566,13 +1646,16 @@
 
             var row = App.el('tr', {}, [
                 cardCell,
-                App.el('td', { className: 'text-right num-cell', textContent: Math.round(c.tickets).toLocaleString() }),
+                App.el('td', { className: 'text-right num-cell', 'data-sort': String(c.tickets),
+                    textContent: Math.round(c.tickets).toLocaleString() }),
                 App.el('td', { className: 'text-right num-cell', textContent: String(c.plays) }),
                 App.el('td', { className: 'text-right num-cell', textContent: String(c.tickets_per_play) }),
                 App.el('td', { className: 'text-sm', textContent: topGameTxt,
+                    'data-sort': c.top_game_name || '',
                     style: { maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                     title: topGameTxt }),
                 App.el('td', { className: 'text-right num-cell' + (c.ratio_multiplier >= 1.5 ? ' text-danger' : ''),
+                    'data-sort': String(c.ratio_multiplier),
                     textContent: c.ratio_multiplier + '×',
                     title: 'This card’s tickets-per-play on its top game vs everyone else’s average on that game today' }),
                 App.el('td', { className: 'text-sm ' + (c.watch ? 'text-danger' : 'text-secondary'), textContent: signals })
@@ -1582,6 +1665,9 @@
         table.appendChild(tbody);
         scroll.appendChild(table);
         body.appendChild(scroll);
+        // Small fully-rendered top-10 — headers sort in place; the server's
+        // tickets-DESC arrival order stays the default.
+        App.enhanceTableSort(table, { defaultSort: { index: 1, dir: 'desc' } });
 
         var subtitle = document.getElementById('ticket-watch-subtitle');
         if (subtitle && data.min_tickets) {
@@ -1723,6 +1809,13 @@
         ctx.textAlign = 'right';
         ctx.fillStyle = textColor;
         ctx.fillText(target + '%', W - 4, ty - 4);
+
+        // Expose the per-window percentages to non-visual users.
+        canvas.setAttribute('aria-label', 'Ticket payout by window: '
+            + PAYOUT_WINDOWS.map(function(w, i) {
+                return w[1] + ' ' + (ratios[i] === null ? 'n/a' : ratios[i] + '%');
+            }).join(', ')
+            + ' — target ' + target + '% or less');
     }
 
     function paintHeroSparkline(canvas, buckets) {
@@ -1797,6 +1890,19 @@
             ctx.fill();
             ctx.shadowBlur = 0;
         }
+
+        // Give non-visual users the shape of the curve, not just its title.
+        var peak = Math.max.apply(null, buckets);
+        var summary = 'Plays per hour for the last ' + n + ' hours';
+        if (peak > 0) {
+            var ago = (n - 1) - buckets.indexOf(peak);
+            summary += ' — peak ' + peak + (peak === 1 ? ' play ' : ' plays ')
+                + (ago === 0 ? 'this hour' : ago + (ago === 1 ? ' hour ago' : ' hours ago'))
+                + ', ' + buckets[n - 1] + ' this hour';
+        } else {
+            summary += ' — no plays in this window';
+        }
+        canvas.setAttribute('aria-label', summary);
     }
 
     function renderHeroPulse() {
@@ -1900,9 +2006,12 @@
                 : 'no plays in last hour');
 
         var avg = (t.plays_today > 0) ? (t.tickets_today / t.plays_today) : 0;
+        // formatPoints keeps the one-decimal precision ("1.6") that the
+        // default formatBigNumber would round away.
         updateHeroChip('avg',
             avg > 0 ? formatPoints(avg) : '—',
-            avg > 0 ? 'tickets per play' : 'awaiting plays');
+            avg > 0 ? 'tickets per play' : 'awaiting plays',
+            { format: formatPoints });
 
         updateHeroChip('active',
             String(activeNow),
@@ -1950,11 +2059,12 @@
         heroPrev.active_now = activeNow;
     }
 
-    function updateHeroChip(key, value, detail) {
+    function updateHeroChip(key, value, detail, opts) {
         var chip = document.querySelector('.hero-chip[data-chip="' + key + '"]');
         if (!chip) return;
         var valEl = chip.querySelector('[data-role="value"]');
         var detailEl = chip.querySelector('[data-role="detail"]');
+        var fmt = (opts && opts.format) || formatBigNumber;
         if (valEl) {
             // For numeric chips, animate the count-up. The chip values are
             // small enough that a parse-then-animate round-trip is fine.
@@ -1963,7 +2073,7 @@
             if (!isNaN(asNum) && /^[\d,.]+[kKmM]?$/.test(String(value).trim())) {
                 animateNumber(valEl, asNum, {
                     duration: 600,
-                    format: function(n) { return formatBigNumber(n); }
+                    format: function(n) { return fmt(n); }
                 });
             } else {
                 valEl.textContent = value;
@@ -2174,7 +2284,6 @@
         if (!box) return;
         box.innerHTML = '';
 
-        var canSeeSales = App.canAccess('analytics');
         var cards = [];
 
         var total = games.length;
@@ -2200,17 +2309,9 @@
                 : (ovCount === 1 ? 'One temporary exception is beating the schedule'
                     : ovCount + ' temporary exceptions are beating the schedule')));
 
-        // Busiest hour so far — the hour bins ride in on the sales-stats
-        // feed, so this card only exists for roles that can see sales.
-        if (canSeeSales) {
-            var peak = computePeakHourToday();
-            if (peak) {
-                cards.push(insightCard('⏰', 'insight-heat', 'Busiest hour so far',
-                    peak.label,
-                    formatBigNumber(peak.plays) + ' plays'
-                        + (peak.tickets > 0 ? ' · ' + formatBigNumber(peak.tickets) + ' tickets' : '')));
-            }
-        }
+        // (The busiest-hour figure lives in the "Peak hour today" KPI tile —
+        // it used to render here too under a different label, which read as
+        // two different numbers.)
 
         if (cards.length === 0) { box.style.display = 'none'; return; }
         box.style.display = '';
@@ -2265,8 +2366,14 @@
                 valueEl,
                 App.el('div', { className: 'stat-card-detail', textContent: s.detail })
             ]);
-            // Animate the count-up on first paint and any subsequent change.
+            // Animate the count-up on first paint and any subsequent change —
+            // the grid is rebuilt each poll, so seed the fresh element with
+            // the previous value or every poll would re-count from zero.
+            if (statPrev[s.filter] !== undefined) {
+                valueEl.setAttribute('data-anim-value', String(statPrev[s.filter]));
+            }
             animateNumber(valueEl, s.value, { duration: 600 });
+            statPrev[s.filter] = s.value;
             App.makeCardLink(
                 tile,
                 s.filter === 'all' ? '#/games' : '#/games?status=' + encodeURIComponent(s.filter),
@@ -2338,6 +2445,44 @@
         return ((stats.tickets_today || 0) / pts) * 100;
     }
 
+    var GAME_STATUS_ORDER = { enabled: 0, paused: 1, outOfService: 2 };
+
+    /**
+     * Column definitions for the game-status table — shared by the header
+     * build (App.sortableTh) and the sorter (App.sortRows). sortValue
+     * accessors return the RAW values (from ticketStats) because the cells
+     * render formatted strings; payout/last-play return null when not
+     * applicable so those rows sink to the bottom in either direction.
+     */
+    function gameTableColumns() {
+        return [
+            { key: 'game_name', label: 'Game Name',
+              sortValue: function(g) { return g.game_name || ''; } },
+            // Enum rank keeps the enabled → paused → outOfService ordering;
+            // defaultDir overrides the numeric first-click-desc default.
+            { key: 'operation_status', label: 'Status', type: 'number', defaultDir: 'asc',
+              sortValue: function(g) {
+                  return GAME_STATUS_ORDER[g.operation_status] !== undefined
+                      ? GAME_STATUS_ORDER[g.operation_status] : 3;
+              } },
+            { key: 'plays_today', label: 'Plays Today', type: 'number', className: 'text-right',
+              sortValue: function(g) {
+                  return (ticketStats[g.game_id] && ticketStats[g.game_id].plays_today) || 0;
+              } },
+            { key: 'tickets_today', label: 'Tickets Today', type: 'number', className: 'text-right',
+              sortValue: function(g) {
+                  return (ticketStats[g.game_id] && ticketStats[g.game_id].tickets_today) || 0;
+              } },
+            { key: 'payout_today', label: 'Payout %', type: 'number', className: 'text-right',
+              sortValue: function(g) { return gamePayoutToday(ticketStats[g.game_id]); } },
+            { key: 'last_play', label: 'Last Play', type: 'date',
+              sortValue: function(g) {
+                  return (ticketStats[g.game_id] && ticketStats[g.game_id].last_play) || null;
+              } },
+            { key: 'categories', label: 'Categories', sortable: false }
+        ];
+    }
+
     function getFilteredSortedGames(games) {
         // Filter by search
         var filtered = games;
@@ -2352,44 +2497,7 @@
                 return g.operation_status === gameStatusFilter;
             });
         }
-        // Sort
-        filtered.sort(function(a, b) {
-            var aVal, bVal;
-            if (gameSortCol === 'game_name') {
-                aVal = (a.game_name || '').toLowerCase();
-                bVal = (b.game_name || '').toLowerCase();
-            } else if (gameSortCol === 'operation_status') {
-                var order = { enabled: 0, paused: 1, outOfService: 2 };
-                aVal = order[a.operation_status] !== undefined ? order[a.operation_status] : 3;
-                bVal = order[b.operation_status] !== undefined ? order[b.operation_status] : 3;
-            } else if (gameSortCol === 'game_id') {
-                aVal = a.game_id || '';
-                bVal = b.game_id || '';
-            } else if (gameSortCol === 'plays_today' || gameSortCol === 'tickets_today') {
-                aVal = (ticketStats[a.game_id] && ticketStats[a.game_id][gameSortCol]) || 0;
-                bVal = (ticketStats[b.game_id] && ticketStats[b.game_id][gameSortCol]) || 0;
-            } else if (gameSortCol === 'payout_today') {
-                // Not-applicable games sink to the bottom in desc order so
-                // the hottest payouts surface first.
-                var ap = gamePayoutToday(ticketStats[a.game_id]);
-                var bp = gamePayoutToday(ticketStats[b.game_id]);
-                aVal = ap === null ? -1 : ap;
-                bVal = bp === null ? -1 : bp;
-            } else if (gameSortCol === 'last_play') {
-                // Sort by recency: never-played goes last in asc, first in desc
-                aVal = (ticketStats[a.game_id] && ticketStats[a.game_id].last_play) || '';
-                bVal = (ticketStats[b.game_id] && ticketStats[b.game_id].last_play) || '';
-            } else {
-                aVal = a[gameSortCol] || '';
-                bVal = b[gameSortCol] || '';
-            }
-
-            if (aVal < bVal) return gameSortDir === 'asc' ? -1 : 1;
-            if (aVal > bVal) return gameSortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
-
-        return filtered;
+        return App.sortRows(filtered, { key: gameSortCol, dir: gameSortDir }, gameTableColumns());
     }
 
     function renderGameView(games) {
@@ -2438,53 +2546,24 @@
         // roles without analytics access. Game name + status + categories
         // remain visible so techs can still see fleet posture.
         var includeSales = App.canAccess('analytics');
-        var columns = [
-            { key: 'game_name', label: 'Game Name', sortable: true },
-            { key: 'operation_status', label: 'Status', sortable: true }
-        ];
-        if (includeSales) {
-            columns.push({ key: 'plays_today', label: 'Plays Today', sortable: true, className: 'text-right' });
-            columns.push({ key: 'tickets_today', label: 'Tickets Today', sortable: true, className: 'text-right' });
-            columns.push({ key: 'payout_today', label: 'Payout %', sortable: true, className: 'text-right' });
-            columns.push({ key: 'last_play', label: 'Last Play', sortable: true });
-        }
-        columns.push({ key: 'categories', label: 'Categories', sortable: false });
+        var salesCols = { plays_today: 1, tickets_today: 1, payout_today: 1, last_play: 1 };
+        var columns = gameTableColumns().filter(function(col) {
+            return includeSales || !salesCols[col.key];
+        });
 
         // If a previously-selected sort column is now hidden (e.g. an admin
         // demoted to tech mid-session), fall back to game_name.
-        if (!includeSales && (gameSortCol === 'plays_today' || gameSortCol === 'tickets_today'
-                || gameSortCol === 'payout_today' || gameSortCol === 'last_play')) {
+        if (!includeSales && salesCols[gameSortCol]) {
             gameSortCol = 'game_name';
             gameSortDir = 'asc';
         }
 
         columns.forEach(function(col) {
-            var classes = [];
-            if (col.sortable) classes.push('sortable');
-            if (gameSortCol === col.key) classes.push('sorted');
-            if (col.className) classes.push(col.className);
-            var th = App.el('th', { className: classes.join(' ') });
-            th.appendChild(App.el('span', { textContent: col.label }));
-            if (col.sortable) {
-                var sortIcon = gameSortCol === col.key
-                    ? (gameSortDir === 'asc' ? '\u25B2' : '\u25BC')
-                    : '\u25B4';
-                th.appendChild(App.el('span', { className: 'sort-icon', textContent: sortIcon }));
-                th.addEventListener('click', function() {
-                    if (gameSortCol === col.key) {
-                        gameSortDir = gameSortDir === 'asc' ? 'desc' : 'asc';
-                    } else {
-                        gameSortCol = col.key;
-                        // Numeric / time columns default to descending so the
-                        // operator immediately sees the busiest games first.
-                        gameSortDir = (col.key === 'plays_today' || col.key === 'tickets_today'
-                                || col.key === 'payout_today' || col.key === 'last_play')
-                            ? 'desc' : 'asc';
-                    }
-                    renderGameView(allGames);
-                });
-            }
-            headerRow.appendChild(th);
+            headerRow.appendChild(App.sortableTh(col, { key: gameSortCol, dir: gameSortDir }, function(next) {
+                gameSortCol = next.key;
+                gameSortDir = next.dir;
+                renderGameView(allGames);
+            }));
         });
         thead.appendChild(headerRow);
         table.appendChild(thead);
@@ -2497,9 +2576,17 @@
             var plays = stats ? stats.plays_today : 0;
             var tickets = stats ? Math.round(stats.tickets_today || 0) : 0;
 
-            // Game name + ID secondary line
+            // Game name (deep-links to the game's detail page, matching the
+            // grid tiles' affordance) + ID secondary line
             row.appendChild(App.el('td', {}, [
-                App.el('div', { textContent: game.game_name, style: { fontWeight: '500' } }),
+                game.game_id
+                    ? App.el('a', {
+                        href: '#/games?game=' + encodeURIComponent(game.game_id),
+                        className: 'game-table-name-link',
+                        textContent: game.game_name,
+                        title: 'Open game detail for ' + game.game_name
+                    })
+                    : App.el('div', { textContent: game.game_name, style: { fontWeight: '500' } }),
                 App.el('div', { className: 'text-muted text-xs font-mono', textContent: game.game_id || '-' })
             ]));
 

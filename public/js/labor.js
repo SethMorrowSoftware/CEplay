@@ -27,6 +27,8 @@
     // Monotonic load token: MSSQL round-trips can take seconds, so a rapid
     // ‹ ‹ click must not let the older response paint over the newer one.
     var loadSeq = 0;
+    var adminSeq = 0; // same pattern for the admin settings fetch
+    var fieldSeq = 0; // unique ids for label/input association in the admin form
 
     function fmtMoney(v) {
         if (v == null) return '—';
@@ -85,12 +87,14 @@
                 return App.el('button', {
                     className: 'btn btn-sm ' + (key === state.range ? 'btn-primary' : 'btn-ghost'),
                     textContent: RANGE_LABELS[key],
+                    'aria-pressed': key === state.range ? 'true' : 'false',
                     onClick: function() {
                         if (state.range === key && key !== 'custom') return;
                         state.range = key;
                         state.offset = 0;
                         refreshPresetButtons();
                         toggleCustomRow();
+                        updateNav();
                         if (key !== 'custom') load();
                     }
                 });
@@ -106,21 +110,25 @@
             App.el('div', { className: 'perf-nav-label', id: 'labor-nav-label', textContent: '…' }),
             App.el('button', {
                 className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '›',
+                id: 'labor-nav-next',
                 title: 'Next period', 'aria-label': 'Next period',
+                disabled: state.range === 'custom' || state.offset >= 0,
                 onClick: function() { if (state.range === 'custom' || state.offset >= 0) return; state.offset += 1; load(); }
             }),
             App.el('button', {
                 className: 'btn btn-sm btn-ghost', textContent: 'Today',
+                id: 'labor-nav-today',
                 title: 'Jump to the current period',
+                disabled: state.offset === 0,
                 onClick: function() { if (state.offset === 0) return; state.offset = 0; load(); }
             })
         ]);
 
         var custom = App.el('div', { className: 'perf-custom', id: 'labor-custom',
             style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'labor-custom-from', textContent: 'From' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'labor-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'labor-custom-to', textContent: 'To' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'labor-custom-to', value: state.custom.to }),
             App.el('button', {
                 className: 'btn btn-sm btn-primary', textContent: 'Apply',
@@ -163,7 +171,9 @@
         if (!wrap) return;
         var keys = Object.keys(RANGE_LABELS);
         Array.prototype.forEach.call(wrap.children, function(btn, i) {
-            btn.className = 'btn btn-sm ' + (keys[i] === state.range ? 'btn-primary' : 'btn-ghost');
+            var active = keys[i] === state.range;
+            btn.className = 'btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost');
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
     }
 
@@ -172,6 +182,14 @@
         var nav = document.getElementById('labor-nav');
         if (custom) custom.style.display = state.range === 'custom' ? '' : 'none';
         if (nav) nav.style.display = state.range === 'custom' ? 'none' : '';
+    }
+
+    /** Disable the no-op nav buttons — same convention as the Performance page. */
+    function updateNav() {
+        var next = document.getElementById('labor-nav-next');
+        if (next) next.disabled = (state.range === 'custom' || state.offset >= 0);
+        var today = document.getElementById('labor-nav-today');
+        if (today) today.disabled = (state.offset === 0);
     }
 
     function insightCard(emoji, cls, label, value, sub) {
@@ -192,6 +210,7 @@
         var box = document.getElementById('labor-results');
         if (!box) return;
         var seq = ++loadSeq;
+        updateNav();
         box.innerHTML = '';
         box.appendChild(App.loading());
 
@@ -199,11 +218,7 @@
         if (state.range === 'custom') {
             if (!state.custom.from || !state.custom.to) {
                 box.innerHTML = '';
-                box.appendChild(App.el('div', { className: 'card' }, [
-                    App.el('div', { className: 'card-body' }, [
-                        App.el('p', { className: 'text-secondary', textContent: 'Pick a From and To date above, then press Apply.' })
-                    ])
-                ]));
+                box.appendChild(App.emptyState('📅', 'Pick a From and To date above, then press Apply.'));
                 return;
             }
             qs += '&from=' + encodeURIComponent(state.custom.from) + '&to=' + encodeURIComponent(state.custom.to);
@@ -217,11 +232,9 @@
         } catch (err) {
             if (seq !== loadSeq) return;
             box.innerHTML = '';
-            box.appendChild(App.el('div', { className: 'card' }, [
-                App.el('div', { className: 'card-body' }, [
-                    App.el('p', { className: 'text-secondary', textContent: 'Could not load labor data: ' + (err && err.message ? err.message : 'unknown error') })
-                ])
-            ]));
+            box.appendChild(App.emptyState('⚠️',
+                'Could not load labor data: ' + (err && err.message ? err.message : 'unknown error'),
+                App.el('button', { className: 'btn btn-secondary', textContent: 'Retry', onClick: function() { load(); } })));
         }
     }
 
@@ -234,15 +247,10 @@
         if (navLabel && data.window && data.window.label) navLabel.textContent = data.window.label;
 
         if (!data.configured) {
-            box.appendChild(App.el('div', { className: 'card' }, [
-                App.el('div', { className: 'card-body' }, [
-                    App.el('h3', { textContent: 'Not connected yet' }),
-                    App.el('p', { className: 'text-secondary', style: { marginTop: '0.4rem' }, textContent:
-                        App.canAccess('settings')
-                            ? 'Enter the MSSQL connection below, test it, and this report comes alive.'
-                            : 'The MSSQL connection has not been configured. Ask an administrator to set it up on this page.' })
-                ])
-            ]));
+            box.appendChild(App.emptyState('🔌',
+                App.canAccess('settings')
+                    ? 'Not connected yet — enter the MSSQL connection below, test it, and this report comes alive.'
+                    : 'The MSSQL connection has not been configured. Ask an administrator to set it up on this page.'));
             return;
         }
 
@@ -328,11 +336,7 @@
             rowLabel = 'Day';
         }
         if (!rows.length) {
-            box.appendChild(App.el('div', { className: 'card' }, [
-                App.el('div', { className: 'card-body' }, [
-                    App.el('p', { className: 'text-secondary', textContent: 'No data in this period yet.' })
-                ])
-            ]));
+            box.appendChild(App.emptyState('🏁', 'No data in this period yet.'));
             return;
         }
 
@@ -340,16 +344,21 @@
         var headCells = [App.el('th', { textContent: rowLabel })];
         if (showRides) {
             headCells.push(App.el('th', {
+                className: 'text-right',
                 textContent: excludePass ? 'Paid rides' : 'Rides',
                 title: excludePass ? 'Kart swipes minus time-pass swipes' : 'Total kart swipes from the reader feed' }));
             if (!excludePass) {
-                headCells.push(App.el('th', { textContent: 'Pass', title: 'Time-pass swipes — they never post money at the reader' }));
+                headCells.push(App.el('th', { className: 'text-right', textContent: 'Pass', title: 'Time-pass swipes — they never post money at the reader' }));
             }
         }
-        headCells.push(App.el('th', { textContent: 'Sales' }),
-                       App.el('th', { textContent: 'Labor' }),
-                       App.el('th', { textContent: 'Labor rate' }),
-                       App.el('th', { textContent: '' }));
+        headCells.push(App.el('th', { className: 'text-right', textContent: 'Sales' }),
+                       App.el('th', { className: 'text-right', textContent: 'Labor' }),
+                       App.el('th', { className: 'text-right', textContent: 'Labor rate' }),
+                       // Visual split-bar column: give it an accessible name but keep it
+                       // out of the sorter (and visually empty).
+                       App.el('th', { 'data-nosort': '1' }, [
+                           App.el('span', { className: 'labor-sr-only', textContent: 'Sales vs wages split' })
+                       ]));
 
         var table = App.el('table', { className: 'data-table' }, [
             App.el('thead', {}, [App.el('tr', {}, headCells)]),
@@ -366,32 +375,40 @@
                 var profitW = rowSales > 0 ? Math.max(0, 100 - laborW) : 0;
                 if (rowLabor > 0 && rowSales > 0 && laborW < 1.5) { laborW = 1.5; profitW = 98.5; }
                 var rateClass = d.rate == null ? '' : (d.rate <= 0.25 ? 'labor-rate-good' : (d.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
+                var barTip = fmtMoney(rowLabor) + ' wages'
+                    + (rowSales >= rowLabor
+                        ? ' · ' + fmtMoney(rowProfit) + ' left after wages'
+                        : (rowSales > 0
+                            ? ' — wages exceeded sales by ' + fmtMoney(rowLabor - rowSales)
+                            : ' — no sales recorded'));
                 var cells = [
-                    App.el('td', {}, d.month
+                    App.el('td', { 'data-sort': d.month || d.date }, d.month
                         ? [App.el('strong', { textContent: monthLabel(d.month) })]
                         : [App.el('strong', { textContent: dayLabel(d.date) }),
                            App.el('span', { className: 'text-muted text-xs', textContent: ' ' + d.date })])
                 ];
                 if (showRides) {
                     var rc = rideCount(d);
-                    cells.push(App.el('td', { textContent: rc != null ? rc.toLocaleString() : '—' }));
+                    cells.push(App.el('td', { className: 'num-cell text-right',
+                        'data-sort': rc != null ? String(rc) : null,
+                        textContent: rc != null ? rc.toLocaleString() : '—' }));
                     if (!excludePass) {
-                        cells.push(App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: d.pass_rides != null ? d.pass_rides.toLocaleString() : '—' })]));
+                        cells.push(App.el('td', { className: 'num-cell text-right',
+                            'data-sort': d.pass_rides != null ? String(d.pass_rides) : null },
+                            [App.el('span', { className: 'text-muted', textContent: d.pass_rides != null ? d.pass_rides.toLocaleString() : '—' })]));
                     }
                 }
                 cells.push(
-                    App.el('td', { textContent: fmtMoney(d.sales) }),
-                    App.el('td', { textContent: fmtMoney(d.labor) }),
-                    App.el('td', {}, [App.el('span', { className: 'labor-rate ' + rateClass, textContent: fmtPct(d.rate) })]),
+                    App.el('td', { className: 'num-cell text-right', 'data-sort': d.sales != null ? String(d.sales) : null, textContent: fmtMoney(d.sales) }),
+                    App.el('td', { className: 'num-cell text-right', 'data-sort': d.labor != null ? String(d.labor) : null, textContent: fmtMoney(d.labor) }),
+                    App.el('td', { className: 'num-cell text-right', 'data-sort': d.rate != null ? String(d.rate) : null },
+                        [App.el('span', { className: 'labor-rate ' + rateClass, textContent: fmtPct(d.rate) })]),
                     App.el('td', { style: { width: '26%' } }, [
                         App.el('div', {
                             className: 'labor-bar-track',
-                            title: fmtMoney(rowLabor) + ' wages'
-                                + (rowSales >= rowLabor
-                                    ? ' · ' + fmtMoney(rowProfit) + ' left after wages'
-                                    : (rowSales > 0
-                                        ? ' — wages exceeded sales by ' + fmtMoney(rowLabor - rowSales)
-                                        : ' — no sales recorded'))
+                            role: 'img',
+                            'aria-label': barTip,
+                            title: barTip
                         }, [
                             App.el('div', { className: 'labor-bar-seg labor-bar-labor', style: { width: laborW + '%' } }),
                             App.el('div', { className: 'labor-bar-seg labor-bar-profit', style: { width: profitW + '%' } })
@@ -401,12 +418,16 @@
                 return App.el('tr', {}, cells);
             }))
         ]);
+        // Fully rendered, non-paginated — headers sort in place. Default
+        // order stays chronological (no defaultSort).
+        App.enhanceTableSort(table);
 
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [
                 App.el('h3', { textContent: 'Labor rate by ' + rowLabel.toLowerCase() })
             ]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Labor rate = wages ÷ go-kart sales. '
                     + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
@@ -480,9 +501,13 @@
         if (maxDol <= 0 && maxWag <= 0) return;
 
         // ---- Money vs wages by the hour (avg per day in the window) ----
+        // Shared scale so wages vs money stay visually comparable; a
+        // wages-only period (no money at all) falls back to the wage scale
+        // so the bars aren't all zero-width.
+        var scale = maxDol > 0 ? maxDol : maxWag;
         var rows = slice.map(function(h) {
-            var dW = maxDol > 0 ? Math.max((h.dollars_avg || 0) > 0 ? 1 : 0, Math.round((h.dollars_avg || 0) / maxDol * 100)) : 0;
-            var wW = maxDol > 0 ? Math.max((h.wages_avg || 0) > 0 ? 1 : 0, Math.round((h.wages_avg || 0) / maxDol * 100)) : 0; // same scale: wages vs money visually comparable
+            var dW = Math.max((h.dollars_avg || 0) > 0 ? 1 : 0, Math.round((h.dollars_avg || 0) / scale * 100));
+            var wW = Math.max((h.wages_avg || 0) > 0 ? 1 : 0, Math.round((h.wages_avg || 0) / scale * 100));
             var rateClass = h.rate == null ? '' : (h.rate <= 0.25 ? 'labor-rate-good' : (h.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
             var tip = fmtMoney(h.dollars_avg) + ' avg taken · ' + fmtMoney(h.wages_avg) + ' avg wages'
                 + (h.rate != null ? ' · ' + fmtPct(h.rate) + ' of revenue' : '')
@@ -543,6 +568,7 @@
             return App.el('button', {
                 className: 'btn btn-sm ' + (mt.key === metric ? 'btn-primary' : 'btn-ghost'),
                 textContent: mt.label,
+                'aria-pressed': mt.key === metric ? 'true' : 'false',
                 onClick: function() {
                     if (state.moneyHeatMetric === mt.key) return;
                     state.moneyHeatMetric = mt.key;
@@ -550,6 +576,15 @@
                 }
             });
         }));
+
+        // Tap-to-inspect line: title tooltips never show on touch, so a tap
+        // (or click) echoes the cell's full detail below the table.
+        var inspectEl = App.el('p', { className: 'text-xs text-secondary',
+            style: { display: 'none', marginTop: '0.5rem' } });
+        // White ink only works over the strong tints in the dark theme; the
+        // light theme composites these semi-transparent colors on a white
+        // card, where the default (dark) ink keeps contrast at every level.
+        var isLight = App.theme === 'light';
 
         var headCells = [App.el('th', { className: 'cardloads-heat-corner', textContent: '' })];
         for (var h = lo; h <= hi; h++) {
@@ -583,9 +618,13 @@
                     + (r.occurrences ? ' (' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ')' : '');
                 tds.push(App.el('td', {
                     className: 'cardloads-heat-cell',
-                    style: { backgroundColor: bg, color: intensity > 0.55 ? '#fff' : fg },
+                    style: { backgroundColor: bg, color: !isLight && intensity > 0.55 ? '#fff' : fg },
                     title: tip,
-                    textContent: text
+                    textContent: text,
+                    onClick: function() {
+                        inspectEl.textContent = this.title;
+                        inspectEl.style.display = '';
+                    }
                 }));
             }
             return App.el('tr', {}, tds);
@@ -600,9 +639,11 @@
                 App.el('h3', { textContent: 'When the karts earn — day of week × hour' }),
                 toggle
             ]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'table-scroll' }, [table]),
+                inspectEl,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Each cell is the average for that weekday/hour slot across every occurrence in the period. Money and wages are real (card ledger + punches); labor rate = wages ÷ money for the slot — red cells are hours where staffing eats the revenue.' })
+                    'Each cell is the average for that weekday/hour slot across every occurrence in the period. Money and wages are real (card ledger + punches); labor rate = wages ÷ money for the slot — red cells are hours where staffing eats the revenue. Tap a cell for its full breakdown.' })
             ])
         ]));
     }
@@ -674,11 +715,23 @@
     // Admin: connection + query editor (settings permission only)
     // ------------------------------------------------------------------
     async function loadAdmin() {
+        var seq = ++adminSeq;
         try {
-            state.settings = await API.get('labor/settings');
+            var settings = await API.get('labor/settings');
+            if (seq !== adminSeq) return; // a newer load superseded this one
+            state.settings = settings;
             renderAdmin();
         } catch (err) {
+            if (seq !== adminSeq) return;
             console.error('labor settings load failed:', err);
+            var box = document.getElementById('labor-admin');
+            if (!box) return;
+            box.innerHTML = '';
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.emptyState('⚠️',
+                    'Could not load the connection settings: ' + (err && err.message ? err.message : 'unknown error'),
+                    App.el('button', { className: 'btn btn-secondary', textContent: 'Retry', onClick: function() { loadAdmin(); } }))
+            ]));
         }
     }
 
@@ -686,6 +739,9 @@
         var box = document.getElementById('labor-admin');
         if (!box || !state.settings) return;
         var s = state.settings;
+        // Keep the details panel open across a re-render.
+        var prevDetails = box.querySelector('.labor-admin-details');
+        var wasOpen = !!(prevDetails && prevDetails.open);
         box.innerHTML = '';
 
         var hostIn = App.el('input', { className: 'form-input', value: s.host || '', placeholder: '192.168.1.2' });
@@ -782,8 +838,14 @@
                     await API.put('labor/settings', payload);
                     statusEl.textContent = 'Saved.';
                     App.toast('Labor settings saved.', 'success');
+                    // Update in place — re-fetching would rebuild the form,
+                    // collapse the panel, and wipe this status line.
+                    if (payload.password) {
+                        s.has_password = true;
+                        passIn.placeholder = '•••••• (leave blank to keep current)';
+                    }
                     passIn.value = '';
-                    load(); loadAdmin();
+                    load();
                 } catch (err) {
                     statusEl.textContent = '';
                     App.toast('Save failed: ' + (err && err.message ? err.message : 'unknown error'), 'error');
@@ -806,7 +868,8 @@
         // The fingerprint can be aimed at any business day — used to chase a
         // known figure through the category/division dumps.
         var probeDateIn = App.el('input', { className: 'form-input', type: 'date',
-            title: 'Fingerprint this date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
+            title: 'Fingerprint this date (blank = yesterday)',
+            'aria-label': 'Fingerprint date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
 
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test connection',
             onClick: async function() {
@@ -848,7 +911,7 @@
         // Collapsed by default: the SQL and connection plumbing is for
         // admins — a non-technical reader should only ever meet the
         // summary and the panels above.
-        box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
+        box.appendChild(App.el('details', { className: 'card labor-admin-details', open: wasOpen ? '' : null }, [
             App.el('summary', { className: 'labor-admin-summary', textContent: '⚙️ Connection & queries (admin setup)' }),
             App.el('div', { className: 'card-body' }, [
                 App.el('p', { className: 'text-sm ' + ((s.drivers && s.drivers.length) ? 'text-secondary' : 'labor-driver-missing'), textContent: driverNote }),
@@ -874,8 +937,9 @@
         ]));
 
         function field(label, el) {
+            if (!el.id) el.id = 'labor-field-' + (++fieldSeq);
             return App.el('div', { className: 'form-group' }, [
-                App.el('label', { className: 'form-label', textContent: label }), el
+                App.el('label', { className: 'form-label', 'for': el.id, textContent: label }), el
             ]);
         }
     }

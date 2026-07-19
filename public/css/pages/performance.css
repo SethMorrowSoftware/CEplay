@@ -108,6 +108,47 @@
     gap: 0.3rem;
 }
 
+/* Shown in the chart holder when the period has nothing to plot. */
+.perf-chart-note {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 1rem;
+}
+
+/* This page's card headers hold several items (title + meta + summary +
+   hint / metric toggle) — let them wrap instead of crushing on phones. */
+#perf-trend-card .card-header,
+.perf-board-card .card-header {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+}
+
+/* Dimmed panels while a reload is in flight (also swallows double-clicks). */
+.perf-busy {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+/* Visible column-definition line above the leaderboard. */
+.perf-table-legend {
+    margin: 0 0 0.5rem;
+    line-height: 1.5;
+}
+
+/* Load-failure state with its retry button. */
+.perf-load-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0;
+}
+
 /* Fallback for browsers without color-mix(): the plain classes above still
    set a readable colour; the translucent background just degrades to none. */
 @supports not (background: color-mix(in srgb, red 10%, transparent)) {
@@ -116,6 +157,7 @@
 
 @media (max-width: 640px) {
     .perf-nav { margin-left: 0; width: 100%; justify-content: space-between; }
+    .perf-nav-btn { min-width: 2.5rem; min-height: 2.5rem; }
     .perf-nav-label { min-width: 0; flex: 1; }
     .perf-kpi-value { font-size: 1.35rem; }
 }

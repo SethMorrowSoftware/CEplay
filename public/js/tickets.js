@@ -70,7 +70,7 @@
                         state.offset = 0;
                         refreshPresetButtons();
                         toggleCustomRow();
-                        if (key !== 'custom') load();
+                        load();
                     }
                 });
             })
@@ -81,17 +81,19 @@
                 onClick: function() { if (state.range === 'custom') return; state.offset -= 1; load(); } }),
             App.el('div', { className: 'perf-nav-label', id: 'tickets-nav-label', textContent: '…' }),
             App.el('button', { className: 'btn btn-sm btn-ghost perf-nav-btn', textContent: '›',
-                title: 'Next period', 'aria-label': 'Next period',
+                id: 'tickets-nav-next', title: 'Next period', 'aria-label': 'Next period',
+                disabled: state.range === 'custom' || state.offset >= 0,
                 onClick: function() { if (state.range === 'custom' || state.offset >= 0) return; state.offset += 1; load(); } }),
             App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'Today',
-                title: 'Jump to the current period',
+                id: 'tickets-nav-today', title: 'Jump to the current period',
+                disabled: state.offset === 0,
                 onClick: function() { if (state.offset === 0) return; state.offset = 0; load(); } })
         ]);
         var custom = App.el('div', { className: 'perf-custom', id: 'tickets-custom',
             style: { display: state.range === 'custom' ? '' : 'none' } }, [
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'From' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'tickets-custom-from', textContent: 'From' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'tickets-custom-from', value: state.custom.from }),
-            App.el('label', { className: 'text-sm text-secondary', textContent: 'To' }),
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'tickets-custom-to', textContent: 'To' }),
             App.el('input', { type: 'date', className: 'form-input form-input-sm', id: 'tickets-custom-to', value: state.custom.to }),
             App.el('button', { className: 'btn btn-sm btn-primary', textContent: 'Apply',
                 onClick: function() {
@@ -100,7 +102,8 @@
                     if (!from || !to) { App.toast('Pick both a start and end date.', 'warning'); return; }
                     if (from > to) { App.toast('"From" must be on or before "To".', 'warning'); return; }
                     state.custom.from = from; state.custom.to = to; load();
-                } })
+                } }),
+            App.el('span', { className: 'text-sm text-secondary', id: 'tickets-custom-label' })
         ]);
         return App.el('div', { className: 'card perf-controls' }, [
             App.el('div', { className: 'card-body perf-controls-body' }, [presetRow, nav, custom])
@@ -121,6 +124,12 @@
         if (custom) custom.style.display = state.range === 'custom' ? '' : 'none';
         if (nav) nav.style.display = state.range === 'custom' ? 'none' : '';
     }
+    function updateNav() {
+        var next = document.getElementById('tickets-nav-next');
+        if (next) next.disabled = (state.range === 'custom' || state.offset >= 0);
+        var today = document.getElementById('tickets-nav-today');
+        if (today) today.disabled = (state.offset === 0);
+    }
 
     function insightCard(emoji, cls, label, value, sub) {
         return App.el('div', { className: 'insight-card ' + cls }, [
@@ -137,12 +146,15 @@
     async function load() {
         var box = document.getElementById('tickets-results');
         if (!box) return;
+        updateNav();
         var seq = ++loadSeq;
         box.innerHTML = '';
         box.appendChild(App.loading());
         var qs = 'range=' + encodeURIComponent(state.range) + '&offset=' + encodeURIComponent(state.offset);
         if (state.range === 'custom') {
             if (!state.custom.from || !state.custom.to) {
+                var customLabel = document.getElementById('tickets-custom-label');
+                if (customLabel) customLabel.textContent = '';
                 box.innerHTML = '';
                 box.appendChild(App.el('div', { className: 'card' }, [
                     App.el('div', { className: 'card-body' }, [
@@ -175,6 +187,8 @@
         box.innerHTML = '';
         var navLabel = document.getElementById('tickets-nav-label');
         if (navLabel && data.window && data.window.label) navLabel.textContent = data.window.label;
+        var customLabel = document.getElementById('tickets-custom-label');
+        if (customLabel) customLabel.textContent = (data.window && data.window.label) ? data.window.label : '';
 
         if (!data.configured) {
             box.appendChild(App.el('div', { className: 'card' }, [
@@ -229,20 +243,20 @@
         var maxTix = divisions.reduce(function(m, d) { return Math.max(m, d.tickets || 0); }, 0);
         var table = App.el('table', { className: 'data-table' }, [
             App.el('thead', {}, [App.el('tr', {}, [
-                App.el('th', { textContent: 'Area' }),
-                App.el('th', { textContent: 'Tickets' }),
-                App.el('th', { textContent: 'Share' }),
-                App.el('th', { textContent: 'Payouts' }),
-                App.el('th', { textContent: '' })
+                App.el('th', { scope: 'col', textContent: 'Area' }),
+                App.el('th', { scope: 'col', textContent: 'Tickets' }),
+                App.el('th', { scope: 'col', textContent: 'Share' }),
+                App.el('th', { scope: 'col', textContent: 'Payouts' }),
+                App.el('th', { scope: 'col', 'aria-label': 'Share of tickets (bar)', 'data-nosort': '' })
             ])]),
             App.el('tbody', {}, divisions.map(function(d) {
                 var w = maxTix > 0 ? Math.max(d.tickets > 0 ? 2 : 0, Math.round((d.tickets || 0) / maxTix * 100)) : 0;
                 return App.el('tr', {}, [
-                    App.el('td', {}, [App.el('strong', { textContent: divLabel(d) }),
+                    App.el('td', { 'data-sort': divLabel(d) }, [App.el('strong', { textContent: divLabel(d) }),
                         App.el('span', { className: 'text-muted text-xs', textContent: ' #' + d.div })]),
-                    App.el('td', { textContent: fmtInt(d.tickets) }),
-                    App.el('td', { textContent: (d.share * 100).toFixed(1) + '%' }),
-                    App.el('td', {}, [App.el('span', { className: 'text-muted', textContent: fmtInt(d.credits) })]),
+                    App.el('td', { 'data-sort': d.tickets == null ? null : d.tickets, textContent: fmtInt(d.tickets) }),
+                    App.el('td', { 'data-sort': d.share == null ? null : d.share, textContent: (d.share * 100).toFixed(1) + '%' }),
+                    App.el('td', { 'data-sort': d.credits == null ? null : d.credits }, [App.el('span', { className: 'text-muted', textContent: fmtInt(d.credits) })]),
                     App.el('td', { style: { width: '30%' } }, [
                         App.el('div', { className: 'labor-bar-track', title: fmtInt(d.tickets) + ' tickets' }, [
                             App.el('div', { className: 'tickets-bar-fill', style: { width: w + '%' } })
@@ -251,9 +265,10 @@
                 ]);
             }))
         ]);
+        App.enhanceTableSort(table, { defaultSort: { index: 1, dir: 'desc' } });
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Tickets by area' })]),
-            App.el('div', { className: 'card-body', style: { overflowX: 'auto' } }, [table,
+            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Tickets are attributed to an area (division), not an individual game — the POS records no game on a ticket credit. Ticket counts come from the card ledger (ValueNo 3).' })
             ])
@@ -261,14 +276,14 @@
     }
 
     function buildTrendCard(box, rows, grain) {
-        if (!rows.length) return;
+        if (rows.length < 2) return; // a one-row "trend" just duplicates the insight card
         var maxTix = rows.reduce(function(m, r) { return Math.max(m, r.tickets || 0); }, 0);
         if (maxTix <= 0) return;
         var list = rows.map(function(r) {
             var w = Math.max(r.tickets > 0 ? 1 : 0, Math.round((r.tickets || 0) / maxTix * 100));
             var label = r.month ? monthLabel(r.month) : dayLabel(r.date);
             return App.el('div', { className: 'labor-hour-row', title: fmtInt(r.tickets) + ' tickets' }, [
-                App.el('span', { className: 'labor-hour-label', style: { minWidth: '7.5rem' }, textContent: label }),
+                App.el('span', { className: 'labor-hour-label', textContent: label }),
                 App.el('span', { className: 'labor-hour-track' }, [
                     App.el('span', { className: 'tickets-bar-fill', style: { width: w + '%' } })
                 ]),
@@ -277,7 +292,7 @@
         });
         box.appendChild(App.el('div', { className: 'card' }, [
             App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Tickets by ' + grain })]),
-            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'labor-hour-list' }, list)])
+            App.el('div', { className: 'card-body' }, [App.el('div', { className: 'labor-hour-list tickets-trend-list' }, list)])
         ]));
     }
 
@@ -298,7 +313,18 @@
     // ------------------------------------------------------------------
     async function loadAdmin() {
         try { state.settings = await API.get('tickets/settings'); renderAdmin(); }
-        catch (err) { console.error('tickets settings load failed:', err); }
+        catch (err) {
+            console.error('tickets settings load failed:', err);
+            var box = document.getElementById('tickets-admin');
+            if (!box) return;
+            box.innerHTML = '';
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent:
+                        'Could not load the admin query settings: ' + (err && err.message ? err.message : 'unknown error') })
+                ])
+            ]));
+        }
     }
 
     function renderAdmin() {
@@ -306,7 +332,7 @@
         if (!box || !state.settings) return;
         var s = state.settings;
         box.innerHTML = '';
-        var rangeTa = App.el('textarea', { className: 'form-input labor-sql', rows: 11 });
+        var rangeTa = App.el('textarea', { className: 'form-input labor-sql', id: 'tickets-range-sql', rows: 11 });
         rangeTa.value = s.range_sql || '';
         var statusEl = App.el('span', { className: 'text-sm text-secondary' });
 
@@ -322,16 +348,18 @@
             onClick: function() { if (s.defaults && s.defaults.range_sql) { rangeTa.value = s.defaults.range_sql; statusEl.textContent = 'Default restored — review, then Save query.'; } } });
         var diagEl = App.el('pre', { className: 'labor-diagnostics', style: { display: 'none' } });
         var probeDateIn = App.el('input', { className: 'form-input', type: 'date',
+            'aria-label': 'Probe date to reconcile (blank = yesterday)',
             title: 'Reconcile this date (blank = yesterday)', style: { maxWidth: '10.5rem' } });
 
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test & reconcile',
             onClick: async function() {
+                if (!App.canAccess('data_explorer')) { App.toast('Testing needs the Database Explorer permission.', 'warning'); return; }
                 statusEl.textContent = 'Testing…'; diagEl.style.display = 'none';
                 try {
                     var body = {}; if (probeDateIn.value) body.probe_date = probeDateIn.value;
                     var r = await API.post('tickets/test', body);
                     if (r.success) {
-                        statusEl.textContent = '✓ Connected via ' + r.driver + ' — ' + r.probe_date + ': ' + fmtInt(r.tickets) + ' tickets (' + r.credits + ' payouts).';
+                        statusEl.textContent = '✓ Connected via ' + r.driver + ' — ' + r.probe_date + ': ' + fmtInt(r.tickets) + ' tickets (' + fmtInt(r.credits) + ' payouts).';
                         if (r.diagnostics) {
                             var lines = [];
                             Object.keys(r.diagnostics).forEach(function(k) {
@@ -351,7 +379,7 @@
             : 'No MSSQL connection yet — set it up on the Go-Kart Labor page first; this report shares it.';
 
         function field(label, el) {
-            return App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', textContent: label }), el]);
+            return App.el('div', { className: 'form-group' }, [App.el('label', { className: 'form-label', 'for': el.id || null, textContent: label }), el]);
         }
         box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
             App.el('summary', { className: 'labor-admin-summary', textContent: '⚙️ Ticket query (admin setup)' }),

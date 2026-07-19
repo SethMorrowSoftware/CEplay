@@ -65,3 +65,16 @@
     to { opacity: 0; transform: translateX(20px); }
 }
 
+/* On phones, span the bottom edge (minus safe area) so toasts don't
+   collide with the thumb zone's right-side scroll area. */
+@media (max-width: 600px) {
+    .toast-container {
+        left: 0.75rem;
+        right: 0.75rem;
+        bottom: max(0.75rem, env(safe-area-inset-bottom, 0));
+        max-width: none;
+        align-items: stretch;
+    }
+    .toast { max-width: none; }
+}
+

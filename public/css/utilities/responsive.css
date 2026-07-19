@@ -76,12 +76,25 @@
         transform: translateX(-100%);
         transition: transform 0.25s ease;
         z-index: 150;
+        /* Keep drawer content clear of notches / home indicator. */
+        padding-bottom: env(safe-area-inset-bottom, 0);
     }
     .sidebar.sidebar-open {
         transform: translateX(0);
     }
     .sidebar-overlay.active { display: block; }
-    .main-content { margin-left: 0; padding: 1rem; padding-top: 3.5rem; }
+    /* Page can't scroll behind the open nav drawer (mirrors modal-open). */
+    body.menu-open { overflow: hidden; }
+    /* The fixed hamburger/close button (z-index 200) sits on top of the
+       open drawer — keep the brand row clear of it. */
+    .sidebar-brand { padding-left: 3.6rem; }
+    .main-content {
+        margin-left: 0;
+        padding: 1rem;
+        padding-top: 3.5rem;
+        padding-left: max(1rem, env(safe-area-inset-left, 0));
+        padding-right: max(1rem, env(safe-area-inset-right, 0));
+    }
     .theme-toggle-inline { top: 0.6rem; right: 0.6rem; }
     .page-header { padding: 0.7rem 0.8rem; }
     .schedule-week { grid-template-columns: repeat(3, 1fr); }
@@ -89,6 +102,28 @@
     .dual-pane { grid-template-columns: 1fr; }
     .modal { min-width: auto; }
     .group-controls-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+    /* iOS Safari zooms the page when a focused control's font-size is
+       below 16px — bump form controls to 16px on phones so tapping a
+       search box never yanks the viewport. */
+    .form-input, .form-select, .form-textarea, .page-size-select {
+        font-size: 16px;
+    }
+    .filters-bar .form-input,
+    .filters-bar .form-select {
+        font-size: 16px;
+        flex: 1 1 10rem;
+        min-width: 0;
+    }
+    /* Comfortable touch targets for the controls people actually tap. */
+    .btn-sm { min-height: 38px; }
+    .pagination-controls .btn { min-width: 38px; min-height: 38px; }
+    .pagination-bar { flex-wrap: wrap; gap: 0.5rem; }
+    .modal-close { width: 40px; height: 40px; }
+    .page-size-select { min-height: 38px; }
+    .filter-pill, .view-toggle-btn { min-height: 38px; }
 }
 
 @media (max-width: 600px) {

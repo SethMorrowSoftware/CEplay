@@ -86,6 +86,7 @@
 /* Full-page initial loader (used by APP_LOADING in index.php / demo) */
 #app-loading {
     min-height: 100vh;
+    min-height: 100dvh;
 }
 
 /* Skeleton loader used while data is loading */

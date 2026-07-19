@@ -33,7 +33,7 @@
 }
 
 /* Right-aligned numeric cells use tabular nums so columns line up cleanly. */
-.num-cell { font-variant-numeric: tabular-nums; }
+/* .num-cell now lives in components/tables.css (shared) */
 .tickets-amount { color: var(--tickets); font-weight: 600; }
 .tickets-cell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 0.15rem; }
 
@@ -293,5 +293,18 @@
     border-radius: var(--radius-full);
     background: var(--accent);
     transition: width 0.3s ease;
+}
+
+/* Trend rows ("Tickets by day/month") borrow the shared .labor-hour-* rails,
+   but their date labels need more room than Labor's hour labels — and must
+   give that room back on phones, or the two fixed 7.5rem spans squeeze the
+   bar track into an unreadable sliver. */
+.tickets-trend-list .labor-hour-label { min-width: 7.5rem; }
+@media (max-width: 480px) {
+    .tickets-trend-list .labor-hour-label {
+        min-width: 4.5rem;
+        white-space: normal; /* "Sat, Jul 19" may wrap to two short lines */
+    }
+    .tickets-trend-list .labor-hour-val { min-width: 3.5rem; }
 }
 
