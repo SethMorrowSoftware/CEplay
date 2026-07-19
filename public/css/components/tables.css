@@ -2,6 +2,15 @@
    Tables
    ============================================ */
 .table-wrapper { overflow-x: auto; border-radius: var(--radius-lg); border: 1px solid var(--border); background: var(--bg-card); }
+
+/* Borderless variant for tables that live INSIDE a card: gives the table a
+   horizontal scroll gutter on narrow screens (instead of clipping columns or
+   stretching the whole page) without double-bordering the parent card. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+
+/* Numeric-column utilities shared by every table (previously page-scoped). */
+.text-right { text-align: right; }
+.num-cell { font-variant-numeric: tabular-nums; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .data-table th {
     text-align: left;
@@ -23,4 +32,29 @@
 .data-table tbody tr { transition: background var(--transition-fast); }
 .data-table tbody tr:hover { background: color-mix(in srgb, var(--bg-card-hover) 65%, transparent); }
 .data-table tbody tr:last-child td { border-bottom: none; }
+
+/* Sortable headers — shared affordance used by App.sortableTh and
+   App.enhanceTableSort on every data table across the app. */
+.data-table th.sortable {
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+.data-table th.sortable:hover {
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--bg-card-hover) 85%, var(--bg-tertiary));
+}
+.data-table th.sortable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.data-table th .sort-icon {
+    margin-left: 0.35rem;
+    opacity: 0.35;
+    font-size: 0.62rem;
+    transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+.data-table th.sortable:hover .sort-icon { opacity: 0.7; }
+.data-table th.sorted { color: var(--accent); }
+.data-table th.sorted .sort-icon { opacity: 1; color: var(--accent); }
 

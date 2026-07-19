@@ -385,20 +385,50 @@ const App = {
             const content = document.getElementById('main-content');
             if (content) {
                 content.innerHTML = '';
-                const cleanup = handler.render(content, params);
-                if (typeof cleanup === 'function') {
-                    this.currentCleanup = cleanup;
-                }
+                this.renderRoute(handler, content, params);
+                // Move focus to the fresh page so keyboard and screen-reader
+                // users aren't stranded on the old nav link; preventScroll
+                // keeps the viewport where the browser put it.
+                content.setAttribute('tabindex', '-1');
+                try { content.focus({ preventScroll: true }); } catch (e) {}
             }
         } else {
             appEl.innerHTML = '';
-            const cleanup = handler.render(appEl, params);
-            if (typeof cleanup === 'function') {
-                this.currentCleanup = cleanup;
-            }
+            this.renderRoute(handler, appEl, params);
         }
 
         this.mountThemeToggle();
+    },
+
+    /**
+     * Run a route handler's render inside a guard: a synchronous throw in
+     * one page must never leave #main-content permanently blank with the
+     * error only in the console. Renders a retry-able error card instead.
+     */
+    renderRoute(handler, container, params) {
+        try {
+            const cleanup = handler.render(container, params);
+            if (typeof cleanup === 'function') {
+                this.currentCleanup = cleanup;
+            }
+        } catch (err) {
+            console.error('Page render error:', err);
+            container.innerHTML = '';
+            const retryBtn = this.el('button', {
+                className: 'btn btn-primary',
+                type: 'button',
+                textContent: 'Reload page',
+                onClick: () => window.location.reload()
+            });
+            container.appendChild(this.el('div', { className: 'card', style: { maxWidth: '32rem', margin: '10vh auto' } }, [
+                this.el('div', { className: 'card-body' }, [
+                    this.el('h2', { textContent: 'Something went wrong' }),
+                    this.el('p', { className: 'text-secondary', style: { margin: '0.5rem 0 1rem' }, textContent:
+                        'This page hit an unexpected error while rendering. Reloading usually clears it — if it keeps happening, check the browser console and let an administrator know.' }),
+                    retryBtn
+                ])
+            ]));
+        }
     },
 
 
@@ -599,7 +629,9 @@ const App = {
     // ---- Toast Notifications ----
     toast(message, type, duration) {
         type = type || 'info';
-        duration = duration || 4000;
+        // Errors linger longer — their messages carry failure details the
+        // user may need to read (and often act on).
+        duration = duration || (type === 'error' ? 8000 : 4000);
         const iconSvg = type === 'success' ? Icons.check
                       : type === 'error'   ? Icons.xmark
                       : type === 'warning' ? Icons.bang
@@ -609,20 +641,31 @@ const App = {
         const toast = this.el('div', {
             className: 'toast toast-' + type,
             role: type === 'error' ? 'alert' : 'status',
-            'aria-live': type === 'error' ? 'assertive' : 'polite'
+            'aria-live': type === 'error' ? 'assertive' : 'polite',
+            title: 'Dismiss'
         }, [
             iconEl,
             this.el('span', { className: 'toast-message', textContent: message })
         ]);
-        this.toastContainer.appendChild(toast);
-        setTimeout(() => {
+        let dismissed = false;
+        const dismiss = () => {
+            if (dismissed) return;
+            dismissed = true;
             toast.classList.add('toast-exit');
             setTimeout(() => toast.remove(), 220);
-        }, duration);
+        };
+        toast.addEventListener('click', dismiss); // tap/click to dismiss early
+        this.toastContainer.appendChild(toast);
+        setTimeout(dismiss, duration);
     },
 
     // ---- Modal ----
-    showModal(titleText, contentEl, footerEl) {
+    /**
+     * `opts.onClose` (optional) runs exactly once when the modal closes by
+     * ANY path \u2014 footer button, X, Escape, or overlay click \u2014 so dialogs
+     * that resolve a promise (App.confirm) can never be left dangling.
+     */
+    showModal(titleText, contentEl, footerEl, opts) {
         this.hideModal();
         // Remember the element that opened the modal so we can restore focus
         // when it closes \u2014 important for keyboard / screen-reader users who
@@ -670,6 +713,12 @@ const App = {
         document.body.appendChild(overlay);
         document.body.classList.add('modal-open');
         overlay._previouslyFocused = previouslyFocused;
+        overlay._onClose = opts && typeof opts.onClose === 'function' ? opts.onClose : null;
+
+        // Keep screen-reader virtual cursors out of the page behind the
+        // dialog (the Tab trap below only covers keyboard focus).
+        const appRoot = document.getElementById('app');
+        if (appRoot) appRoot.setAttribute('inert', '');
 
         // Close on Escape key + trap focus inside modal
         const keyHandler = (e) => {
@@ -708,8 +757,15 @@ const App = {
                 document.removeEventListener('keydown', existing._escHandler);
             }
             const restoreTo = existing._previouslyFocused;
+            const onClose = existing._onClose;
+            existing._onClose = null;
             existing.remove();
             document.body.classList.remove('modal-open');
+            const appRoot = document.getElementById('app');
+            if (appRoot) appRoot.removeAttribute('inert');
+            if (onClose) {
+                try { onClose(); } catch (e) { console.warn('Modal onClose error:', e); }
+            }
             // Restore focus to the trigger element (if it still exists in the
             // DOM and is focusable). Skip restoration if focus has already
             // moved into a new modal that opened in place.
@@ -737,21 +793,34 @@ const App = {
         const cancelLabel = opts.cancelLabel || 'Cancel';
         const danger = opts.danger !== false;
         return new Promise((resolve) => {
+            // Settle exactly once no matter how the dialog closes — the
+            // buttons resolve explicitly; Escape / X / overlay-click land
+            // in onClose and count as a cancel. Without this, a dismissed
+            // confirm left its awaiting caller hanging forever.
+            let settled = false;
+            const done = (result) => {
+                if (settled) return;
+                settled = true;
+                this.hideModal(); // onClose fires but `settled` blocks re-entry
+                resolve(result);
+            };
             const body = this.el('p', { textContent: message });
             const cancelBtn = this.el('button', {
                 className: 'btn btn-secondary',
                 type: 'button',
                 textContent: cancelLabel,
-                onClick: () => { this.hideModal(); resolve(false); }
+                onClick: () => done(false)
             });
             const confirmBtn = this.el('button', {
                 className: 'btn ' + (danger ? 'btn-danger' : 'btn-primary'),
                 type: 'button',
                 textContent: confirmLabel,
-                onClick: () => { this.hideModal(); resolve(true); }
+                onClick: () => done(true)
             });
             const footer = this.el('div', { className: 'flex gap-sm' }, [cancelBtn, confirmBtn]);
-            this.showModal(title, body, footer);
+            this.showModal(title, body, footer, { onClose: () => {
+                if (!settled) { settled = true; resolve(false); }
+            } });
             // Focus the safer "Cancel" button by default for destructive
             // confirmations so users can't dismiss accidentally with Enter.
             requestAnimationFrame(() => {
@@ -766,6 +835,7 @@ const App = {
         const elem = document.createElement(tag);
         if (attrs) {
             for (const [key, value] of Object.entries(attrs)) {
+                if (value === null || value === undefined) continue; // never stamp attr="null"
                 if (key === 'className') elem.className = value;
                 else if (key === 'textContent') elem.textContent = value;
                 else if (key === 'innerHTML') { /* skip for XSS safety */ }
@@ -779,8 +849,11 @@ const App = {
                 else if (key === 'value') {
                     elem.value = value; // Set as property, not attribute (required for textarea)
                 }
-                else if (key === 'disabled' || key === 'checked' || key === 'selected' || key === 'readonly') {
+                else if (key === 'disabled' || key === 'checked' || key === 'selected') {
                     elem[key] = !!value;
+                }
+                else if (key === 'readonly') {
+                    elem.readOnly = !!value; // DOM property is camelCase
                 }
                 else elem.setAttribute(key, value);
             }
@@ -894,10 +967,15 @@ const App = {
         if (!sidebar) return;
         const isOpen = typeof forceState === 'boolean' ? forceState : !sidebar.classList.contains('sidebar-open');
         sidebar.classList.toggle('sidebar-open', isOpen);
+        // Lock page scroll behind the drawer (mirrors body.modal-open).
+        document.body.classList.toggle('menu-open', isOpen);
         if (overlay) overlay.classList.toggle('active', isOpen);
         if (menuBtn) {
             menuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
             menuBtn.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
+            // Sighted users get the same signal the aria-label gives:
+            // hamburger while closed, X while the drawer is open.
+            menuBtn.innerHTML = isOpen ? Icons.xmark : Icons.menu;
         }
     },
 
@@ -943,7 +1021,20 @@ const App = {
                 return; // transient network/server hiccup — next tick retries
             }
             if (!res || !res.authenticated || !res.user) {
-                window.location.reload();
+                // Session ended server-side. A hard reload here would throw
+                // away anything the user has typed (open modal, half-filled
+                // form) — land them on the login page the SPA way instead.
+                this.currentUser = null;
+                if (window.APP_CONFIG) window.APP_CONFIG.user = null;
+                this.hideModal();
+                const layout = document.querySelector('.layout');
+                if (layout) layout.remove();
+                this.toast('Your session has expired. Please sign in again.', 'warning');
+                if (window.location.hash === '#/login') {
+                    this.route();
+                } else {
+                    window.location.hash = '#/login';
+                }
                 return;
             }
             if (signature(res.user) === signature(this.currentUser)) return;
@@ -978,8 +1069,11 @@ const App = {
                 stop();
                 return;
             }
-            if (config.runOnVisible) callback();
+            // start() already fires the callback when runImmediately is set —
+            // only fire here when it won't, so refocusing the tab never
+            // double-hits the API.
             start();
+            if (config.runOnVisible && !config.runImmediately) callback();
         };
 
         document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -1261,6 +1355,235 @@ const App = {
             if (v != null && String(v).toLowerCase().indexOf(t) !== -1) return true;
         }
         return false;
+    },
+
+    // ---- Table Sorting ----
+
+    /**
+     * Type-aware value comparator shared by the table-sort helpers.
+     * Numbers compare numerically; everything else falls back to a
+     * locale-aware, numeric-collating string compare ("Game 2" < "Game 10").
+     * Nullish handling lives in the callers so empty cells can pin to the
+     * bottom in BOTH directions.
+     */
+    sortCompare(a, b) {
+        if (typeof a === 'number' && typeof b === 'number') {
+            if (a === b) return 0;
+            return a < b ? -1 : 1;
+        }
+        return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+    },
+
+    /**
+     * Sort a data array by a column definition. Returns a NEW array — the
+     * input is never mutated. The sort is stable, and rows whose value is
+     * null/undefined/'' always sort to the bottom regardless of direction
+     * (so "Last play: —" rows never bury the real data).
+     *
+     * `sort`    {key, dir}  dir is 'asc' | 'desc'
+     * `columns` array of {key, sortValue?: fn(row), type?: 'number'|'date'|'string'}
+     *           sortValue extracts the RAW value when the rendered cell is a
+     *           formatted string; type coerces ('date' accepts anything
+     *           App.toUtcDate parses, 'number' strips $ , % formatting).
+     */
+    sortRows(rows, sort, columns) {
+        const list = rows ? rows.slice() : [];
+        if (!sort || !sort.key) return list;
+        const col = (columns || []).filter(c => c.key === sort.key)[0] || {};
+        const dir = sort.dir === 'desc' ? -1 : 1;
+        const self = this;
+        const raw = (row) => {
+            let v = typeof col.sortValue === 'function' ? col.sortValue(row) : (row ? row[sort.key] : null);
+            if (v === null || v === undefined || v === '') return null;
+            if (col.type === 'number') {
+                const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[$,%\s]/g, ''));
+                return isNaN(n) ? null : n;
+            }
+            if (col.type === 'date') {
+                const d = v instanceof Date ? v : self.toUtcDate(v);
+                return d ? d.getTime() : null;
+            }
+            return v;
+        };
+        return list
+            .map((row, i) => ({ row: row, i: i, v: raw(row) }))
+            .sort((a, b) => {
+                const aNull = a.v === null, bNull = b.v === null;
+                if (aNull && bNull) return a.i - b.i;
+                if (aNull) return 1;
+                if (bNull) return -1;
+                const c = self.sortCompare(a.v, b.v);
+                return c !== 0 ? c * dir : a.i - b.i;
+            })
+            .map(x => x.row);
+    },
+
+    /**
+     * Build one header cell for a sortable table. Pages that own their
+     * render loop (filter → sort → paginate → render) build their <thead>
+     * from these so every table gets the same affordance: pointer +
+     * hover style, ▲/▼ indicator, aria-sort, and full keyboard support.
+     *
+     * `col`    {key, label, sortable?, className?, type?, defaultDir?}
+     *          sortable defaults to true; pass false for action columns.
+     * `sort`   current {key, dir} state (owned by the page).
+     * `onSort` receives the NEXT {key, dir} — the page stores it and
+     *          re-renders. First activation of a numeric/date column
+     *          defaults to 'desc' (biggest first), strings to 'asc'.
+     */
+    sortableTh(col, sort, onSort) {
+        const classes = [];
+        if (col.className) classes.push(col.className);
+        if (col.sortable === false || typeof onSort !== 'function') {
+            return this.el('th', { className: classes.join(' '), scope: 'col', textContent: col.label || '' });
+        }
+        classes.push('sortable');
+        const active = !!(sort && sort.key === col.key);
+        const dir = active ? (sort.dir === 'desc' ? 'desc' : 'asc') : null;
+        if (active) classes.push('sorted');
+        const th = this.el('th', {
+            className: classes.join(' '),
+            scope: 'col',
+            tabindex: '0',
+            'aria-sort': active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none',
+            title: 'Sort by ' + (col.label || col.key)
+        }, [
+            this.el('span', { className: 'th-label', textContent: col.label || '' }),
+            this.el('span', {
+                className: 'sort-icon',
+                'aria-hidden': 'true',
+                textContent: active ? (dir === 'desc' ? '▼' : '▲') : '↕'
+            })
+        ]);
+        const activate = () => {
+            let next;
+            if (active) {
+                next = { key: col.key, dir: dir === 'asc' ? 'desc' : 'asc' };
+            } else {
+                const firstDir = col.defaultDir
+                    || ((col.type === 'number' || col.type === 'date') ? 'desc' : 'asc');
+                next = { key: col.key, dir: firstDir };
+            }
+            onSort(next);
+        };
+        th.addEventListener('click', activate);
+        th.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+                activate();
+            }
+        });
+        return th;
+    },
+
+    /**
+     * Make an already-rendered, NON-paginated table sortable in place —
+     * the zero-refactor path for report tables that render all their rows
+     * at once. Click (or Enter/Space on) a header to sort; click again to
+     * flip. Cell values come from a `data-sort` attribute when present
+     * (use it for formatted cells — dates, "1.2k", bars), else from the
+     * cell's text. A column whose populated cells all parse as numbers
+     * ("1,234", "$12.50", "43%", "(5)") sorts numerically and defaults to
+     * descending on first click; empty cells ("", "—", "-", "N/A") always
+     * sink to the bottom. Headers with a `data-nosort` attribute (or no
+     * text) are left alone. Safe to call again after a re-render.
+     *
+     * NOT for paginated tables — it reorders only the rendered rows. Those
+     * pages sort their data array via App.sortRows + App.sortableTh.
+     */
+    enhanceTableSort(table, opts) {
+        if (!table || !table.tHead || !table.tHead.rows.length) return table;
+        const options = opts || {};
+        const headRow = table.tHead.rows[0];
+        const ths = Array.prototype.slice.call(headRow.cells);
+        const self = this;
+
+        const EMPTY = Object.create(null); // null proto: a cell texted "constructor" must not match
+        ['', '—', '-', '–', 'n/a'].forEach(k => { EMPTY[k] = 1; });
+        const parseCell = (td) => {
+            const attr = td ? td.getAttribute('data-sort') : null;
+            const s = (attr !== null ? attr : (td ? td.textContent : '')).trim();
+            if (EMPTY[s.toLowerCase()] !== undefined) return { v: null, num: true };
+            const cleaned = s.replace(/[$,%\s]/g, '').replace(/^\((.*)\)$/, '-$1');
+            if (cleaned !== '' && !isNaN(Number(cleaned))) return { v: Number(cleaned), num: true };
+            return { v: s, num: false };
+        };
+
+        const applySort = (index, dir) => {
+            const tbody = table.tBodies[0];
+            if (!tbody) return;
+            const rows = Array.prototype.slice.call(tbody.rows);
+            const entries = rows.map((tr, i) => ({ tr: tr, i: i, cell: parseCell(tr.cells[index]) }));
+            const numeric = entries.every(e => e.cell.num);
+            const mul = dir === 'desc' ? -1 : 1;
+            entries.sort((a, b) => {
+                const av = a.cell.v, bv = b.cell.v;
+                const aNull = av === null || (numeric && !a.cell.num);
+                const bNull = bv === null || (numeric && !b.cell.num);
+                if (aNull && bNull) return a.i - b.i;
+                if (aNull) return 1;
+                if (bNull) return -1;
+                const c = self.sortCompare(numeric ? Number(av) : av, numeric ? Number(bv) : bv);
+                return c !== 0 ? c * mul : a.i - b.i;
+            });
+            const frag = document.createDocumentFragment();
+            entries.forEach(e => frag.appendChild(e.tr));
+            tbody.appendChild(frag);
+
+            table._sortState = { index: index, dir: dir };
+            ths.forEach((th, tIdx) => {
+                const isActive = tIdx === index;
+                th.classList.toggle('sorted', isActive);
+                if (th._sortIcon) {
+                    th._sortIcon.textContent = isActive ? (dir === 'desc' ? '▼' : '▲') : '↕';
+                }
+                if (th.classList.contains('sortable')) {
+                    th.setAttribute('aria-sort', isActive ? (dir === 'desc' ? 'descending' : 'ascending') : 'none');
+                }
+            });
+        };
+
+        ths.forEach((th, index) => {
+            if (th.hasAttribute('data-nosort')) return;
+            if (!(th.textContent || '').trim()) return;
+            if (th._sortWired) return;
+            th._sortWired = true;
+            th.classList.add('sortable');
+            th.setAttribute('tabindex', '0');
+            th.setAttribute('aria-sort', 'none');
+            th.setAttribute('title', 'Sort by ' + th.textContent.trim());
+            const icon = this.el('span', { className: 'sort-icon', 'aria-hidden': 'true', textContent: '↕' });
+            th.appendChild(icon);
+            th._sortIcon = icon;
+            const activate = () => {
+                const prev = table._sortState;
+                let dir;
+                if (prev && prev.index === index) {
+                    dir = prev.dir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    // Peek at the column: numeric columns open big-first.
+                    const tbody = table.tBodies[0];
+                    const sample = tbody ? Array.prototype.slice.call(tbody.rows)
+                        .map(tr => parseCell(tr.cells[index]))
+                        .filter(c => c.v !== null) : [];
+                    const numeric = sample.length > 0 && sample.every(c => c.num);
+                    dir = numeric ? 'desc' : 'asc';
+                }
+                applySort(index, dir);
+            };
+            th.addEventListener('click', activate);
+            th.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                    e.preventDefault();
+                    activate();
+                }
+            });
+        });
+
+        if (options.defaultSort && !table._sortState) {
+            applySort(options.defaultSort.index, options.defaultSort.dir || 'asc');
+        }
+        return table;
     }
 };
 

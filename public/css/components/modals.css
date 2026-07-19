@@ -24,10 +24,16 @@
     -webkit-backdrop-filter: blur(14px);
     backdrop-filter: blur(14px);
     max-height: 86vh;
+    max-height: 86dvh; /* dynamic viewport: keeps footer buttons reachable when mobile browser chrome shows */
     display: flex;
     flex-direction: column;
     position: relative;
     overflow: hidden;
+}
+
+@media (max-width: 640px) {
+    .modal-overlay { padding: 0.6rem; padding-bottom: max(0.6rem, env(safe-area-inset-bottom, 0)); }
+    .modal { padding: 1.1rem; max-height: 92vh; max-height: 92dvh; }
 }
 .modal::before {
     content: '';

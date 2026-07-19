@@ -33,7 +33,7 @@
 }
 
 /* Right-aligned numeric cells use tabular nums so columns line up cleanly. */
-.num-cell { font-variant-numeric: tabular-nums; }
+/* .num-cell now lives in components/tables.css (shared) */
 .tickets-amount { color: var(--tickets); font-weight: 600; }
 .tickets-cell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 0.15rem; }
 
