@@ -197,6 +197,7 @@ Designed to run across common environments:
 
 - `INSTALL-FCOS.md` — full Fedora CoreOS installation walkthrough.
 - `DEPLOY-CEPLAY.md` — coexistence runbook for hosting pause-groups at `/ceplay` alongside an existing Grafana/reverse-proxy setup, plus DNS/TLS steps for `ceplay.thecastlefuncenter.com`.
+- `MIGRATE-UBUNTU.md` — planning document for moving the app off the FCOS server onto an Ubuntu server: everything that must change (and what doesn't), migration-day runbook, verification checklist, and open decisions.
 
 ## Installation
 
