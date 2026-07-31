@@ -444,32 +444,48 @@ before building.
 - **`ReaderDevices` (CONFIRMED):** maps `rdrkey` → reader/game by name. The join
   used to attribute `PlayerCardTrans` TransType-1 plays and the reader feed to
   games (`normReaderName` in the scheduler backfill).
-- **Ticket attribution gotcha (CONFIRMED *for `PlayerCardTrans`*):** in the card
-  ledger, tickets exist ONLY at the division grain — every `ValueNo 3` credit
-  has `rdrkey` 0. This is why Ticket Trends is by-area and why the per-game
-  backfill leaves `tickets` 0.
-  **BUT the stronger claim — "no per-game ticket source anywhere in the DB" —
-  is NOT established and is now in active doubt:** a schema sweep found
-  `ReaderTickets` (`rdrKey`, `ShiftDate`, `TicketsDispensed`, `TicketsOnCard`,
-  `TicketsDispenseMult`, `TicketsOnCardMult`), which is per-reader tickets by
-  day on its face. Columns confirmed; POPULATION NOT YET MEASURED. Confirm with
-  a per-year sweep before repeating the exhaustive-search claim anywhere.
-- **UNVERIFIED per-machine candidates (columns confirmed, population NOT
-  measured)** — found by sweeping `INFORMATION_SCHEMA` for machine-identity
-  columns, all missed by the reach probe's original six-name whitelist:
-  - `ReaderTransSummary` (`ShiftDate`, `rdrKey`, `ValueNo`, `Quantity`,
-    `TotalAmount`, `Dollars`) — a per-reader/per-day transaction rollup with
-    dollars. The single most promising per-game source for the 2013+ gap era.
-  - `ReaderTickets` — see the ticket note above.
-  - `ReaderSwipes` (`ShiftDate`, `rdrKey`, `NumGoodReads`, `NumInvalidReads`,
-    `NumBadReads`) — per-reader swipe counts, a play proxy.
-  - `CardActivity` (`CardNumber`, `ShiftDate`, `ValueNo`, `TransType`,
-    `rdrkey`, `Amount`, `Quantity`) — a leaner parallel to `PlayerCardTrans`.
-  - `TicketTrans.rdrKey`, `TurnstileCounts.rdrKey`.
-  - Embed-era **varchar** station identifiers: `GameStation` on
-    `CustPassTrans`, `PlayerCardPassTrans`, `MediaPassTrans`, `TicketPassTrans`,
-    `PassUsesCombined`, `CustPassEmbedDevices`. These sit alongside `InvNo`, so
-    they track pass / time-play usage rather than card swipes.
+- **Ticket attribution gotcha (CONFIRMED):** in the card ledger, tickets exist
+  ONLY at the division grain — every `ValueNo 3` credit has `rdrkey` 0. This is
+  why Ticket Trends is by-area and why the per-game backfill leaves `tickets` 0.
+  `ReaderTickets` (`rdrKey`, `ShiftDate`, `TicketsDispensed`, `TicketsOnCard`)
+  looked like a counterexample but **is EMPTY — the per-year sweep returns zero
+  rows.** The table exists in the schema and was never populated. One possible
+  early-era exception remains, see `ReaderTransSummary` below.
+- **PER-MACHINE IDENTITY DIES AT THE END OF 2012 (CONFIRMED, four independent
+  sources).** This is the single most important fact about per-game history on
+  this install, and it is now corroborated rather than inferred. Measured per
+  year:
+  | Source | Key populated | Then |
+  |---|---|---|
+  | `PlayerCardTrans.rdrkey` | 2005-2011 100%, 2012 76% | 0 from 2013 |
+  | `ReaderTransSummary.rdrKey` | 2005-2012 (~90%+) | 0 from 2013 |
+  | `CardActivity.rdrkey` | 2005-2012 (~54-78%) | 0 from 2013 |
+  | `ReaderSwipes.rdrKey` | 2007-2012 100% | table ENDS after 2012 |
+  Four tables, written by different subsystems, all stop recording machine
+  identity at the same boundary — so this is a venue-wide configuration change
+  in 2012, not a gap in any one table. **Per-game history for 2013 onward is
+  not recoverable via reader key from any of these.** Do not re-litigate this
+  without new evidence; do NOT read it as "the right table hasn't been found".
+  Untested leftovers, all narrow: `TicketTrans.rdrKey`, `TurnstileCounts.rdrKey`,
+  and the Embed **varchar** `GameStation` on `CustPassTrans`,
+  `PlayerCardPassTrans`, `MediaPassTrans`, `TicketPassTrans`,
+  `PassUsesCombined`, `CustPassEmbedDevices` (these sit alongside `InvNo`, so
+  they track pass / time-play usage, not card swipes).
+- **`ReaderTransSummary` — the best 2005-2012 per-game source (CONFIRMED).**
+  `ShiftDate`, `rdrKey`, `ValueNo`, `Quantity`, `TotalAmount`, `Dollars`;
+  pre-aggregated per (day, reader, ValueNo). Better than `PlayerCardTrans` for a
+  per-game backfill of that era on every axis: it is ~25x smaller (~196K rows
+  total for 2005-2012, vs ~5M plays), it is already in the shape
+  `game_daily_stats` wants, and **it carries `Dollars` where the early-era
+  `PlayerCardTrans.DollarAmount` is 0** ($891K in 2006 rising to $3.87M in
+  2011) — so per-game MONEY is available for 2006-2012 even though the raw
+  ledger has none. `ValueNo` semantics here: **1** = plays/value (22.19M qty,
+  $88.09M, 2005-2026), **2** = 2.33M qty / $27.6K, **3** = tickets (951,642 qty,
+  $0 — matching the ledger's ValueNo-3-is-tickets convention).
+  CAUTION on ValueNo 3: only 4,124 rows across two decades, which is sparse for
+  a ticket arcade — per-game tickets for the early era are PLAUSIBLE but the
+  density has not been verified. Measure ValueNo-3-with-`rdrKey` per year before
+  relying on it. `Dollars` in 2005 is 0; money starts 2006.
   `StationNo` is NOT a machine identifier — it is a POS register (it appears on
   `Till`, `TaxDocuments`, `RedeemScreens`, `PosKeys`…). Do not treat it as one.
 
