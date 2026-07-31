@@ -323,6 +323,24 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   come from sys.partitions when readable (COUNT(*) on a years-deep Sales
   table is never run). SQL errors return structured `{error}` (HTTP 200) —
   they're the expected failure mode while exploring.
+- **Per-game history reach probe (`GET /api/explorer/history-sources`,**
+  "How far back can per-game history reach?" card on `#/explorer`). Performance
+  attributes a play to a game via a READER KEY, so per-game history stops at
+  the Embed → CenterEdge/Kiosoft cutover (`EXPLORER_CUTOVER_DATE`, ~May 2026)
+  unless some table carries a usable reader key on older rows. The probe
+  answers that against the live DB instead of guessing: it scans
+  INFORMATION_SCHEMA for every table having BOTH a reader-key-ish column
+  (`rdrkey`/`readerkey`/`readerid`/…, see `explorerIsReaderKeyColumn`) AND a
+  date column, sizes them via sys.partitions, then for the largest few
+  measures reader-key coverage in ONE probe month per era (never a full scan of
+  a 20M-row table) and — where legacy keys exist — how many resolve to a
+  current game through `ReaderDevices` + the same name normalization the
+  per-game backfill uses (`explorerNormName` mirrors
+  `Scheduler::normReaderName`). Returns a `recommended` source or null, and the
+  UI prints a plain verdict either way. Every check is independently
+  try/caught, so one failure never takes the others down. Gate:
+  `data_explorer`; audit-logged; venue server only. **Both facts matter** — a
+  populated key that no longer maps to a game attributes to nothing.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.

@@ -196,6 +196,9 @@
         ]));
         box.appendChild(grid);
 
+        // ---- How far back can per-game history reach? ----
+        box.appendChild(buildHistoryCard());
+
         // ---- Metric hunter ----
         box.appendChild(buildHunterCard());
 
@@ -405,6 +408,173 @@
     // Metric hunter
     // ------------------------------------------------------------------
     var hunter = {};
+
+    // ------------------------------------------------------------------
+    // "How far back can per-game history reach?"
+    //
+    // Performance attributes a play to a game through a reader key. That works
+    // for the current CenterEdge/Kiosoft readers, but the venue ran Embed
+    // before ~May 2026 and PlayerCardTrans.rdrkey is 0 from ~2013 on. This card
+    // asks the live database whether ANY table carries a usable reader key on
+    // pre-cutover plays, and whether those keys still resolve to today's games
+    // — the two facts that decide if Embed-era history is recoverable.
+    // ------------------------------------------------------------------
+    function buildHistoryCard() {
+        var status = App.el('span', { className: 'text-sm text-secondary' });
+        var results = App.el('div', {});
+        var runBtn = App.el('button', {
+            className: 'btn btn-primary', textContent: 'Check history sources',
+            onClick: function() { runHistoryProbe(runBtn, status, results); }
+        });
+
+        return App.el('div', { className: 'card', id: 'explorer-history-card', style: { marginTop: '1rem' } }, [
+            App.el('div', { className: 'card-header' }, [
+                App.el('div', {}, [
+                    App.el('h3', { textContent: 'How far back can per-game history reach?' }),
+                    App.el('div', { className: 'text-muted text-sm', textContent:
+                        'Checks whether Embed-era plays (before the ~May 2026 reader cutover) can still be '
+                        + 'attributed to today’s machines. Read-only, and bounded to one probe month per era.' })
+                ])
+            ]),
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center' } }, [runBtn, status]),
+                results
+            ])
+        ]);
+    }
+
+    async function runHistoryProbe(btn, status, results) {
+        btn.disabled = true;
+        status.textContent = 'Probing… (this can take a minute on a large database)';
+        results.innerHTML = '';
+        var d;
+        try {
+            d = await API.get('explorer/history-sources');
+        } catch (err) {
+            status.textContent = '';
+            results.appendChild(App.el('p', { className: 'text-secondary',
+                textContent: '⚠ ' + (err && err.message ? err.message : 'probe failed') }));
+            btn.disabled = false;
+            return;
+        }
+        btn.disabled = false;
+        status.textContent = '';
+
+        if (d.configured === false) {
+            results.appendChild(App.el('p', { className: 'text-secondary',
+                textContent: 'MSSQL is not configured — set the connection up on the Go-Kart Labor page first.' }));
+            return;
+        }
+        if (d.error) {
+            results.appendChild(App.el('p', { className: 'text-secondary', textContent: '⚠ ' + d.error }));
+            return;
+        }
+
+        // ---- Verdict first: the whole point of the card ----
+        var rec = d.recommended;
+        if (rec) {
+            var pct = rec.total_readers > 0
+                ? Math.round(rec.mapped_readers / rec.total_readers * 100) : 0;
+            results.appendChild(App.el('div', { className: 'alert-success', style: { marginTop: '0.8rem' } }, [
+                App.el('strong', { textContent: 'Embed-era per-game history looks recoverable. ' }),
+                App.el('span', { textContent:
+                    rec.schema + '.' + rec.table + ' carries a populated ' + rec.key_col
+                    + ' on pre-cutover rows, and ' + rec.mapped_readers + ' of ' + rec.total_readers
+                    + ' readers (' + pct + '%) still map to a game this app knows about'
+                    + (rec.earliest ? '. Its data starts ' + rec.earliest.slice(0, 10) : '') + '.' })
+            ]));
+        } else {
+            results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
+                App.el('strong', { textContent: 'No usable Embed-era source found. ' }),
+                App.el('span', { textContent:
+                    'No table carries both a populated reader key on pre-cutover plays AND keys that still '
+                    + 'resolve to current games. Per-game history can only grow forward from the cutover; '
+                    + 'venue-wide totals are unaffected (those never needed a reader key).' })
+            ]));
+        }
+
+        // ---- Per-candidate evidence ----
+        var cands = d.candidates || [];
+        if (!cands.length) {
+            results.appendChild(App.el('p', { className: 'text-muted text-sm',
+                textContent: 'No table in this database has both a reader-key column and a date column.' }));
+            return;
+        }
+
+        var head = ['Table', 'Reader key', 'Date column', 'Rows',
+                    'Before cutover', 'After cutover', 'Readers → games'];
+        var body = cands.map(function(c) {
+            var cov = c.coverage || {};
+            var leg = cov.legacy, cur = cov.current, map = c.mapping;
+            var era = function(e) {
+                if (!c.probed) return 'not probed';
+                if (cov.error) return '⚠ ' + cov.error;
+                if (!e) return '—';
+                if (!e.rows) return 'no rows';
+                return fmtCount(e.with_key) + ' / ' + fmtCount(e.rows)
+                    + ' (' + (e.key_pct == null ? '—' : e.key_pct + '%') + ')';
+            };
+            var mapText = '—';
+            if (map) {
+                mapText = map.error
+                    ? '⚠ ' + map.error
+                    : map.mapped + ' of ' + map.keys_seen + ' map';
+            } else if (c.probed && leg && !leg.with_key) {
+                mapText = 'no keys to map';
+            }
+            return App.el('tr', {}, [
+                App.el('td', {}, [App.el('strong', { textContent: c.table })]),
+                App.el('td', { className: 'text-muted', textContent: c.key_col }),
+                App.el('td', { className: 'text-muted', textContent: c.date_col }),
+                App.el('td', { className: 'text-right', textContent: c.rows == null ? '—' : fmtCount(c.rows) }),
+                App.el('td', { textContent: era(leg) }),
+                App.el('td', { textContent: era(cur) }),
+                App.el('td', { textContent: mapText })
+            ]);
+        });
+
+        results.appendChild(App.el('div', { className: 'stat-label', style: { margin: '0.9rem 0 0.4rem' },
+            textContent: 'Candidate sources — rows carrying a non-zero reader key' }));
+        results.appendChild(App.el('div', { className: 'explorer-scroll' }, [
+            App.el('table', { className: 'data-table' }, [
+                App.el('thead', {}, [App.el('tr', {}, head.map(function(h) {
+                    return App.el('th', { textContent: h });
+                }))]),
+                App.el('tbody', {}, body)
+            ])
+        ]));
+
+        var lp = d.legacy_probe || {}, cp = d.current_probe || {};
+        results.appendChild(App.el('p', { className: 'text-muted text-xs', style: { marginTop: '0.5rem' },
+            textContent: 'Cutover assumed ' + (d.cutover || '?') + '. "Before" samples '
+                + (lp.from || '?') + ' → ' + (lp.to || '?') + ', "after" samples '
+                + (cp.from || '?') + ' → ' + (cp.to || '?') + ' — one month each, so a multi-million-row '
+                + 'table is never scanned end to end. Only the largest few tables are probed.' }));
+
+        // Reader → game samples make a bad mapping obvious at a glance.
+        var withSamples = cands.filter(function(c) { return c.mapping && (c.mapping.samples || []).length; });
+        if (withSamples.length) {
+            var s = withSamples[0];
+            results.appendChild(App.el('div', { className: 'stat-label', style: { margin: '0.9rem 0 0.4rem' },
+                textContent: 'Sample reader → game matches (' + s.table + ')' }));
+            results.appendChild(App.el('div', { className: 'explorer-scroll' }, [
+                App.el('table', { className: 'data-table' }, [
+                    App.el('thead', {}, [App.el('tr', {}, ['Reader key', 'Reader description', 'Matched game'].map(function(h) {
+                        return App.el('th', { textContent: h });
+                    }))]),
+                    App.el('tbody', {}, s.mapping.samples.map(function(r) {
+                        return App.el('tr', {}, [
+                            App.el('td', { textContent: String(r.reader_key) }),
+                            App.el('td', { className: 'text-muted', textContent: r.description || '(not in ReaderDevices)' }),
+                            App.el('td', {}, r.game
+                                ? [App.el('strong', { textContent: r.game })]
+                                : [App.el('span', { className: 'text-muted', textContent: 'no match' })])
+                        ]);
+                    }))
+                ])
+            ]));
+        }
+    }
 
     function buildHunterCard() {
         hunter.tableSel = App.el('select', { className: 'form-input' });

@@ -10,6 +10,8 @@
  *   GET  /api/explorer/search?q=X   — find tables BY COLUMN NAME across the whole schema
  *   POST /api/explorer/aggregate    — grouped totals: {table, group_by, sum_col?, date_col?, from?, to?}
  *   POST /api/explorer/query        — free-form guarded SELECT: {sql, limit?}
+ *   GET  /api/explorer/history-sources — can per-GAME play history reach back
+ *        past the Embed → CenterEdge/Kiosoft reader cutover? (see below)
  *
  * Gate: settings (admin plumbing; the page shares the Labor page's MSSQL
  * connection). Every statement passes MssqlClient::assertReadOnly (single
@@ -49,6 +51,9 @@ function handleExplorer(string $method, array $parts, ?array $input): void {
             break;
         case 'query':
             if ($method === 'POST') { explorerQuery($input ?? []); return; }
+            break;
+        case 'history-sources':
+            if ($method === 'GET') { explorerHistorySources(); return; }
             break;
     }
     http_response_code(404);
@@ -531,6 +536,269 @@ function explorerQuery(array $input): void {
 }
 
 /** Audit-log an explorer run (best effort; never blocks the query). */
+// ---------------------------------------------------------------------------
+// "How far back can per-GAME play history reach?" probe
+//
+// The Performance page attributes a play to a game through a READER KEY. That
+// works for the current CenterEdge/Kiosoft readers, but the venue ran Embed
+// before ~May 2026, and `PlayerCardTrans.rdrkey` is 0 from ~2013 onward — so
+// the obvious source cannot attribute an Embed-era play to a machine.
+//
+// Whether the Embed era is recoverable comes down to two questions no amount of
+// reading the schema from outside can answer:
+//   1. Does SOME table carry a populated reader key on pre-cutover play rows?
+//   2. Do those reader keys still resolve to the games the app knows about?
+// This endpoint answers both against the live database and prints a verdict, so
+// the decision is made on evidence instead of assumption. Every check is
+// independently fault-tolerant: a probe that errors reports its own message and
+// never takes the others down.
+// ---------------------------------------------------------------------------
+
+/** The Embed → CenterEdge/Kiosoft reader cutover, per docs (end of April 2026). */
+const EXPLORER_CUTOVER_DATE = '2026-05-01';
+
+/** Column names that look like a reader/device key. */
+function explorerIsReaderKeyColumn(string $name): bool {
+    $n = strtolower(str_replace(['_', ' '], '', $name));
+    return in_array($n, ['rdrkey', 'readerkey', 'readerid', 'rdrid', 'deviceid', 'devicekey'], true);
+}
+
+/**
+ * One candidate table's per-era reader-key coverage. Bounded to a single probe
+ * month per era so a 20M-row table is never scanned end to end.
+ *
+ * @return array reader-key coverage before and after the cutover, or an error
+ */
+function explorerProbeReaderCoverage(MssqlClient $client, string $schema, string $table, string $keyCol, string $dateCol): array {
+    $t = explorerIdent($schema) . '.' . explorerIdent($table);
+    $k = explorerIdent($keyCol);
+    $d = explorerIdent($dateCol);
+
+    $era = function (string $from, string $toExcl) use ($client, $t, $k, $d) {
+        $sql = "SELECT COUNT(*) AS total,"
+             . " SUM(CASE WHEN $k IS NOT NULL AND $k <> 0 THEN 1 ELSE 0 END) AS with_key,"
+             . " COUNT(DISTINCT CASE WHEN $k IS NOT NULL AND $k <> 0 THEN $k END) AS distinct_keys"
+             . " FROM $t WHERE $d >= " . explorerLit($from) . " AND $d < " . explorerLit($toExcl);
+        $rows = $client->rows($sql, 1);
+        $r = $rows[0] ?? [];
+        $v = array_values($r);
+        $total = (int)($r['total'] ?? $v[0] ?? 0);
+        $withKey = (int)($r['with_key'] ?? $v[1] ?? 0);
+        return [
+            'rows'          => $total,
+            'with_key'      => $withKey,
+            'distinct_keys' => (int)($r['distinct_keys'] ?? $v[2] ?? 0),
+            'key_pct'       => $total > 0 ? round($withKey / $total * 100, 1) : null,
+        ];
+    };
+
+    $out = ['legacy' => null, 'current' => null, 'error' => null];
+    try {
+        // A month safely inside each era. Legacy = the winter before the
+        // cutover; current = the month after it.
+        $out['legacy']  = $era('2026-02-01', '2026-03-01');
+        $out['current'] = $era('2026-05-01', '2026-06-01');
+    } catch (Exception $e) {
+        $out['error'] = $e->getMessage();
+    }
+    return $out;
+}
+
+/**
+ * Distinct reader keys used on pre-cutover play rows, and how many of them map
+ * to a game the app knows about. A source is only useful if BOTH the keys exist
+ * AND they resolve — an Embed-era key pointing at a reader that was ripped out
+ * and deleted from ReaderDevices attributes to nothing.
+ */
+function explorerProbeReaderMapping(MssqlClient $client, string $schema, string $table, string $keyCol, string $dateCol): array {
+    $t = explorerIdent($schema) . '.' . explorerIdent($table);
+    $k = explorerIdent($keyCol);
+    $d = explorerIdent($dateCol);
+    $out = ['keys_seen' => 0, 'mapped' => 0, 'unmapped' => 0, 'samples' => [], 'error' => null];
+    try {
+        // Reader keys actually used in the legacy era (bounded probe month).
+        $keys = [];
+        foreach ($client->rows(
+            "SELECT DISTINCT $k AS rk FROM $t"
+            . " WHERE $d >= " . explorerLit('2026-02-01') . " AND $d < " . explorerLit('2026-03-01')
+            . " AND $k IS NOT NULL AND $k <> 0", 2000) as $r) {
+            $rk = (int)($r['rk'] ?? array_values($r)[0] ?? 0);
+            if ($rk !== 0) $keys[$rk] = true;
+        }
+        $out['keys_seen'] = count($keys);
+        if (!$keys) return $out;
+
+        // rdrKey → description, then description → the app's game names, using
+        // exactly the normalization the existing per-game backfill uses.
+        $desc = [];
+        try {
+            foreach ($client->rows('SELECT rdrKey, Description FROM dbo.ReaderDevices', 100000) as $rd) {
+                $rk = (int)($rd['rdrKey'] ?? 0);
+                if ($rk !== 0) $desc[$rk] = (string)($rd['Description'] ?? '');
+            }
+        } catch (Exception $e) {
+            $out['error'] = 'ReaderDevices not readable: ' . $e->getMessage();
+        }
+
+        $byName = [];
+        foreach (DB::query('SELECT game_id, game_name FROM game_state_cache') as $g) {
+            $n = explorerNormName((string)$g['game_name']);
+            if ($n !== '' && !isset($byName[$n])) $byName[$n] = (string)$g['game_name'];
+        }
+
+        foreach (array_keys($keys) as $rk) {
+            $description = $desc[$rk] ?? '';
+            $n = explorerNormName($description);
+            $match = ($n !== '' && isset($byName[$n])) ? $byName[$n] : null;
+            if ($match !== null) { $out['mapped']++; } else { $out['unmapped']++; }
+            if (count($out['samples']) < 15) {
+                $out['samples'][] = [
+                    'reader_key'  => $rk,
+                    'description' => $description !== '' ? $description : null,
+                    'game'        => $match,
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        $out['error'] = $e->getMessage();
+    }
+    return $out;
+}
+
+/** Same normalization the per-game backfill uses (lower, strip sort prefix, collapse spaces). */
+function explorerNormName(string $s): string {
+    $s = function_exists('mb_strtolower') ? mb_strtolower(trim($s)) : strtolower(trim($s));
+    $s = preg_replace('/^\d+\s*/', '', (string)$s);
+    return trim((string)preg_replace('/\s+/', ' ', (string)$s));
+}
+
+function explorerHistorySources(): void {
+    if (!MssqlClient::isConfigured()) {
+        explorerJson(['configured' => false, 'candidates' => []]);
+        return;
+    }
+    explorerAudit('history_sources', 'per-game history source probe');
+
+    try {
+        $client = new MssqlClient();
+        $client->setTimeout(120);
+    } catch (Exception $e) {
+        explorerJson(['configured' => true, 'error' => $e->getMessage(), 'candidates' => []]);
+        return;
+    }
+
+    // ---- Discover every table carrying BOTH a reader-key column and a date ----
+    // Schema-driven rather than a hardcoded list, so an Embed-specific table
+    // nobody has catalogued yet still turns up.
+    $candidates = [];
+    try {
+        $byTable = [];
+        foreach ($client->rows(
+            "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS", 20000) as $c) {
+            $v = array_values($c);
+            $sch  = (string)($c['TABLE_SCHEMA'] ?? $v[0] ?? 'dbo');
+            $tbl  = (string)($c['TABLE_NAME'] ?? $v[1] ?? '');
+            $col  = (string)($c['COLUMN_NAME'] ?? $v[2] ?? '');
+            $type = strtolower((string)($c['DATA_TYPE'] ?? $v[3] ?? ''));
+            if ($tbl === '' || $col === '') continue;
+            $key = $sch . '.' . $tbl;
+            if (!isset($byTable[$key])) $byTable[$key] = ['schema' => $sch, 'table' => $tbl, 'key_col' => null, 'date_col' => null];
+            if ($byTable[$key]['key_col'] === null && explorerIsReaderKeyColumn($col)) {
+                $byTable[$key]['key_col'] = $col;
+            }
+            if ($byTable[$key]['date_col'] === null && explorerIsDateType($type)) {
+                $byTable[$key]['date_col'] = $col;
+            }
+        }
+        foreach ($byTable as $t) {
+            if ($t['key_col'] !== null && $t['date_col'] !== null) $candidates[] = $t;
+        }
+    } catch (Exception $e) {
+        explorerJson(['configured' => true, 'error' => 'Schema scan failed: ' . $e->getMessage(), 'candidates' => []]);
+        return;
+    }
+
+    // Approximate sizes, so the biggest (most likely transactional) tables sort
+    // first and the UI can say how much history is on offer.
+    $sizes = [];
+    try {
+        foreach ($client->rows(
+            "SELECT t.name AS tbl, SUM(p.rows) AS cnt FROM sys.tables t"
+            . " JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)"
+            . " GROUP BY t.name", 2000) as $c) {
+            $v = array_values($c);
+            $sizes[strtolower((string)($c['tbl'] ?? $v[0] ?? ''))] = (int)($c['cnt'] ?? $v[1] ?? 0);
+        }
+    } catch (Exception $e) {
+        // sys.* not readable — sizes stay null, ordering falls back to name.
+    }
+    foreach ($candidates as &$c) { $c['rows'] = $sizes[strtolower($c['table'])] ?? null; }
+    unset($c);
+    usort($candidates, function ($a, $b) { return ($b['rows'] ?? 0) <=> ($a['rows'] ?? 0); });
+
+    // Probing is the expensive part — only the largest few are worth the trip.
+    $probeLimit = 6;
+    $results = [];
+    foreach ($candidates as $i => $c) {
+        $entry = $c + ['coverage' => null, 'mapping' => null, 'probed' => false];
+        if ($i < $probeLimit) {
+            $entry['probed'] = true;
+            $entry['coverage'] = explorerProbeReaderCoverage($client, $c['schema'], $c['table'], $c['key_col'], $c['date_col']);
+            $legacy = $entry['coverage']['legacy'] ?? null;
+            // Only worth a mapping trip when the legacy era actually has keys.
+            if ($legacy && ($legacy['with_key'] ?? 0) > 0) {
+                $entry['mapping'] = explorerProbeReaderMapping($client, $c['schema'], $c['table'], $c['key_col'], $c['date_col']);
+            }
+        }
+        $results[] = $entry;
+    }
+
+    // ---- Verdict: is the Embed era recoverable, and via what? ----
+    $best = null;
+    foreach ($results as $r) {
+        $legacy = $r['coverage']['legacy'] ?? null;
+        $map = $r['mapping'] ?? null;
+        if (!$legacy || ($legacy['with_key'] ?? 0) <= 0 || !$map) continue;
+        $score = (int)($map['mapped'] ?? 0);
+        if ($score > 0 && ($best === null || $score > $best['mapped_readers'])) {
+            $best = [
+                'schema'         => $r['schema'],
+                'table'          => $r['table'],
+                'key_col'        => $r['key_col'],
+                'date_col'       => $r['date_col'],
+                'mapped_readers' => $score,
+                'total_readers'  => (int)($map['keys_seen'] ?? 0),
+            ];
+        }
+    }
+
+    // How deep does the winning source actually go?
+    if ($best !== null) {
+        try {
+            $t = explorerIdent($best['schema']) . '.' . explorerIdent($best['table']);
+            $d = explorerIdent($best['date_col']);
+            $rows = $client->rows("SELECT MIN($d) AS lo, MAX($d) AS hi FROM $t", 1);
+            $r = $rows[0] ?? [];
+            $v = array_values($r);
+            $best['earliest'] = substr((string)($r['lo'] ?? $v[0] ?? ''), 0, 19) ?: null;
+            $best['latest']   = substr((string)($r['hi'] ?? $v[1] ?? ''), 0, 19) ?: null;
+        } catch (Exception $e) {
+            $best['range_error'] = $e->getMessage();
+        }
+    }
+
+    explorerJson([
+        'configured'  => true,
+        'driver'      => $client->driver(),
+        'cutover'     => EXPLORER_CUTOVER_DATE,
+        'legacy_probe'  => ['from' => '2026-02-01', 'to' => '2026-03-01'],
+        'current_probe' => ['from' => '2026-05-01', 'to' => '2026-06-01'],
+        'candidates'  => $results,
+        'recommended' => $best,
+        'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    ]);
+}
+
 function explorerAudit(string $kind, string $sql): void {
     try {
         DB::execute(
