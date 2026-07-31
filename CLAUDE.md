@@ -183,11 +183,28 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
     since 2025, so the count-zero convention has never fired. Overtime is zero
     for this crew (`TimeClock_WorkHours.OTHours_1` = 0 on every kart row,
     rates $15.75-$16.50), so `PayRate` × elapsed is accurate.
-  - OPEN: `TimeClock_Weekly` also has `WorkHours` and `BreakHours` columns that
-    the wage query ignores in favour of a raw clock-in→clock-out `DATEDIFF`. If
-    breaks are unpaid and deducted there, wages are overstated by that time —
-    unverified. Also unverified: whether any kart labor posts under
-    `JobCode 44 'Rides'` (26,469 punches, 2015→now, runs alongside Go-Karts). **ACTUALS ONLY** — the hourly panel's
+  - **BREAKS ARE UNPAID** (operator-confirmed), so paid hours = elapsed −
+    `TimeClock_Weekly.BreakHours`, applied by both the daily wages query and
+    the hourly split. **Do NOT switch to `WorkHours` to get this** — measured on
+    the venue DB, `WorkHours` is only the elapsed time rounded to 2dp and does
+    NOT net breaks out (09:13:09→13:44:30 = 4.5225 elapsed, `WorkHours` 4.52,
+    `BreakHours` 0.63). `BreakHours` is in HOURS (0.46-0.63 on real rows ≈
+    28-38 min meal breaks); it is populated on ~15% of punches (48 of 312 in
+    June 2026) and was overstating wages by $351.74 on $23,058.79 (1.53%,
+    moving the labor rate 34.94% → 34.41%). The ledger records how MUCH break
+    time a punch had but never WHEN, so the hourly split scales each punch by
+    its paid fraction — approximate in placement, exact in total, so the hourly
+    panel always ties to the daily wage figure.
+  - Both wage queries are admin-editable and persist in `api_config`, so the
+    pre-fix text is carried forward via `laborUpgradeStored()` — upgraded only
+    on a VERBATIM match of the superseded default (`LABOR_LEGACY_*_RANGE_SQL`),
+    never touching a hand-customized query. `laborPunchWageHours()` also
+    tolerates rows with no `break_hours` column, so a custom punches query
+    keeps working unchanged.
+  - OPEN: whether any kart labor posts under `JobCode 44 'Rides'` (26,469
+    punches, 2015→now, runs alongside Go-Karts). Also unexamined: `BreakCode`
+    (1 on every sampled row) — if the venue ever adds a PAID break code, the
+    deduction would need to key off it rather than applying to all breaks. **ACTUALS ONLY** — the hourly panel's
   bars and every heatmap cell are the REAL totals for the selected period
   (`hours[].dollars`/`wages`, `heatmap.rows[].cells[].dollars`/`wages`,
   `heatmap.max_dollars`/`max_wages`). They used to be averages — per day for the

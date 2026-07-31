@@ -46,7 +46,21 @@ const LABOR_DEFAULT_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ShiftDate, 12
 // accrues to CURRENT_TIMESTAMP only when opened today and counts zero on
 // past days — computed LIVE by the database, grouped by clock-in day.
 // One (day, total) row per day with wages.
-const LABOR_DEFAULT_LABOR_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day, COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0) AS total\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ClockInDate, 120)";
+// BREAKS ARE UNPAID at this venue (operator-confirmed), so paid hours are
+// elapsed MINUS BreakHours. Do NOT reach for TimeClock_Weekly.WorkHours to get
+// this — measured on the venue DB, WorkHours is just the elapsed time rounded
+// to 2dp and does NOT net breaks out (09:13:09→13:44:30 = 4.5225 elapsed,
+// WorkHours 4.52, BreakHours 0.63). BreakHours is in HOURS (0.46-0.63 on real
+// rows ≈ 28-38 minute meal breaks). Floored at zero so a malformed break longer
+// than the shift can never post negative wages. An open punch has no break
+// recorded yet, so COALESCE(...,0) leaves today's live accrual alone.
+const LABOR_DEFAULT_LABOR_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day, COALESCE(SUM(\n  PayRate * CASE WHEN DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0 - COALESCE(BreakHours, 0) > 0 THEN DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0 - COALESCE(BreakHours, 0) ELSE 0 END\n), 0) AS total\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ClockInDate, 120)";
+
+// The pre-break-deduction wages query, kept verbatim so an installation that
+// saved settings before the fix is carried forward automatically (see
+// laborQueries()). Only an EXACT match is upgraded — a hand-customized query is
+// never touched.
+const LABOR_LEGACY_LABOR_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day, COALESCE(SUM(\n  PayRate * DATEDIFF(\n    SECOND,\n    ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME),\n    CASE\n      WHEN ClockOutDate IS NOT NULL\n        THEN ClockOutDate + CAST(CAST(ClockOutTime AS TIME) AS DATETIME)\n      WHEN ClockInDate = CAST(GETDATE() AS DATE)\n        THEN CURRENT_TIMESTAMP\n      /* unclosed punch on a PAST day: broken data — count zero hours */\n      ELSE ClockInDate + CAST(CAST(ClockInTime AS TIME) AS DATETIME)\n    END\n  ) / 3600.0\n), 0) AS total\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew (job code 3 at this venue) */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ClockInDate, 120)";
 
 // HOURLY MONEY: an earlier hour-of-day wages/sales panel was removed because
 // the Sales table books kart money once per day and the split was an estimate.
@@ -66,7 +80,14 @@ const LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), TransD
 // wall-clock times (CONVERT(...,108) = 'HH:MM:SS', uniform across drivers).
 // An unclosed punch returns NULL day_out/time_out; PHP applies the same
 // convention as the daily wages query (accrues to now only when opened today).
-const LABOR_DEFAULT_PUNCHES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day,\n       CONVERT(VARCHAR(8), CAST(ClockInTime AS TIME), 108) AS time_in,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(10), ClockOutDate, 120) END AS day_out,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(8), CAST(ClockOutTime AS TIME), 108) END AS time_out,\n       PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
+// break_hours rides along so the hourly split can deduct unpaid break time the
+// same way the daily query does — without it the two would disagree by the
+// break total.
+const LABOR_DEFAULT_PUNCHES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day,\n       CONVERT(VARCHAR(8), CAST(ClockInTime AS TIME), 108) AS time_in,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(10), ClockOutDate, 120) END AS day_out,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(8), CAST(ClockOutTime AS TIME), 108) END AS time_out,\n       PayRate AS pay_rate,\n       COALESCE(BreakHours, 0) AS break_hours\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
+
+// The punches query as it stood before break_hours was added — upgraded
+// automatically on an exact match, same rationale as the wages query above.
+const LABOR_LEGACY_PUNCHES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day,\n       CONVERT(VARCHAR(8), CAST(ClockInTime AS TIME), 108) AS time_in,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(10), ClockOutDate, 120) END AS day_out,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(8), CAST(ClockOutTime AS TIME), 108) END AS time_out,\n       PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
 
 // Share of the daily sales total the hourly ledger must cover before the panel
 // is reported as complete. The two sources are never identical — not every
@@ -97,10 +118,27 @@ function handleLabor(string $method, array $parts, ?array $input): void {
 function laborQueries(): array {
     return [
         'sales_range_sql'        => DB::getConfig('labor_sales_range_sql') ?: LABOR_DEFAULT_SALES_RANGE_SQL,
-        'labor_range_sql'        => DB::getConfig('labor_labor_range_sql') ?: LABOR_DEFAULT_LABOR_RANGE_SQL,
+        'labor_range_sql'        => laborUpgradeStored(DB::getConfig('labor_labor_range_sql'),
+                                        LABOR_LEGACY_LABOR_RANGE_SQL, LABOR_DEFAULT_LABOR_RANGE_SQL),
         'hourly_sales_range_sql' => DB::getConfig('labor_hourly_sales_range_sql') ?: LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL,
-        'punches_range_sql'      => DB::getConfig('labor_punches_range_sql') ?: LABOR_DEFAULT_PUNCHES_RANGE_SQL,
+        'punches_range_sql'      => laborUpgradeStored(DB::getConfig('labor_punches_range_sql'),
+                                        LABOR_LEGACY_PUNCHES_RANGE_SQL, LABOR_DEFAULT_PUNCHES_RANGE_SQL),
     ];
+}
+
+/**
+ * Carry a saved query forward when it is still the superseded default.
+ *
+ * These queries are admin-editable and persist in api_config, so an
+ * installation that ever opened the settings panel has the OLD text stored and
+ * would keep running it — silently missing a correctness fix. Upgrading only on
+ * a VERBATIM match of the previous default (the same idiom the role-description
+ * relabel in db.php uses) means a hand-customized query is never overwritten;
+ * an operator who edited theirs keeps exactly what they wrote.
+ */
+function laborUpgradeStored(?string $stored, string $legacy, string $current): string {
+    if ($stored === null || $stored === '') return $current;
+    return trim($stored) === trim($legacy) ? $current : $stored;
 }
 
 /**
@@ -848,6 +886,7 @@ function laborPunchWageHours(array $punchRows, string $todayStr, string $nowTs):
         $dayOut  = substr(trim((string)($get($row, $vals, 'day_out', 2) ?? '')), 0, 10);
         $timeOut = trim((string)($get($row, $vals, 'time_out', 3) ?? ''));
         $rate    = (float)$get($row, $vals, 'pay_rate', 4);
+        $breakH  = max(0.0, (float)($get($row, $vals, 'break_hours', 5) ?? 0));
         if ($rate <= 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)
             || !preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $timeIn)) {
             continue;
@@ -868,13 +907,28 @@ function laborPunchWageHours(array $punchRows, string $todayStr, string $nowTs):
         // across the heatmap; the daily query's totals expose it for fixing.
         if ($outTs - $inTs > 3 * 86400) continue;
 
+        // Unpaid breaks: the ledger records HOW MUCH break time a punch had but
+        // never WHEN it was taken, so the deduction cannot be placed in the
+        // hour it actually happened. Scale the punch's wages by the paid
+        // fraction instead — spread proportionally across the hours worked.
+        // APPROXIMATE IN PLACEMENT, EXACT IN TOTAL: each punch contributes the
+        // same dollars the daily query bills for it, so the hourly panel always
+        // ties out to the daily wage figure. A break longer than the shift
+        // (malformed) floors the punch at zero rather than paying negative.
+        $paidFrac = 1.0;
+        if ($breakH > 0) {
+            $elapsedH = ($outTs - $inTs) / 3600.0;
+            $paidFrac = $elapsedH > 0 ? max(0.0, ($elapsedH - $breakH) / $elapsedH) : 0.0;
+        }
+        if ($paidFrac <= 0) continue;
+
         $cursor = $inTs;
         $guard = 0;
         while ($cursor < $outTs && $guard++ < 128) {
             $hourEnd = (int)(floor($cursor / 3600) + 1) * 3600;
             $segEnd  = min($hourEnd, $outTs);
             $key = date('Y-m-d', $cursor) . '|' . (int)date('G', $cursor);
-            $wages[$key] = ($wages[$key] ?? 0.0) + $rate * ($segEnd - $cursor) / 3600.0;
+            $wages[$key] = ($wages[$key] ?? 0.0) + $rate * $paidFrac * ($segEnd - $cursor) / 3600.0;
             $cursor = $segEnd;
         }
     }
