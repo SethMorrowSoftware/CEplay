@@ -492,6 +492,24 @@
             ]));
             return;
         }
+        // The hourly panels read the card ledger; the totals above read POS
+        // sales. Different tables, so they can disagree — and the trimming
+        // below drops the whole panel when the ledger is empty, which would
+        // leave a real headline total with no chart and no explanation. Say it
+        // here, before any early return can swallow it.
+        var rec = m.reconciliation;
+        if (rec && (rec.status === 'missing' || rec.status === 'partial')) {
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent: '⚠ ' + (rec.status === 'missing'
+                        ? 'The card ledger has no kart transactions tagged to the reader division for this period, so the hourly panels below are empty. The daily totals above are unaffected — they come from POS sales and are correct. Ranges this old predate the POS stamping divisions onto card transactions.'
+                        : 'Hourly ledger covers ' + fmtMoney0(rec.ledger_total) + ' of this period’s '
+                          + fmtMoney0(rec.daily_total) + ' (' + fmtPct(rec.covered)
+                          + ') — the bars below understate the totals above.') })
+                ])
+            ]));
+        }
+
         if (!m.hours) return;
 
         // Trim to the venue's active window: hours with any money or wages.
@@ -535,7 +553,10 @@
             App.el('div', { className: 'card-body' }, [
                 App.el('div', { className: 'labor-hour-list' }, rows),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Actual totals for this period, hour by hour — not a typical day. Blue = real money deducted at the kart readers (card ledger, true clock times); red = wages, each punch split across the hours actually worked. The % chip is wages ÷ revenue for that hour.' })
+                    'Actual totals for this period, hour by hour — not a typical day. Blue = real money deducted at the kart readers (card ledger, true clock times); red = wages, each punch split across the hours actually worked. The % chip is wages ÷ revenue for that hour.'
+                    + (rec && rec.status === 'ok' && rec.covered != null
+                        ? ' These bars total ' + fmtPct(rec.covered) + ' of the period’s sales figure above; the two come from different tables and never match exactly.'
+                        : '') })
             ])
         ]));
 

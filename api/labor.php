@@ -68,6 +68,13 @@ const LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), TransD
 // convention as the daily wages query (accrues to now only when opened today).
 const LABOR_DEFAULT_PUNCHES_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ClockInDate, 120) AS day,\n       CONVERT(VARCHAR(8), CAST(ClockInTime AS TIME), 108) AS time_in,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(10), ClockOutDate, 120) END AS day_out,\n       CASE WHEN ClockOutDate IS NOT NULL THEN CONVERT(VARCHAR(8), CAST(ClockOutTime AS TIME), 108) END AS time_out,\n       PayRate AS pay_rate\nFROM CenterEdge.dbo.TimeClock_Weekly\nINNER JOIN CenterEdge.dbo.TimeClock_JobCodes\n  ON TimeClock_Weekly.JobCode = TimeClock_JobCodes.JobCode\nWHERE TimeClock_JobCodes.Description = 'Go-Karts'  /* the kart crew */\n  AND ClockInDate >= :from\n  AND ClockInDate < DATEADD(DAY, 1, :to)";
 
+// Share of the daily sales total the hourly ledger must cover before the panel
+// is reported as complete. The two sources are never identical — not every
+// posting to the sales division carries a card-ledger dollar amount — so a few
+// points of shortfall is normal and expected (June 2026 measured 95.6%). Below
+// this, the bars understate the period enough that the panel says so.
+const LABOR_RECONCILE_TOLERANCE = 0.90;
+
 function handleLabor(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
 
@@ -669,6 +676,18 @@ function laborRate(): void {
             $money = ['error' => $e->getMessage(), 'hours' => null, 'heatmap' => null, 'totals' => null];
             error_log('labor hourly money failed: ' . $e->getMessage());
         }
+        // The hourly panel reads a DIFFERENT table from the daily sales figure
+        // (card ledger vs POS sales), so the two can disagree — and when the
+        // ledger returns nothing the panel would otherwise draw an empty chart
+        // beside a real headline total and say nothing. Reconcile them here,
+        // for the actual range on screen, rather than only behind the Test
+        // button's single probe day.
+        if ($money && empty($money['error']) && isset($money['totals'])) {
+            $dailyTotal = 0.0;
+            foreach ($dates as $d) $dailyTotal += (float)($salesMap[$d] ?? 0);
+            $money['reconciliation'] = laborReconcile(
+                (float)($money['totals']['dollars'] ?? 0), $dailyTotal);
+        }
     }
 
     echo json_encode($base + ['days' => $result['days'], 'hourly' => $result['hourly'], 'money' => $money]);
@@ -968,5 +987,40 @@ function laborMoneyCompose(array $dates, array $buckets, array $wageMap): array 
             'rate'    => $totDol > 0 ? round($totWag / $totDol, 4) : null,
         ],
         'error'   => null,
+    ];
+}
+
+/**
+ * Compare the hourly ledger total against the daily sales total for the same
+ * window. Pure — directly testable without a connection.
+ *
+ * The hourly panel and the headline sales figure come from different tables
+ * (PlayerCardTrans vs Sales), so they never match exactly and a small gap is
+ * normal. Two cases are NOT normal and must reach the user:
+ *   - 'missing'  the daily query booked real money but the ledger returned
+ *                none, so every hourly panel is empty while the totals above
+ *                show dollars. This is what a range predating the POS's
+ *                division stamping on card transactions looks like — verified
+ *                on this venue: June 2015 carried 100% DivNo 1, while 2019
+ *                onward carries the kart division normally.
+ *   - 'partial'  the ledger covers materially less than the daily figure, so
+ *                the bars understate the period.
+ * 'unknown' means there was no daily money to compare against (an empty range),
+ * which is not an error — nothing is claimed either way.
+ *
+ * @return array{status:string,ledger_total:float,daily_total:float,covered:?float}
+ */
+function laborReconcile(float $ledgerTotal, float $dailyTotal): array {
+    $covered = $dailyTotal > 0 ? $ledgerTotal / $dailyTotal : null;
+    if ($covered === null)                              $status = 'unknown';
+    elseif ($ledgerTotal <= 0)                          $status = 'missing';
+    elseif ($covered < LABOR_RECONCILE_TOLERANCE)       $status = 'partial';
+    else                                                $status = 'ok';
+
+    return [
+        'status'       => $status,
+        'ledger_total' => round($ledgerTotal, 2),
+        'daily_total'  => round($dailyTotal, 2),
+        'covered'      => $covered === null ? null : round($covered, 4),
     ];
 }
