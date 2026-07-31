@@ -1499,10 +1499,11 @@
     }
 
     /**
-     * Compact KPI strip below the hero — three secondary stats. We dropped
+     * Compact KPI strip below the hero — secondary stats. We dropped
      * "tickets today" since the hero already shouts that number; instead we
-     * surface plays-week, the venue's peak hour today, idle games, and the
-     * 7-day daily ticket pace so operators can spot anomalies at a glance.
+     * surface idle games, the venue's peak hour today, and the last 7 days'
+     * ACTUAL ticket / play totals so operators can spot anomalies at a glance.
+     * Every tile is a recorded count — nothing here is averaged or projected.
      */
     function renderTicketSummary() {
         var el = document.getElementById('ticket-summary');
@@ -1529,20 +1530,6 @@
         // hero sparkline). Falls back gracefully when there's no data.
         var peakHour = computePeakHourToday();
 
-        // 7-day daily pace: avg tickets per day. Compared with today's
-        // tickets to give an "above/below avg" cue in the hint line.
-        var dailyAvg = (t.tickets_week || 0) / 7;
-        var avgComparison = '';
-        if (dailyAvg > 0) {
-            var ratio = (t.tickets_today || 0) / dailyAvg;
-            if (ratio >= 1.15) avgComparison = '↑ today running ' + Math.round((ratio - 1) * 100) + '% above avg';
-            else if (ratio <= 0.85 && (t.tickets_today || 0) > 0) avgComparison = '↓ today running ' + Math.round((1 - ratio) * 100) + '% below avg';
-            else if ((t.tickets_today || 0) > 0) avgComparison = 'today on pace with the 7-day avg';
-            else avgComparison = 'avg ' + formatBigNumber(Math.round(dailyAvg)) + ' / day';
-        } else {
-            avgComparison = 'no tickets in last 7 days';
-        }
-
         var tiles = [
             {
                 label: 'No plays today',
@@ -1561,15 +1548,15 @@
                 cls: peakHour ? 'ticket-summary-tile-tickets' : ''
             },
             {
-                label: 'Daily pace (7d)',
-                value: formatBigNumber(Math.round(dailyAvg)),
-                hint: avgComparison,
+                label: 'Tickets this week',
+                value: formatBigNumber(Math.round(t.tickets_week || 0)),
+                hint: 'dispensed over the last 7 days',
                 cls: ''
             },
             {
                 label: 'Plays this week',
                 value: formatBigNumber(t.plays_week || 0),
-                hint: formatBigNumber(Math.round(t.tickets_week || 0)) + ' tickets across the week',
+                hint: 'plays recorded over the last 7 days',
                 cls: ''
             }
         ];

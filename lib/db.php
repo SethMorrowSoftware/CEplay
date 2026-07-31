@@ -408,9 +408,10 @@ class DB {
         // "Go Kart Readers" books the actual dollars spent at the kart
         // readers (one aggregated posting per day). Upgrade the stored
         // sales query only if it is exactly the shipped v5 (cash-only
-        // CatNo 108) text; hand-tuned queries are never touched. The
-        // rides × price add-on defaults OFF (labor_add_ride_value unset)
-        // so the estimate can't double count on top of real dollars.
+        // CatNo 108) text; hand-tuned queries are never touched. (The
+        // rides × price add-on this migration mentioned has since been
+        // removed outright — sales are always the recorded DivNo-808
+        // dollars, so there is no estimate left to double count.)
         try {
             $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_karting_v6'");
             if (!$flag) {
@@ -458,6 +459,27 @@ class DB {
             }
         } catch (Throwable $e) {
             error_log('labor query v7 migration skipped: ' . $e->getMessage());
+        }
+
+        // One-time cleanup: the Go-Kart Labor "estimate mode" (paid rides ×
+        // per-track price added to sales) was removed — the page reports the
+        // recorded DivNo-808 dollars and nothing else. Drop its orphaned config
+        // rows so a stale `labor_add_ride_value = 1` can't look meaningful to
+        // whoever reads api_config next. `labor_reader_group_id` stays: it still
+        // selects which area's swipes get COUNTED.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_labor_drop_ride_estimate_v1'");
+            if (!$flag) {
+                self::execute(
+                    "DELETE FROM api_config WHERE key IN ('labor_add_ride_value', 'labor_price_per_ride', 'labor_ride_prices')"
+                );
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_labor_drop_ride_estimate_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Throwable $e) {
+            error_log('labor ride-estimate cleanup skipped: ' . $e->getMessage());
         }
 
         // One-time seed of a "Viewer" role: read-only access to everything

@@ -89,16 +89,6 @@
     overflow-x: auto;
 }
 
-/* Per-track price editor rows. */
-.labor-track-prices { margin: 0.25rem 0 0.5rem; }
-.labor-track-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.25rem 0;
-}
-.labor-track-name { min-width: 14rem; font-size: 0.85rem; }
-
 /* Admin plumbing hides behind a collapsed details block. */
 .labor-admin-details > summary.labor-admin-summary {
     cursor: pointer;
@@ -168,13 +158,10 @@
 }
 
 /* Narrow phones: shrink the hour rows' fixed-width parts so the bar
-   tracks keep real width inside card padding, and let the per-track
-   price rows wrap instead of overflowing. */
+   tracks keep real width inside card padding. */
 @media (max-width: 640px) {
     .labor-hour-row { gap: 0.45rem; }
     .labor-hour-label { min-width: 2.9rem; font-size: 0.72rem; }
     .labor-hour-val { min-width: 0; font-size: 0.72rem; }
     .labor-rate-chip { min-width: 3.1rem; font-size: 0.72rem; }
-    .labor-track-row { flex-wrap: wrap; }
-    .labor-track-name { min-width: 8rem; }
 }

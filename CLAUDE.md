@@ -45,6 +45,34 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
 - Migrations via ALTER TABLE in try/catch for backward compat
 
 ### Reporting & Analytics
+- **ACTUALS ONLY — no projections, no averaged baselines.** A standing product
+  rule for this app: every number a user sees is something that actually
+  happened. Do NOT add end-of-day/period projections, run-rate extrapolations,
+  "typical day" baselines, or estimated dollars — and prefer real totals over
+  averages when a panel has to pick one. Things removed under this rule, so they
+  don't get reintroduced: the dashboard's "Today's pace" card and its
+  `GET /api/games/transactions/pace` endpoint (projected tickets by close +
+  typical-same-weekday baseline), the "Daily pace (7d)" KPI tile (7-day average),
+  the Labor page's per-day / per-weekday-occurrence averages, and the Labor
+  "rides × price" estimate mode. Averaging is still fine where it IS the metric
+  (e.g. avg tickets per play), and the Card Loads bonus-dollar figure is a
+  unit conversion of a recorded value-unit amount, not an estimate of activity.
+- **Year over year (`GET /api/analytics/yoy`)** — month-to-date and year-to-date
+  actuals against the identical stretch of the prior year. Rendered by the shared
+  `App.buildYoyCard()` / `App.renderYoy()` widget (in `public/js/app.js`,
+  styled by `public/css/components/yoy.css`) on BOTH the Command Center
+  dashboard (`#/dashboard`, where the removed pace card used to sit) and the
+  Analytics page (`#/analytics`, range-independent — it ignores the top-bar
+  period picker and says so by printing its own coverage window). `through` is
+  the newest COMPLETE local day the source covers (never today, which is partial
+  by definition), and the prior year is cut at the same month/day with Feb 29
+  clamped to Feb 28. SINGLE-SOURCE across all four windows so the two sides
+  always share a definition: `venue_daily_stats` (the POS ledger rollup, ~2
+  decades — money = play value) whenever it has any row, else `game_daily_stats`
+  (the app's own rollup — money = cash at readers), reported as `source`
+  `ledger`|`app`. `prior_has_data` is false when the prior year has no covered
+  days, so the UI says "no 2025 history" instead of a fake +100%. Money is
+  scrubbed to 0 for roles without `view_revenue` like every other dollar.
 - Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
   for the live feed, per-game drill-downs, and hourly reporting.
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
@@ -133,9 +161,20 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   zero, today's accrues to now — same conventions as the daily query). Both are
   admin-editable range queries; Test reconciles the hourly ledger total against
   the daily DivNo-808 posting. (An earlier ESTIMATED hourly panel was removed;
-  this one replaced it with ledger data.) Optional
-  estimate mode (`labor_add_ride_value`, default OFF) adds paid rides ×
-  per-track price to sales instead. Test connection runs both live queries
+  this one replaced it with ledger data.) **ACTUALS ONLY** — the hourly panel's
+  bars and every heatmap cell are the REAL totals for the selected period
+  (`hours[].dollars`/`wages`, `heatmap.rows[].cells[].dollars`/`wages`,
+  `heatmap.max_dollars`/`max_wages`). They used to be averages — per day for the
+  hour rows, per weekday-OCCURRENCE for the heatmap — with matching "avg"
+  tooltips; both were removed so the page never shows a typical day. Heatmap
+  rows still carry `occurrences` as context (a window with three Saturdays and
+  one Sunday says so), and the heatmap's tap-to-inspect line replaced the hover
+  tooltip. The old rides × price "estimate mode"
+  (`labor_add_ride_value` / `labor_price_per_ride` / `labor_ride_prices`) is
+  GONE: sales are always the recorded DivNo-808 dollars. The only ride config
+  left is `labor_reader_group_id` — which reader-group area counts as the karts,
+  used for swipe COUNTS only (payload key `ride_counts`, formerly
+  `ride_valuation`). Test connection runs both live queries
   and prints a fingerprint (server, DB, freshness, category/division dumps)
   for diagnosing data questions. Connection settings live
   encrypted in api_config. Driver detection tries PDO sqlsrv → dblib →

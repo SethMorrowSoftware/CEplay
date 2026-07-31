@@ -8,6 +8,12 @@
  * on a Year view) table with the red/green split bars. Admins (settings
  * permission) also see the connection / query editor here — kept on this
  * page rather than Settings so the report and its plumbing live together.
+ *
+ * ACTUALS ONLY. Every number on this page is a recorded figure for the
+ * selected period: the hourly money panel and the weekday × hour heatmap
+ * report real totals (they used to show per-day / per-occurrence averages),
+ * and sales are always the POS's own kart-reader dollars (a "rides × price"
+ * estimate mode used to be configurable here; it was removed).
  */
 (function() {
     'use strict';
@@ -305,17 +311,18 @@
                 'across ' + sumRides.toLocaleString()
                     + (excludePass ? ' paid rides (passes hidden)' : ' rides (passes included)')));
         }
-        // Peak money hour — from the REAL hourly ledger dollars, when available.
+        // Peak money hour — the REAL hourly ledger dollars, totalled across the
+        // period. Not an average: this is what that hour actually took in.
         var mny = data.money;
         if (mny && mny.hours && mny.totals && mny.totals.dollars > 0) {
             var peak = null;
             mny.hours.forEach(function(h) {
-                if (!peak || (h.dollars_avg || 0) > (peak.dollars_avg || 0)) peak = h;
+                if (!peak || (h.dollars || 0) > (peak.dollars || 0)) peak = h;
             });
-            if (peak && peak.dollars_avg > 0) {
+            if (peak && peak.dollars > 0) {
                 cards.push(insightCard('💵', 'insight-accent', 'Peak money hour',
-                    hourLabel(peak.hour) + ' — ' + fmtMoney0(peak.dollars_avg),
-                    'avg taken that hour · ' + fmtMoney0(peak.wages_avg) + ' wages'
+                    hourLabel(peak.hour) + ' — ' + fmtMoney0(peak.dollars),
+                    'taken that hour this period · ' + fmtMoney0(peak.wages) + ' wages'
                         + (peak.rate != null ? ' · ' + fmtPct(peak.rate) + ' labor rate' : '')));
             }
         }
@@ -430,12 +437,10 @@
                 App.el('div', { className: 'table-scroll' }, [table]),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
                     'Labor rate = wages ÷ go-kart sales. '
-                    + (state.data && state.data.ride_valuation && state.data.ride_valuation.add_ride_value
-                        ? 'Sales are estimated as paid rides × each track’s price plus the sales query; time-pass swipes are not counted as money. '
-                        : 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). '
-                            + (excludePass
-                                ? 'Ride counts hide time-pass swipes; dollars are unchanged either way. '
-                                : 'Rides and Pass show how busy the track was. '))
+                    + 'Sales are the real dollars guests spent at the kart readers (time passes never post money there). '
+                    + (excludePass
+                        ? 'Ride counts hide time-pass swipes; dollars are unchanged either way. '
+                        : 'Rides and Pass show how busy the track was. ')
                     + 'Today includes staff currently on the clock. A punch that was never clocked out counts zero on past days — fix it in CenterEdge and the day recalculates.' })
             ])
         ]));
@@ -496,23 +501,20 @@
         });
         if (lo === -1) return;
         var slice = m.hours.slice(lo, hi + 1);
-        var maxDol = slice.reduce(function(x, h) { return Math.max(x, h.dollars_avg || 0); }, 0);
-        var maxWag = slice.reduce(function(x, h) { return Math.max(x, h.wages_avg || 0); }, 0);
+        var maxDol = slice.reduce(function(x, h) { return Math.max(x, h.dollars || 0); }, 0);
+        var maxWag = slice.reduce(function(x, h) { return Math.max(x, h.wages || 0); }, 0);
         if (maxDol <= 0 && maxWag <= 0) return;
 
-        // ---- Money vs wages by the hour (avg per day in the window) ----
+        // ---- Money vs wages by the hour (ACTUAL totals for the period) ----
         // Shared scale so wages vs money stay visually comparable; a
         // wages-only period (no money at all) falls back to the wage scale
         // so the bars aren't all zero-width.
         var scale = maxDol > 0 ? maxDol : maxWag;
         var rows = slice.map(function(h) {
-            var dW = Math.max((h.dollars_avg || 0) > 0 ? 1 : 0, Math.round((h.dollars_avg || 0) / scale * 100));
-            var wW = Math.max((h.wages_avg || 0) > 0 ? 1 : 0, Math.round((h.wages_avg || 0) / scale * 100));
+            var dW = Math.max((h.dollars || 0) > 0 ? 1 : 0, Math.round((h.dollars || 0) / scale * 100));
+            var wW = Math.max((h.wages || 0) > 0 ? 1 : 0, Math.round((h.wages || 0) / scale * 100));
             var rateClass = h.rate == null ? '' : (h.rate <= 0.25 ? 'labor-rate-good' : (h.rate <= 0.4 ? 'labor-rate-warn' : 'labor-rate-bad'));
-            var tip = fmtMoney(h.dollars_avg) + ' avg taken · ' + fmtMoney(h.wages_avg) + ' avg wages'
-                + (h.rate != null ? ' · ' + fmtPct(h.rate) + ' of revenue' : '')
-                + ' · ≈' + Math.round((h.plays || 0) / Math.max(1, (data.days || []).length)) + ' swipes on an average day';
-            return App.el('div', { className: 'labor-hour-row', title: tip }, [
+            return App.el('div', { className: 'labor-hour-row' }, [
                 App.el('span', { className: 'labor-hour-label', textContent: hourLabel(h.hour) }),
                 App.el('span', { className: 'labor-money-track' }, [
                     App.el('span', { className: 'labor-money-bar' }, [
@@ -522,7 +524,7 @@
                         App.el('span', { className: 'labor-money-fill-wag', style: { width: Math.min(100, wW) + '%' } })
                     ])
                 ]),
-                App.el('span', { className: 'labor-hour-val', textContent: fmtMoney0(h.dollars_avg) + ' / ' + fmtMoney0(h.wages_avg) }),
+                App.el('span', { className: 'labor-hour-val', textContent: fmtMoney0(h.dollars) + ' / ' + fmtMoney0(h.wages) }),
                 App.el('span', { className: 'labor-rate-chip ' + rateClass, textContent: h.rate != null ? fmtPct(h.rate) : '—' })
             ]);
         });
@@ -533,7 +535,7 @@
             App.el('div', { className: 'card-body' }, [
                 App.el('div', { className: 'labor-hour-list' }, rows),
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Average dollars on a typical day in this period. Blue = real money deducted at the kart readers (card ledger, true clock times); red = wages, each punch split across the hours actually worked. The % chip is wages ÷ revenue for that hour.' })
+                    'Actual totals for this period, hour by hour — not a typical day. Blue = real money deducted at the kart readers (card ledger, true clock times); red = wages, each punch split across the hours actually worked. The % chip is wages ÷ revenue for that hour.' })
             ])
         ]));
 
@@ -544,13 +546,13 @@
     function buildMoneyHeatmap(box, m) {
         var hm = m.heatmap;
         if (!hm || !hm.rows || !hm.rows.length) return;
-        if (!(hm.max_dollars_avg > 0) && !(hm.max_wages_avg > 0)) return;
+        if (!(hm.max_dollars > 0) && !(hm.max_wages > 0)) return;
 
         // Active hour columns: any weekday with money or wages in that hour.
         var lo = 24, hi = -1;
         hm.rows.forEach(function(r) {
             r.cells.forEach(function(c) {
-                if ((c.dollars_avg || 0) > 0 || (c.wages_avg || 0) > 0) {
+                if ((c.dollars || 0) > 0 || (c.wages || 0) > 0) {
                     if (c.hour < lo) lo = c.hour;
                     if (c.hour > hi) hi = c.hour;
                 }
@@ -577,8 +579,9 @@
             });
         }));
 
-        // Tap-to-inspect line: title tooltips never show on touch, so a tap
-        // (or click) echoes the cell's full detail below the table.
+        // Tap-to-inspect line. Each cell shows one metric, so clicking (or
+        // tapping) one spells out its full ACTUAL breakdown here — a visible
+        // line rather than a hover tooltip, so touch users get it too.
         var inspectEl = App.el('p', { className: 'text-xs text-secondary',
             style: { display: 'none', marginTop: '0.5rem' } });
         // White ink only works over the strong tints in the dark theme; the
@@ -596,33 +599,36 @@
                 var c = r.cells[h] || {};
                 var text = '', bg = 'transparent', fg = 'inherit', intensity = 0;
                 if (metric === 'money') {
-                    var v = c.dollars_avg || 0;
-                    intensity = hm.max_dollars_avg > 0 ? v / hm.max_dollars_avg : 0;
+                    var v = c.dollars || 0;
+                    intensity = hm.max_dollars > 0 ? v / hm.max_dollars : 0;
                     if (v > 0) { bg = 'rgba(91, 141, 239, ' + (0.12 + intensity * 0.78).toFixed(3) + ')'; text = v >= 1 ? fmtMoney0(v) : ''; }
                 } else if (metric === 'wages') {
-                    var w = c.wages_avg || 0;
-                    intensity = hm.max_wages_avg > 0 ? w / hm.max_wages_avg : 0;
+                    var w = c.wages || 0;
+                    intensity = hm.max_wages > 0 ? w / hm.max_wages : 0;
                     if (w > 0) { bg = 'rgba(224, 93, 93, ' + (0.12 + intensity * 0.78).toFixed(3) + ')'; text = w >= 1 ? fmtMoney0(w) : ''; }
                 } else { // rate: red = costly (wages eating revenue)
                     if (c.rate != null) {
                         intensity = Math.min(1, c.rate / 0.6);
                         bg = 'rgba(224, 93, 93, ' + (0.10 + intensity * 0.8).toFixed(3) + ')';
                         text = Math.round(c.rate * 100) + '%';
-                    } else if ((c.wages_avg || 0) > 0) {
+                    } else if ((c.wages || 0) > 0) {
                         text = '—'; // wages with zero revenue that hour
                     }
                 }
-                var tip = r.label + ' ' + hourLabel(h) + ' — ' + fmtMoney(c.dollars_avg || 0) + ' avg in, '
-                    + fmtMoney(c.wages_avg || 0) + ' avg wages'
+                var detail = r.label + ' ' + hourLabel(h) + ' — ' + fmtMoney(c.dollars || 0) + ' in, '
+                    + fmtMoney(c.wages || 0) + ' wages'
                     + (c.rate != null ? ', ' + fmtPct(c.rate) + ' labor rate' : '')
-                    + (r.occurrences ? ' (' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ')' : '');
+                    + (r.occurrences ? ' (across ' + r.occurrences + ' ' + r.label + (r.occurrences > 1 ? 's' : '') + ' in this period)' : '');
                 tds.push(App.el('td', {
                     className: 'cardloads-heat-cell',
                     style: { backgroundColor: bg, color: !isLight && intensity > 0.55 ? '#fff' : fg },
-                    title: tip,
+                    'aria-label': detail,
                     textContent: text,
+                    // Read the label off the element rather than closing over
+                    // `detail` — it's a `var` in this loop, so every handler
+                    // would otherwise report the last cell's numbers.
                     onClick: function() {
-                        inspectEl.textContent = this.title;
+                        inspectEl.textContent = this.getAttribute('aria-label') || '';
                         inspectEl.style.display = '';
                     }
                 }));
@@ -643,7 +649,7 @@
                 App.el('div', { className: 'table-scroll' }, [table]),
                 inspectEl,
                 App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'Each cell is the average for that weekday/hour slot across every occurrence in the period. Money and wages are real (card ledger + punches); labor rate = wages ÷ money for the slot — red cells are hours where staffing eats the revenue. Tap a cell for its full breakdown.' })
+                    'Each cell is the actual total for that weekday/hour slot over the whole period — so a period with three Saturdays and one Sunday will show more in the Saturday row. Money and wages are real (card ledger + punches); labor rate = wages ÷ money for the slot — red cells are hours where staffing eats the revenue. Tap a cell for its full breakdown.' })
             ])
         ]));
     }
@@ -750,9 +756,9 @@
         var userIn = App.el('input', { className: 'form-input', value: s.username || '', placeholder: 'SQL login' });
         var passIn = App.el('input', { className: 'form-input', type: 'password',
             placeholder: s.has_password ? '•••••• (leave blank to keep current)' : 'Password' });
-        // Ride valuation: which reader-group area counts as "the karts",
-        // the default per-ride price, and per-track overrides (the venue
-        // runs multiple kart tracks at different price points).
+        // Which reader-group area counts as "the karts". Swipe COUNTS only —
+        // every dollar on this page comes from the live POS queries below, so
+        // there is nothing to price and nothing to estimate.
         var groupSel = App.el('select', { className: 'form-input' },
             [App.el('option', { value: '', textContent: '— none (sales query only) —' })].concat(
                 (s.reader_groups || []).map(function(g) {
@@ -760,44 +766,6 @@
                     if (s.reader_group_id != null && String(s.reader_group_id) === String(g.id)) o.selected = true;
                     return o;
                 })));
-        var priceIn = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
-            value: s.price_per_ride != null ? String(s.price_per_ride) : '11', style: { maxWidth: '8rem' } });
-
-        // Whether rides × price is ADDED to sales. Off by default: the sales
-        // query reads the POS's own "Go Kart Readers" division dollars, and
-        // stacking the estimate on top would double count.
-        var addValueCb = App.el('input', { className: 'toggle-input', type: 'checkbox', checked: !!s.add_ride_value });
-        var addValueToggle = App.el('label', { className: 'toggle-label', style: { marginTop: '0.35rem' },
-            title: 'Leave OFF when the sales query already returns real dollars (the Go Kart Readers division). Turn on only if you want sales estimated as paid rides × price instead.' }, [
-            addValueCb,
-            App.el('span', { className: 'toggle-switch' }),
-            App.el('span', { textContent: 'Add paid rides × price to sales (estimate mode)' })
-        ]);
-
-        // Per-track price rows, rebuilt whenever the group selection changes.
-        var trackPriceInputs = {};
-        var trackPricesBox = App.el('div', { className: 'labor-track-prices' });
-        function rebuildTrackPrices() {
-            trackPricesBox.innerHTML = '';
-            trackPriceInputs = {};
-            var members = (s.reader_group_members || {})[groupSel.value] || [];
-            if (!groupSel.value || !members.length) return;
-            trackPricesBox.appendChild(App.el('label', { className: 'form-label', textContent:
-                'Per-track prices — blank uses the default price' }));
-            members.forEach(function(m) {
-                var inp = App.el('input', { className: 'form-input', type: 'number', step: '0.25', min: '0',
-                    placeholder: 'default', style: { maxWidth: '7rem' } });
-                var saved = (s.ride_prices || {})[m.game_id];
-                if (saved != null && saved !== '') inp.value = String(saved);
-                trackPriceInputs[m.game_id] = inp;
-                trackPricesBox.appendChild(App.el('div', { className: 'labor-track-row' }, [
-                    App.el('span', { className: 'labor-track-name', textContent: m.game_name || m.game_id }),
-                    inp
-                ]));
-            });
-        }
-        groupSel.addEventListener('change', rebuildTrackPrices);
-        rebuildTrackPrices();
 
         var salesTa = App.el('textarea', { className: 'form-input labor-sql', rows: 7 });
         salesTa.value = s.sales_range_sql || '';
@@ -819,22 +787,9 @@
                         database: dbIn.value.trim(), username: userIn.value.trim(),
                         sales_range_sql: salesTa.value, labor_range_sql: laborTa.value,
                         hourly_sales_range_sql: hourlyTa.value, punches_range_sql: punchesTa.value,
-                        reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10),
-                        add_ride_value: addValueCb.checked,
-                        ride_prices: (function() {
-                            var map = {};
-                            Object.keys(trackPriceInputs).forEach(function(gid) {
-                                var v = trackPriceInputs[gid].value;
-                                if (v !== '') map[gid] = parseFloat(v);
-                            });
-                            return map;
-                        })()
+                        reader_group_id: groupSel.value === '' ? null : parseInt(groupSel.value, 10)
                     };
                     if (passIn.value !== '') payload.password = passIn.value;
-                    // A blank/invalid price is "leave it alone", never $0 —
-                    // an accidental $0 would silently zero estimate-mode sales.
-                    var priceVal = parseFloat(priceIn.value);
-                    if (priceIn.value !== '' && isFinite(priceVal)) payload.price_per_ride = priceVal;
                     await API.put('labor/settings', payload);
                     statusEl.textContent = 'Saved.';
                     App.toast('Labor settings saved.', 'success');
@@ -919,12 +874,7 @@
                     field('Server', hostIn), field('Port', portIn), field('Database', dbIn),
                     field('Username', userIn), field('Password', passIn)
                 ]),
-                App.el('div', { className: 'labor-conn-grid', style: { gridTemplateColumns: '2fr 1fr' } }, [
-                    field('Show ride counts from this area (time-pass swipes flagged)', groupSel),
-                    field('Default price per paid ride ($)', priceIn)
-                ]),
-                addValueToggle,
-                trackPricesBox,
+                field('Show ride counts from this area (time-pass swipes flagged)', groupSel),
                 field('Kart sales by day (:from … :to) — one (day, total) row per day', salesTa),
                 field('Kart wages by day (:from … :to) — one (day, total) row per day; the database computes the dollars', laborTa),
                 field('Kart revenue by HOUR (:from … :to) — one (day, hour, dollars, plays) row; real card-ledger swipes, drives the hourly money panel + heatmap', hourlyTa),

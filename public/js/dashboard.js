@@ -313,20 +313,15 @@
             // Unique cards / 7-day tickets. Populated by renderTicketSummary().
             container.appendChild(App.el('div', { id: 'ticket-summary', className: 'ticket-summary mt-2' }));
 
-            // Today's pace — projected end-of-day tickets vs a typical
-            // same-weekday. The number owners check obsessively. Populated by
-            // renderPace() on every poll.
-            container.appendChild(App.el('div', { className: 'card mt-2 pace-card', id: 'pace-card' }, [
-                App.el('div', { className: 'card-header flex-between' }, [
-                    App.el('div', {}, [
-                        App.el('div', { className: 'card-title', textContent: "Today's pace" }),
-                        App.el('div', { className: 'text-sm text-secondary', id: 'pace-subtitle',
-                            textContent: 'Projected tickets by close vs a typical day' })
-                    ]),
-                    App.el('span', { id: 'pace-vs', className: 'pace-vs-chip' })
-                ]),
-                App.el('div', { className: 'card-body', id: 'pace-body' }, [App.loading()])
-            ]));
+            // Year over year — month-to-date and year-to-date ACTUALS against
+            // the same stretch of last year. Completed days on both sides, no
+            // projection. Populated by loadYoy() on every poll.
+            container.appendChild(App.buildYoyCard({
+                id: 'yoy-card',
+                bodyId: 'yoy-body',
+                className: 'mt-2',
+                subtitle: 'Where the venue stands this month and this year against the same stretch of last year'
+            }));
 
             // Ticket payout gauge — tickets dispensed per point played, per
             // window, against the house target (default ≤33%). Populated by
@@ -763,7 +758,7 @@
                 loadTopGames();
                 loadPayout();
                 loadTicketWatch();
-                loadPace();
+                loadYoy();
             }
 
             // Kiosk health snapshot + recent automation activity feed are
@@ -776,7 +771,7 @@
             // The widget loaders only run after a successful main load — on
             // failure, swap any body still showing its first-load spinner
             // for an honest inline message instead of spinning forever.
-            ['pace-body', 'dash-feed-body', 'dash-top-body', 'dash-topplays-body',
+            ['yoy-body', 'dash-feed-body', 'dash-top-body', 'dash-topplays-body',
                 'ticket-watch-body', 'dash-activity-body'].forEach(function(id) {
                 var widgetBody = document.getElementById(id);
                 if (widgetBody && widgetBody.querySelector('.loading-overlay')) {
@@ -1448,110 +1443,27 @@
      * Honors device pixel ratio so the line stays crisp on retina displays.
      */
     /**
-     * Fetch today's pace + projection and render the "Today's pace" card.
-     * Fire-and-forget from the poll loop.
+     * Fetch the month-to-date / year-to-date year-over-year actuals and render
+     * the comparison card. Fire-and-forget from the poll loop — a failed fetch
+     * leaves whatever was already rendered in place.
      */
-    async function loadPace() {
-        var body = document.getElementById('pace-body');
+    async function loadYoy() {
+        var body = document.getElementById('yoy-body');
         if (!body) return;
         var data;
         try {
-            data = await API.get('games/transactions/pace');
+            data = await API.get('analytics/yoy');
         } catch (err) {
-            if (!body.querySelector('.pace-hero')) {
+            if (!body.querySelector('.yoy-grid')) {
                 body.innerHTML = '';
-                body.appendChild(App.el('p', { className: 'text-sm text-secondary', textContent: 'Pace unavailable.' }));
+                body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                    textContent: 'Year-over-year comparison unavailable.' }));
             }
             return;
         }
-        renderPace(data);
-    }
-
-    function renderPace(data) {
-        var body = document.getElementById('pace-body');
-        var vsChip = document.getElementById('pace-vs');
-        var subtitle = document.getElementById('pace-subtitle');
-        if (!body) return;
-        body.innerHTML = '';
-
-        var weekday = data.weekday || 'day';
-        var soFar = data.today_so_far || { tickets: 0, plays: 0 };
-        var typicalNow = data.typical_by_now;
-        var typicalFull = data.typical_full_day;
-        var projected = data.projected_close;
-
-        // No baseline yet (fresh install) — say so plainly instead of faking.
-        if (!typicalFull) {
-            if (vsChip) { vsChip.textContent = ''; vsChip.className = 'pace-vs-chip'; }
-            if (subtitle) subtitle.textContent = 'Projected tickets by close vs a typical day';
-            body.appendChild(App.el('div', { className: 'pace-hero' }, [
-                App.el('div', { className: 'pace-hero-value', textContent: formatBigNumber(Math.round(soFar.tickets)) }),
-                App.el('div', { className: 'pace-hero-label', textContent: 'tickets so far today' })
-            ]));
-            body.appendChild(App.el('p', { className: 'text-sm text-secondary', style: { marginTop: '0.5rem' },
-                textContent: 'Building a baseline — a few weeks of history unlocks the same-' + weekday + ' projection.' }));
-            return;
-        }
-
-        // vs-typical chip (robust same-point-in-day comparison)
-        if (vsChip) {
-            if (data.vs_typical_pct === null || data.vs_typical_pct === undefined) {
-                vsChip.textContent = '';
-                vsChip.className = 'pace-vs-chip';
-            } else {
-                var pct = data.vs_typical_pct;
-                var dir = pct >= 3 ? 'up' : (pct <= -3 ? 'down' : 'flat');
-                var arrow = dir === 'up' ? '↑' : (dir === 'down' ? '↓' : '→');
-                var word = pct >= 3 ? 'ahead of' : (pct <= -3 ? 'behind' : 'on pace with');
-                vsChip.textContent = (dir === 'flat' ? '' : arrow + ' ' + Math.abs(pct) + '% ') + word + ' a typical ' + weekday;
-                vsChip.className = 'pace-vs-chip pace-vs-' + dir;
-            }
-        }
-
-        // Headline: projected close if available, else today-so-far.
-        var heroVal, heroLabel;
-        if (projected) {
-            heroVal = '~' + formatBigNumber(Math.round(projected.tickets));
-            heroLabel = 'tickets projected by close';
-        } else {
-            heroVal = formatBigNumber(Math.round(soFar.tickets));
-            heroLabel = 'tickets so far — too early to project';
-        }
-        var hero = App.el('div', { className: 'pace-hero' }, [
-            App.el('div', { className: 'pace-hero-value', textContent: heroVal }),
-            App.el('div', { className: 'pace-hero-label', textContent: heroLabel })
-        ]);
-        body.appendChild(hero);
-
-        // "so far vs typical by now" detail line.
-        var detailBits = [formatBigNumber(Math.round(soFar.tickets)) + ' so far'];
-        if (typicalNow) detailBits.push('typically ~' + formatBigNumber(Math.round(typicalNow.tickets)) + ' by now');
-        body.appendChild(App.el('div', { className: 'pace-detail text-sm text-secondary', textContent: detailBits.join('  ·  ') }));
-
-        // Progress bar: today so far as a share of a typical full day, with a
-        // marker for where the projection lands. Purely a visual aid.
-        var full = typicalFull.tickets || 0;
-        if (full > 0) {
-            var soFarPct = Math.max(0, Math.min(100, (soFar.tickets / full) * 100));
-            var projPct = projected ? Math.max(0, Math.min(105, (projected.tickets / full) * 100)) : null;
-            var track = App.el('div', { className: 'pace-bar-track' }, [
-                App.el('div', { className: 'pace-bar-fill', style: { width: soFarPct.toFixed(1) + '%' } })
-            ]);
-            if (projPct !== null) {
-                track.appendChild(App.el('div', {
-                    className: 'pace-bar-proj' + (projPct >= 100 ? ' pace-bar-proj-over' : ''),
-                    style: { left: Math.min(100, projPct).toFixed(1) + '%' },
-                    title: 'Projected close vs a typical ' + weekday
-                }));
-            }
-            body.appendChild(App.el('div', { className: 'pace-bar-wrap' }, [
-                track,
-                App.el('div', { className: 'pace-bar-caption text-xs text-muted' }, [
-                    App.el('span', { textContent: '0' }),
-                    App.el('span', { textContent: 'typical ' + weekday + ': ' + formatBigNumber(Math.round(full)) })
-                ])
-            ]));
-        }
+        body = document.getElementById('yoy-body');
+        if (!body) return; // navigated away mid-fetch
+        App.renderYoy(body, data);
     }
 
     /**
@@ -2083,10 +1995,11 @@
     }
 
     /**
-     * Compact KPI strip below the hero — three secondary stats. We dropped
+     * Compact KPI strip below the hero — secondary stats. We dropped
      * "tickets today" since the hero already shouts that number; instead we
-     * surface plays-week, the venue's peak hour today, idle games, and the
-     * 7-day daily ticket pace so operators can spot anomalies at a glance.
+     * surface idle games, the venue's peak hour today, and the last 7 days'
+     * ACTUAL ticket / play totals so operators can spot anomalies at a glance.
+     * Every tile is a recorded count — nothing here is averaged or projected.
      */
     function renderTicketSummary() {
         var el = document.getElementById('ticket-summary');
@@ -2113,20 +2026,6 @@
         // hero sparkline). Falls back gracefully when there's no data.
         var peakHour = computePeakHourToday();
 
-        // 7-day daily pace: avg tickets per day. Compared with today's
-        // tickets to give an "above/below avg" cue in the hint line.
-        var dailyAvg = (t.tickets_week || 0) / 7;
-        var avgComparison = '';
-        if (dailyAvg > 0) {
-            var ratio = (t.tickets_today || 0) / dailyAvg;
-            if (ratio >= 1.15) avgComparison = '↑ today running ' + Math.round((ratio - 1) * 100) + '% above avg';
-            else if (ratio <= 0.85 && (t.tickets_today || 0) > 0) avgComparison = '↓ today running ' + Math.round((1 - ratio) * 100) + '% below avg';
-            else if ((t.tickets_today || 0) > 0) avgComparison = 'today on pace with the 7-day avg';
-            else avgComparison = 'avg ' + formatBigNumber(Math.round(dailyAvg)) + ' / day';
-        } else {
-            avgComparison = 'no tickets in last 7 days';
-        }
-
         var tiles = [
             {
                 label: 'No plays today',
@@ -2145,15 +2044,15 @@
                 cls: peakHour ? 'ticket-summary-tile-tickets' : ''
             },
             {
-                label: 'Daily pace (7d)',
-                value: formatBigNumber(Math.round(dailyAvg)),
-                hint: avgComparison,
+                label: 'Tickets this week',
+                value: formatBigNumber(Math.round(t.tickets_week || 0)),
+                hint: 'dispensed over the last 7 days',
                 cls: ''
             },
             {
                 label: 'Plays this week',
                 value: formatBigNumber(t.plays_week || 0),
-                hint: formatBigNumber(Math.round(t.tickets_week || 0)) + ' tickets across the week',
+                hint: 'plays recorded over the last 7 days',
                 cls: ''
             },
             {

@@ -17,6 +17,9 @@
  * GET /api/analytics/reader-group?id=…&range=… — one group: KPIs, trend,
  *   day-of-week × hour heatmap, per-game breakdown
  *
+ * GET /api/analytics/yoy — month-to-date and year-to-date ACTUALS against the
+ *   identical stretch of the prior year (completed days only, no projection)
+ *
  * Aggregations operate on the local cache (game_play_transactions, action_log,
  * pause_groups, schedule_overrides, *_state_cache, action_retries). No live
  * CenterEdge calls — the watchdog already keeps these caches warm.
@@ -72,6 +75,14 @@ function handleAnalytics(string $method, array $parts, ?array $input): void {
     if ($method === 'GET' && $action === 'reader-group') {
         $hideMoney = !Auth::hasPermission('view_revenue');
         analyticsReaderGroupDetail($hideMoney);
+        return;
+    }
+
+    // Month-to-date / year-to-date against the SAME stretch of the prior year.
+    // Completed days only on both sides — actuals, never a projection.
+    if ($method === 'GET' && $action === 'yoy') {
+        $hideMoney = !Auth::hasPermission('view_revenue');
+        analyticsYoy($hideMoney);
         return;
     }
 
@@ -669,6 +680,196 @@ function analyticsVenueDaily(string $fromDate, string $toDateExcl, string $granu
         'value_by_dow'   => array_map(function ($x) { return round($x, 2); }, array_values($dowValue)),
         'tickets_by_dow' => array_map(function ($x) { return round($x, 2); }, array_values($dowTickets)),
     ];
+}
+
+// ---------------------------------------------------------------------------
+// Year over year — month-to-date and year-to-date ACTUALS vs the prior year
+// ---------------------------------------------------------------------------
+
+/**
+ * Which permanent rollup backs the year-over-year card.
+ *
+ *   'ledger' — venue_daily_stats, the POS card-ledger rollup. Reaches back ~2
+ *              decades, so prior-year comparisons are real. Money = value
+ *              played at the readers.
+ *   'app'    — game_daily_stats, the app's own per-game rollup. Only as deep as
+ *              this app's history (plus its pre-2013 per-game backfill), so the
+ *              prior-year side is often empty. Money = cash taken at readers.
+ *
+ * The ledger wins whenever it holds any row: one source powers ALL FOUR windows
+ * so the two sides of a comparison always share a definition.
+ */
+function analyticsYoySource(): string {
+    // EXISTS, not COUNT(*): the dashboard re-polls this every 30 s and the
+    // ledger rollup is ~20 years of daily rows.
+    $row = DB::queryOne('SELECT 1 AS n FROM venue_daily_stats LIMIT 1');
+    return ($row && (int)($row['n'] ?? 0) === 1) ? 'ledger' : 'app';
+}
+
+/**
+ * Newest COMPLETE local day the source covers. Never today: today is partial by
+ * definition (and the ledger rollup deliberately never writes it), so including
+ * it would compare a half day against a whole one.
+ */
+function analyticsYoyThrough(string $source, string $today): ?string {
+    $row = DB::queryOne(
+        $source === 'ledger'
+            ? 'SELECT MAX(stat_date) AS d FROM venue_daily_stats WHERE stat_date < :p0'
+            : 'SELECT MAX(stat_date) AS d FROM game_daily_stats WHERE stat_date < :p0',
+        [$today]
+    );
+    $d = $row['d'] ?? null;
+    return (is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) ? $d : null;
+}
+
+/** Earliest day the source covers — lets the UI explain a thin prior year. */
+function analyticsYoyHistorySince(string $source): ?string {
+    $row = DB::queryOne(
+        $source === 'ledger'
+            ? 'SELECT MIN(stat_date) AS d FROM venue_daily_stats'
+            : 'SELECT MIN(stat_date) AS d FROM game_daily_stats'
+    );
+    $d = $row['d'] ?? null;
+    return (is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) ? $d : null;
+}
+
+/**
+ * The same month/day one year earlier, clamped to the prior month's length so
+ * Feb 29 lands on Feb 28 instead of rolling into March.
+ */
+function analyticsYoyPriorDate(string $date): string {
+    $y = (int)substr($date, 0, 4) - 1;
+    $m = (int)substr($date, 5, 2);
+    $d = (int)substr($date, 8, 2);
+    $first = DateTime::createFromFormat('!Y-m-d', sprintf('%04d-%02d-01', $y, $m), new DateTimeZone('UTC'));
+    $maxDay = $first ? (int)$first->format('t') : 28;
+    if ($d > $maxDay) $d = $maxDay;
+    return sprintf('%04d-%02d-%02d', $y, $m, $d);
+}
+
+/**
+ * Totals for one inclusive [from, toIncl] day range out of the chosen rollup.
+ * `days` counts days that actually carry rows — a period whose prior-year half
+ * has zero covered days is "no history", not "a real zero".
+ */
+function analyticsYoyWindow(string $source, string $from, string $toIncl): array {
+    $row = DB::queryOne(
+        $source === 'ledger'
+            ? 'SELECT COALESCE(SUM(plays),0) AS plays, COALESCE(SUM(tickets),0) AS tickets,
+                      COALESCE(SUM(value),0) AS value, COUNT(*) AS days
+               FROM venue_daily_stats WHERE stat_date >= :p0 AND stat_date <= :p1'
+            : 'SELECT COALESCE(SUM(plays),0) AS plays, COALESCE(SUM(tickets),0) AS tickets,
+                      COALESCE(SUM(cash),0) AS value, COUNT(DISTINCT stat_date) AS days
+               FROM game_daily_stats WHERE stat_date >= :p0 AND stat_date <= :p1',
+        [$from, $toIncl]
+    );
+    return [
+        'from'    => $from,
+        'to'      => $toIncl,
+        'plays'   => (int)($row['plays'] ?? 0),
+        'tickets' => round((float)($row['tickets'] ?? 0), 1),
+        'value'   => round((float)($row['value'] ?? 0), 2),
+        'days'    => (int)($row['days'] ?? 0),
+    ];
+}
+
+/**
+ * Per-metric change from prior to current. `pct` is null when the prior year
+ * has nothing to divide by — the UI shows "—" rather than a fake +100%.
+ */
+function analyticsYoyDelta(array $current, array $prior): array {
+    $out = [];
+    foreach (['plays', 'tickets', 'value'] as $k) {
+        $c = (float)$current[$k];
+        $p = (float)$prior[$k];
+        $out[$k] = [
+            'abs' => round($c - $p, 2),
+            'pct' => $p > 0 ? round((($c - $p) / $p) * 100, 1) : null,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * Month-to-date and year-to-date ACTUALS this year vs the identical stretch of
+ * the prior year. Deliberately projection-free: both sides are completed days
+ * pulled from the permanent rollups and cut at the same calendar point, so the
+ * comparison is apples-to-apples without extrapolating today or averaging a
+ * baseline.
+ *
+ * Money is scrubbed to 0 for roles without view_revenue, like every other
+ * dollar figure in this file.
+ */
+function analyticsYoy(bool $hideMoney = false): void {
+    list($tz, $tzName) = perfTimezone();
+    $today = (new DateTime('now', $tz))->format('Y-m-d');
+
+    $source  = analyticsYoySource();
+    $through = analyticsYoyThrough($source, $today);
+
+    $base = [
+        'source'      => $source,
+        'money_label' => $source === 'ledger' ? 'Play value' : 'Cash at readers',
+        'money_hint'  => $source === 'ledger'
+            ? 'Dollars spent at the readers (POS card ledger)'
+            : 'Cash and card taken at the readers',
+        'timezone'      => $tzName,
+        'today'         => $today,
+        'through'       => $through,
+        'history_since' => analyticsYoyHistorySince($source),
+        'hide_money'    => $hideMoney,
+    ];
+
+    if ($through === null) {
+        echo json_encode($base + ['has_data' => false, 'periods' => []]);
+        return;
+    }
+
+    $priorThrough = analyticsYoyPriorDate($through);
+    $year         = (int)substr($through, 0, 4);
+
+    $defs = [
+        'mtd' => [
+            'label'      => 'Month to date',
+            'from'       => substr($through, 0, 7) . '-01',
+            'prior_from' => substr($priorThrough, 0, 7) . '-01',
+        ],
+        'ytd' => [
+            'label'      => 'Year to date',
+            'from'       => sprintf('%04d-01-01', $year),
+            'prior_from' => sprintf('%04d-01-01', $year - 1),
+        ],
+    ];
+
+    $periods = [];
+    foreach ($defs as $key => $def) {
+        $current = analyticsYoyWindow($source, $def['from'], $through);
+        $prior   = analyticsYoyWindow($source, $def['prior_from'], $priorThrough);
+        if ($hideMoney) {
+            $current['value'] = 0.0;
+            $prior['value']   = 0.0;
+        }
+        $delta = analyticsYoyDelta($current, $prior);
+        if ($hideMoney) {
+            $delta['value'] = ['abs' => 0.0, 'pct' => null];
+        }
+        $periods[] = [
+            'key'             => $key,
+            'label'           => $def['label'],
+            'current'         => $current,
+            'prior'           => $prior,
+            'delta'           => $delta,
+            'prior_has_data'  => $prior['days'] > 0,
+        ];
+    }
+
+    echo json_encode($base + [
+        'has_data'    => true,
+        'current_year' => $year,
+        'prior_year'   => $year - 1,
+        'prior_through' => $priorThrough,
+        'periods'     => $periods,
+    ]);
 }
 
 /**

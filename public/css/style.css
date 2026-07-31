@@ -75,10 +75,10 @@
 @import url("components/clickable.css");
 @import url("components/deep-link.css");
 @import url("components/polish-controls.css");
+@import url("components/yoy.css");
 
 /* --- Dashboard polish sub-modules --------------------------- */
 @import url("pages/dashboard/pulse.css");
-@import url("pages/dashboard/pace.css");
 @import url("pages/dashboard/stat-cards.css");
 @import url("pages/dashboard/top-games.css");
 @import url("pages/dashboard/live-feed.css");

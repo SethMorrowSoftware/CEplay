@@ -1173,6 +1173,154 @@ const App = {
         }, options);
     },
 
+    // ------------------------------------------------------------------
+    // Year-over-year widget (shared by the Command Center and Analytics)
+    //
+    // Month-to-date and year-to-date ACTUALS against the identical stretch of
+    // the prior year, straight from GET /api/analytics/yoy. Both sides are
+    // completed days cut at the same calendar point — nothing here is
+    // projected, paced, or averaged.
+    // ------------------------------------------------------------------
+
+    /**
+     * Card shell for the year-over-year comparison. Fill it by passing the
+     * element with id `opts.bodyId` to `renderYoy()` once the fetch lands.
+     *
+     * Options: id, bodyId, title, subtitle, className.
+     */
+    buildYoyCard(opts) {
+        const o = opts || {};
+        return this.el('div', {
+            className: 'card yoy-card' + (o.className ? ' ' + o.className : ''),
+            id: o.id || 'yoy-card'
+        }, [
+            this.el('div', { className: 'card-header' }, [
+                this.el('div', {}, [
+                    this.el('div', { className: 'card-title', textContent: o.title || 'Year over year' }),
+                    this.el('div', { className: 'text-sm text-secondary', textContent: o.subtitle
+                        || 'Month to date and year to date against the same stretch of last year' })
+                ])
+            ]),
+            this.el('div', { className: 'card-body', id: o.bodyId || 'yoy-body' }, [this.loading()])
+        ]);
+    },
+
+    /** "Jul 30, 2026" from a bare YYYY-MM-DD, with no timezone round-trip. */
+    formatPlainDate(iso, withYear) {
+        if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
+        const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const y = iso.slice(0, 4);
+        const m = MONTHS[parseInt(iso.slice(5, 7), 10) - 1] || '';
+        const d = String(parseInt(iso.slice(8, 10), 10));
+        return m + ' ' + d + (withYear === false ? '' : ', ' + y);
+    },
+
+    /** Render a /api/analytics/yoy payload into `body`. */
+    renderYoy(body, data) {
+        if (!body) return;
+        body.innerHTML = '';
+
+        const periods = (data && data.periods) || [];
+        if (!data || !data.has_data || !periods.length) {
+            body.appendChild(this.el('p', { className: 'text-sm text-secondary',
+                textContent: 'No completed days recorded yet — the comparison appears once the '
+                    + 'nightly rollup has a full day of history to compare.' }));
+            return;
+        }
+
+        const canSeeMoney = this.canSeeMoney() && !data.hide_money;
+
+        const coverage = 'Actuals through ' + this.formatPlainDate(data.through)
+            + ' · measured against ' + this.formatPlainDate(data.prior_through)
+            + (data.source === 'app' ? ' · from this app’s own play rollup' : ' · from the POS card ledger');
+        body.appendChild(this.el('p', { className: 'text-sm text-secondary yoy-coverage',
+            textContent: coverage }));
+
+        const grid = this.el('div', { className: 'yoy-grid' });
+        periods.forEach((p) => grid.appendChild(this._yoyPeriod(p, data, canSeeMoney)));
+        body.appendChild(grid);
+    },
+
+    /** One period block (Month to date / Year to date). */
+    _yoyPeriod(period, data, canSeeMoney) {
+        const cur = period.current || {};
+        const prior = period.prior || {};
+        const delta = period.delta || {};
+
+        const metrics = [];
+        if (canSeeMoney) {
+            metrics.push({
+                label: data.money_label || 'Value',
+                hint: data.money_hint || '',
+                value: this._yoyMoney(cur.value),
+                prior: this._yoyMoney(prior.value),
+                delta: delta.value
+            });
+        }
+        metrics.push({
+            label: 'Plays',
+            hint: 'Reader swipes recorded',
+            value: this._yoyCount(cur.plays),
+            prior: this._yoyCount(prior.plays),
+            delta: delta.plays
+        });
+        metrics.push({
+            label: 'Tickets',
+            hint: 'Redemption tickets earned',
+            value: this._yoyCount(cur.tickets),
+            prior: this._yoyCount(prior.tickets),
+            delta: delta.tickets
+        });
+
+        const priorYear = data.prior_year != null ? String(data.prior_year) : 'last year';
+        const tiles = metrics.map((m) => {
+            const children = [
+                this.el('div', { className: 'yoy-metric-label', textContent: m.label }),
+                this.el('div', { className: 'yoy-metric-value', textContent: m.value }),
+                this.el('div', { className: 'yoy-metric-prior',
+                    textContent: period.prior_has_data
+                        ? priorYear + ': ' + m.prior
+                        : 'no ' + priorYear + ' history' })
+            ];
+            const chip = this._yoyDeltaChip(m.delta, period.prior_has_data);
+            if (chip) children.push(chip);
+            return this.el('div', { className: 'yoy-metric', title: m.hint || '' }, children);
+        });
+
+        return this.el('div', { className: 'yoy-period' }, [
+            this.el('div', { className: 'yoy-period-head' }, [
+                this.el('span', { className: 'yoy-period-title', textContent: period.label || '' }),
+                this.el('span', { className: 'yoy-period-range',
+                    textContent: this.formatPlainDate(cur.from, false) + ' – ' + this.formatPlainDate(cur.to, false)
+                        + ' · ' + (cur.days || 0) + (cur.days === 1 ? ' day' : ' days') })
+            ]),
+            this.el('div', { className: 'yoy-metrics' }, tiles)
+        ]);
+    },
+
+    /** Up/down/flat chip for one metric. Null when there's nothing to compare. */
+    _yoyDeltaChip(delta, priorHasData) {
+        if (!priorHasData || !delta || delta.pct === null || delta.pct === undefined) {
+            return this.el('span', { className: 'yoy-delta yoy-delta-none', textContent: '—' });
+        }
+        const pct = delta.pct;
+        const dir = pct > 0.05 ? 'up' : (pct < -0.05 ? 'down' : 'flat');
+        const arrow = dir === 'up' ? '↑' : (dir === 'down' ? '↓' : '→');
+        const text = dir === 'flat' ? 'even' : arrow + ' ' + Math.abs(pct).toFixed(1) + '%';
+        return this.el('span', { className: 'yoy-delta yoy-delta-' + dir, textContent: text });
+    },
+
+    _yoyMoney(v) {
+        const n = Number(v) || 0;
+        return '$' + Math.round(n).toLocaleString();
+    },
+
+    _yoyCount(v) {
+        const n = Number(v) || 0;
+        return Math.round(n).toLocaleString();
+    },
+
     /**
      * Compute a single page slice of an item list.
      * Clamps page so it never falls outside [1, totalPages].
