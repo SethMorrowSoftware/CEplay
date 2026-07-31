@@ -161,7 +161,50 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   zero, today's accrues to now — same conventions as the daily query). Both are
   admin-editable range queries; Test reconciles the hourly ledger total against
   the daily DivNo-808 posting. (An earlier ESTIMATED hourly panel was removed;
-  this one replaced it with ledger data.) **ACTUALS ONLY** — the hourly panel's
+  this one replaced it with ledger data.)
+  **VERIFIED July 2026 against the live venue DB:**
+  - The daily SALES figure is correct — `Sales` DivNo 808 and `ReaderSales`
+    InvNo 3074 agree TO THE PENNY for June 2026 ($65,985.08 both). Two
+    independent tables, so the headline number is trustworthy.
+  - The hourly ledger runs a few points LIGHT of it ($63,103.33, 95.6%) — not
+    every DivNo-808 posting carries a card-ledger dollar amount. Normal and
+    expected; the panel now reports its own coverage rather than drawing bars
+    that quietly don't sum to the total above (`laborReconcile`, statuses
+    ok/partial/missing/unknown, tolerance `LABOR_RECONCILE_TOLERANCE` 0.90).
+  - The hourly panel goes EMPTY on old ranges and this is why: `PlayerCardTrans.
+    DivNo` was 1 for everything in June 2015, and only carries 808 from ~2019
+    on (2019: 8,907 plays, 2023: 5,255, 2025: 2,382, 2026: 5,560). The
+    reconciliation reports `missing` for such ranges instead of showing an empty
+    chart beside a real daily total.
+  - Wages check out: `JobCode 3 'Go-Karts'` runs continuously 2006-04-12 →
+    2026-07-31 (32,328 punches) and survived the 2015-01-08 job-code
+    restructure that folded `Lazer Tag`/`Rock Wall`/`Free Fall`/`Snack Shack`
+    into `Rides`/`Activities`/`POS`. Zero unclosed past-day punches out of 2,763
+    since 2025, so the count-zero convention has never fired. Overtime is zero
+    for this crew (`TimeClock_WorkHours.OTHours_1` = 0 on every kart row,
+    rates $15.75-$16.50), so `PayRate` × elapsed is accurate.
+  - **BREAKS ARE UNPAID** (operator-confirmed), so paid hours = elapsed −
+    `TimeClock_Weekly.BreakHours`, applied by both the daily wages query and
+    the hourly split. **Do NOT switch to `WorkHours` to get this** — measured on
+    the venue DB, `WorkHours` is only the elapsed time rounded to 2dp and does
+    NOT net breaks out (09:13:09→13:44:30 = 4.5225 elapsed, `WorkHours` 4.52,
+    `BreakHours` 0.63). `BreakHours` is in HOURS (0.46-0.63 on real rows ≈
+    28-38 min meal breaks); it is populated on ~15% of punches (48 of 312 in
+    June 2026) and was overstating wages by $351.74 on $23,058.79 (1.53%,
+    moving the labor rate 34.94% → 34.41%). The ledger records how MUCH break
+    time a punch had but never WHEN, so the hourly split scales each punch by
+    its paid fraction — approximate in placement, exact in total, so the hourly
+    panel always ties to the daily wage figure.
+  - Both wage queries are admin-editable and persist in `api_config`, so the
+    pre-fix text is carried forward via `laborUpgradeStored()` — upgraded only
+    on a VERBATIM match of the superseded default (`LABOR_LEGACY_*_RANGE_SQL`),
+    never touching a hand-customized query. `laborPunchWageHours()` also
+    tolerates rows with no `break_hours` column, so a custom punches query
+    keeps working unchanged.
+  - OPEN: whether any kart labor posts under `JobCode 44 'Rides'` (26,469
+    punches, 2015→now, runs alongside Go-Karts). Also unexamined: `BreakCode`
+    (1 on every sampled row) — if the venue ever adds a PAID break code, the
+    deduction would need to key off it rather than applying to all breaks. **ACTUALS ONLY** — the hourly panel's
   bars and every heatmap cell are the REAL totals for the selected period
   (`hours[].dollars`/`wages`, `heatmap.rows[].cells[].dollars`/`wages`,
   `heatmap.max_dollars`/`max_wages`). They used to be averages — per day for the
@@ -466,11 +509,50 @@ before building.
   in 2012, not a gap in any one table. **Per-game history for 2013 onward is
   not recoverable via reader key from any of these.** Do not re-litigate this
   without new evidence; do NOT read it as "the right table hasn't been found".
-  Untested leftovers, all narrow: `TicketTrans.rdrKey`, `TurnstileCounts.rdrKey`,
-  and the Embed **varchar** `GameStation` on `CustPassTrans`,
-  `PlayerCardPassTrans`, `MediaPassTrans`, `TicketPassTrans`,
-  `PassUsesCombined`, `CustPassEmbedDevices` (these sit alongside `InvNo`, so
-  they track pass / time-play usage, not card swipes).
+  **The search is now EXHAUSTIVE, not pattern-based** — a full catalog sweep
+  (`sys.tables` + `sys.columns`, every table over 50k rows with its complete
+  column list, 67 tables) found exactly FIVE reader/device columns in the whole
+  database: the four above plus `ReaderSales.rdrKey` (also 0 after 2012). No
+  other table carries one. `StationNo` (on `Receipt`, `Till`, `AuditLog`,
+  `CashierSales`) is a POS register, not a machine. Two further columns on the
+  play rows themselves were tested and are NOT identity: `rdrSeq` is 0 in every
+  year sampled, and `UseSeq` is a per-CARD use counter (consecutive per
+  CardNumber — 1,378 distinct values in 2013, nothing like a machine count).
+  **The Kiosoft/CenterEdge cutover does NOT restore it**: June 2026 has 70,840
+  `TransType 1` plays and ZERO with `rdrkey`, so MSSQL will never be a per-game
+  source going forward either — the app's own API feed (`game_daily_stats`) is,
+  and it accumulates from install date. `ReaderDevices` still lists all ~110
+  machines individually (`Ms. Pac-Man`, `Ice Ball 1`-`4`, `crane 1 bling`,
+  `1Batting Cage 1`-`6`, each with `rdrClass`, `Retired`, `DeviceId` GUID), so
+  the machines were never anonymous — they simply stopped stamping identity onto
+  transactions in 2012.
+  **Per-ATTRACTION history for 2013-2026 DOES exist — see `ReaderSales.InvNo`
+  below.** That is the answer to "which games", at attraction grain.
+- **`ReaderSales` — the per-ATTRACTION source for 2013-2026 (CONFIRMED).**
+  ~20.9M rows; `DataKey`, `ShiftDate`, `rdrKey`, `DivNo`, `SaleAmount`,
+  `TaxAmount`, **`InvNo`**. `rdrKey` is dead here like everywhere else, but
+  **`InvNo` (the inventory item = the attraction sold at the reader) is
+  populated on 100% of rows in every year sampled** (427,060/427,060 in 2013;
+  same through 2025), 15-20 distinct items, with real dollars. This is how
+  per-attraction history survives the 2012 machine-identity loss — the identity
+  moved from a reader column to a product column in a different table.
+  - **`ShiftDate` carries the HOUR here** (`2019-06-01 08:00:00`,
+    `09:00:00`, …) — do NOT assume it behaves like `Sales.ShiftDate`, which is
+    a midnight-stamped business day. Hour-of-day is real for 2013-2026.
+  - **`DivNo` is populated** (801, 803, 808, 811 alongside 1) — unlike
+    `PlayerCardTrans`, whose `DivNo` collapsed to 1 for everything in the
+    mid-2010s (June 2015: all 112,750 plays on DivNo 1).
+  - Names via `Inventory.Description`. Measured 2025: `Redemption Game Readers`
+    469,211 plays/$777,578; `Merchandise` 103,657/$156,903; `Video Game`
+    83,306/$260,343; `Go Kart` 54,576/$458,591; `Driving Range` 28,278/$369,613;
+    `Laser Tag` 24,160/$176,967; plus Novelty, Free Fall, Batting Cage, Family
+    Swing, Dragon Coaster, Air Hockey, Zipline, Rockwall, Ballocity, Mini Golf.
+    ~938K plays / ~$2.79M for the year.
+  - Grain is attraction CATEGORY, not machine — "Redemption Game Readers" is
+    every redemption cabinet in one bucket. Individual games are not separable.
+  - 2013 looks anomalous (3x the rows of other years, $152 total) — `SaleAmount`
+    was likely not populated yet, same pattern as early-era `DollarAmount`.
+    Confirm the money start year before promising a date range.
 - **`ReaderTransSummary` — the best 2005-2012 per-game source (CONFIRMED).**
   `ShiftDate`, `rdrKey`, `ValueNo`, `Quantity`, `TotalAmount`, `Dollars`;
   pre-aggregated per (day, reader, ValueNo). Better than `PlayerCardTrans` for a
@@ -512,10 +594,9 @@ before building.
     `CustSales` (~545K) — the durable NAMED-customer dimension (membership /
     season-pass / RFM) the card-number Guest Insights can't reach.
   - `CashierSales` (~3.2M) / `PlayerCardTrans.EmpNo` — per-employee productivity.
-  - `ReaderSales` (~20.9M, `rdrKey`, `ShiftDate` real clock, `DivNo`,
-    `SaleAmount`) — an alternate per-game revenue source (vs PlayerCardTrans
-    TransType-1); `TimeSales` (~6.6M) timed-attraction sales; `SubCatSales`
-    (~1.4M) F&B sub-category drill-down; `TicketTrans` (~17K) printed vouchers.
+  - `TimeSales` (~6.6M, carries `InvNo` AND `HourNo` — real hour-of-day for
+    timed attractions); `SubCatSales` (~1.4M) F&B sub-category drill-down;
+    `TicketTrans` (~17K) printed vouchers.
 
 ### API Pattern
 - API handlers are loaded via `require_once` from `index.php` which pre-loads `db.php`, `auth.php`, `csrf.php`, `crypto.php`
