@@ -2,8 +2,11 @@
  * Analytics page — KPI dashboard, leaderboards and charts powered by the
  * cached game-play feed and action_log. Charts via Chart.js (CDN).
  *
- * Pulls a single /api/analytics/overview payload per refresh, then renders:
+ * Pulls a single /api/analytics/overview payload per refresh (plus a small
+ * range-independent /api/analytics/yoy call), then renders:
  *   - 8 KPI cards with trend deltas vs the previous equivalent period
+ *   - Year over year: month-to-date and year-to-date actuals vs the same
+ *     stretch of the prior year (completed days only — never projected)
  *   - Fleet posture (games / kiosks / groups / overrides / retries)
  *   - Daily plays + tickets trend (line)
  *   - Plays by hour of day (bar)  &  Plays by day of week (bar)
@@ -73,6 +76,7 @@
         // Plain-language headlines land here on every load.
         container.appendChild(App.el('div', { id: 'analytics-insights' }));
         container.appendChild(buildKpiSection());
+        container.appendChild(buildYoySection());
         container.appendChild(buildGuestSection());
         container.appendChild(buildFleetSection());
         container.appendChild(buildChartsSection());
@@ -466,6 +470,25 @@
     }
 
     // ------------------------------------------------------------------
+    // Year over year — month-to-date / year-to-date vs the prior year
+    //
+    // Deliberately independent of the range picker above: it always reports
+    // month-to-date and year-to-date against the identical stretch of last
+    // year, using completed days only. The card prints the exact coverage
+    // window it used, so there's no ambiguity about what "to date" means.
+    // ------------------------------------------------------------------
+    function buildYoySection() {
+        var card = App.buildYoyCard({
+            id: 'analytics-yoy-card',
+            bodyId: 'analytics-yoy-body',
+            subtitle: 'Month to date and year to date against the same stretch of last year — '
+                + 'completed days only, nothing projected'
+        });
+        card.style.marginBottom = '1.5rem';
+        return card;
+    }
+
+    // ------------------------------------------------------------------
     // Guest Insights — new vs returning, visit frequency, spend per visit
     // ------------------------------------------------------------------
     function buildGuestSection() {
@@ -793,6 +816,22 @@
 
         var lastUpdatedEl = document.getElementById('analytics-last-updated');
         if (lastUpdatedEl && showSpinner) lastUpdatedEl.textContent = 'Loading…';
+
+        // Year over year is range-independent, so it rides along on the same
+        // refresh instead of re-fetching when the picker moves. A failure here
+        // must never take the page down — the card reports it itself.
+        API.get('analytics/yoy').then(function(yoy) {
+            if (App.navGeneration() !== gen) return;
+            App.renderYoy(document.getElementById('analytics-yoy-body'), yoy);
+        }).catch(function() {
+            if (App.navGeneration() !== gen) return;
+            var body = document.getElementById('analytics-yoy-body');
+            if (body && !body.querySelector('.yoy-grid')) {
+                body.textContent = '';
+                body.appendChild(App.el('p', { className: 'text-sm text-secondary',
+                    textContent: 'Year-over-year comparison unavailable.' }));
+            }
+        });
 
         try {
             var data = await API.get('analytics/overview?' + qs);

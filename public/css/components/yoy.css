@@ -1,0 +1,126 @@
+/* ============================================
+   Year-over-year comparison widget
+   ============================================
+   Shared by the Command Center dashboard and the Analytics page. Month-to-date
+   and year-to-date ACTUALS side by side with the identical stretch of the prior
+   year — no projection, no averaged baseline.
+   ============================================ */
+
+.yoy-coverage {
+    margin: 0 0 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.yoy-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0.85rem;
+}
+
+.yoy-period {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 0.85rem 0.85rem;
+    min-width: 0;
+}
+
+.yoy-period-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.65rem;
+}
+
+.yoy-period-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.yoy-period-range {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.yoy-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 0.55rem;
+}
+
+.yoy-metric {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.yoy-metric-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yoy-metric-value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yoy-metric-prior {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.yoy-delta {
+    align-self: flex-start;
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.12rem 0.45rem;
+    border-radius: 999px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.yoy-delta-up {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.yoy-delta-down {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+.yoy-delta-none {
+    color: var(--text-muted);
+}
+
+@media (max-width: 420px) {
+    .yoy-metrics { grid-template-columns: 1fr; }
+}

@@ -129,31 +129,18 @@ function laborSalesMapFromRows(array $rows): array {
     return $map;
 }
 
+/**
+ * Which reader-group area counts as "the karts". That's the whole config now:
+ * every dollar on this page comes from the live POS queries, so there is no
+ * price list and no rides × price estimate to configure. (An "estimate mode"
+ * that valued paid rides at a per-track price shipped here once; it was
+ * removed — the page shows recorded dollars only.)
+ */
 function laborRideConfig(): array {
     $gid = DB::getConfig('labor_reader_group_id');
-    $price = DB::getConfig('labor_price_per_ride');
-    $map = json_decode((string)(DB::getConfig('labor_ride_prices') ?: '{}'), true);
     return [
         'reader_group_id' => ($gid !== null && $gid !== '') ? (int)$gid : null,
-        // Fallback price for any track without its own entry below.
-        'price_per_ride'  => ($price !== null && $price !== '') ? (float)$price : 11.0,
-        // Per-track (per-game/reader) prices: {game_id: price}. The venue
-        // runs multiple kart tracks at different price points.
-        'ride_prices'     => is_array($map) ? $map : [],
-        // Whether paid rides × price is ADDED to sales. Defaults OFF: the
-        // sales query now reads the POS's own "Go Kart Readers" division
-        // dollars, and adding an estimate on top would double count. When
-        // off, the Rides/Pass columns still render as context.
-        'add_ride_value'  => DB::getConfig('labor_add_ride_value') === '1',
     ];
-}
-
-/** Price for one track: its own entry, or the flat fallback. */
-function laborPriceFor(string $gameId, array $ride): float {
-    if (isset($ride['ride_prices'][$gameId]) && $ride['ride_prices'][$gameId] !== '') {
-        return (float)$ride['ride_prices'][$gameId];
-    }
-    return (float)$ride['price_per_ride'];
 }
 
 /**
@@ -163,14 +150,12 @@ function laborPriceFor(string $gameId, array $ride): float {
  * paid-ride count can omit time-pass swipes — which the MSSQL Sales lines
  * cannot distinguish.
  *
- * Each track (game/reader) is valued at its own price — the venue runs
- * multiple kart tracks at different price points — falling back to the
- * flat price for tracks without an entry.
+ * Counts only — these never become dollars.
  *
  * @param string[] $dates ISO dates
- * @return array<string,array{rides:int,pass:int,value:float}> keyed by date
+ * @return array<string,array{rides:int,pass:int}> keyed by date
  */
-function laborRideStats(array $dates, int $groupId, array $ride): array {
+function laborRideStats(array $dates, int $groupId): array {
     $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
         'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$groupId]));
     $out = [];
@@ -182,16 +167,13 @@ function laborRideStats(array $dates, int $groupId, array $ride): array {
     list($tz) = perfTimezone();
     $daily = perfDailyPerGame($dates[0], $dates[count($dates) - 1], $tz);
     foreach ($dates as $d) {
-        $rides = 0; $pass = 0; $value = 0.0;
+        $rides = 0; $pass = 0;
         foreach (($daily['byDate'][$d] ?? []) as $gid => $b) {
             if (!isset($memberSet[$gid])) continue;
-            $p  = (int)($b['plays'] ?? 0);
-            $tp = (int)($b['time_plays'] ?? 0);
-            $rides += $p;
-            $pass  += $tp;
-            $value += max(0, $p - $tp) * laborPriceFor((string)$gid, $ride);
+            $rides += (int)($b['plays'] ?? 0);
+            $pass  += (int)($b['time_plays'] ?? 0);
         }
-        $out[$d] = ['rides' => $rides, 'pass' => $pass, 'value' => round($value, 2)];
+        $out[$d] = ['rides' => $rides, 'pass' => $pass];
     }
     return $out;
 }
@@ -208,15 +190,9 @@ function laborGetSettings(): void {
         'hourly_sales_range_sql' => LABOR_DEFAULT_HOURLY_SALES_RANGE_SQL,
         'punches_range_sql'      => LABOR_DEFAULT_PUNCHES_RANGE_SQL,
     ];
-    // For the "value rides from this area" dropdown — read directly so the
-    // settings gate alone suffices. Members ship per group so the per-track
-    // price editor can rebuild instantly when the selection changes.
+    // For the "count rides from this area" dropdown — read directly so the
+    // settings gate alone suffices.
     $out['reader_groups'] = DB::query('SELECT id, name FROM reader_groups ORDER BY name');
-    $members = [];
-    foreach (DB::query('SELECT reader_group_id, game_id, game_name FROM reader_group_games ORDER BY game_name') as $m) {
-        $members[(string)$m['reader_group_id']][] = ['game_id' => $m['game_id'], 'game_name' => $m['game_name']];
-    }
-    $out['reader_group_members'] = $members;
     echo json_encode($out);
 }
 
@@ -258,9 +234,9 @@ function laborPutSettings(array $input): void {
 
 
 
-    // Ride valuation: validate BEFORE the first write so a rejected field
-    // can never leave a half-saved config (observed: a bad reader_group_id
-    // used to 422 after the connection settings had already committed).
+    // Kart area: validate BEFORE the first write so a rejected field can never
+    // leave a half-saved config (observed: a bad reader_group_id used to 422
+    // after the connection settings had already committed).
     $groupIdToStore = null; // null = don't touch, '' = clear, else id string
     if (array_key_exists('reader_group_id', $input)) {
         $gid = $input['reader_group_id'];
@@ -270,34 +246,10 @@ function laborPutSettings(array $input): void {
             $gid = (int)$gid;
             $exists = DB::queryOne('SELECT id FROM reader_groups WHERE id = :p0', [$gid]);
             if (!$exists) {
-                throw new RuntimeException('Unknown reader group for ride valuation.');
+                throw new RuntimeException('Unknown reader group for the go-kart area.');
             }
             $groupIdToStore = (string)$gid;
         }
-    }
-    $priceToStore = null;
-    if (array_key_exists('price_per_ride', $input)) {
-        $p = (float)$input['price_per_ride'];
-        if ($p < 0 || $p > 10000) {
-            throw new RuntimeException('Price per ride must be between 0 and 10000.');
-        }
-        $priceToStore = (string)$p;
-    }
-    // Per-track prices: {game_id: price}. Blank/absent entries fall back to
-    // the flat price; unknown keys are dropped rather than stored.
-    $ridePricesToStore = null;
-    if (array_key_exists('ride_prices', $input)) {
-        $in = is_array($input['ride_prices']) ? $input['ride_prices'] : [];
-        $clean = [];
-        foreach ($in as $gameId => $price) {
-            if ($price === '' || $price === null) continue;
-            $p = (float)$price;
-            if ($p < 0 || $p > 10000) {
-                throw new RuntimeException('Track price must be between 0 and 10000.');
-            }
-            $clean[(string)$gameId] = $p;
-        }
-        $ridePricesToStore = json_encode($clean);
     }
 
     // ---- Everything validated; write it all ----
@@ -314,11 +266,6 @@ function laborPutSettings(array $input): void {
         DB::setConfig($cfgKey, $sql);
     }
     if ($groupIdToStore !== null) DB::setConfig('labor_reader_group_id', $groupIdToStore);
-    if ($priceToStore !== null) DB::setConfig('labor_price_per_ride', $priceToStore);
-    if (array_key_exists('add_ride_value', $input)) {
-        DB::setConfig('labor_add_ride_value', $input['add_ride_value'] ? '1' : '0');
-    }
-    if ($ridePricesToStore !== null) DB::setConfig('labor_ride_prices', $ridePricesToStore);
 
     try {
         DB::execute(
@@ -647,11 +594,9 @@ function laborRate(): void {
     $base = [
         'window' => $meta,
         'configured' => MssqlClient::isConfigured(),
-        'ride_valuation' => [
+        'ride_counts' => [
             'reader_group_id' => $ride['reader_group_id'],
-            'price_per_ride'  => $ride['price_per_ride'],
             'active'          => (bool)$ride['reader_group_id'],
-            'add_ride_value'  => (bool)$ride['add_ride_value'],
         ],
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
     ];
@@ -672,7 +617,7 @@ function laborRate(): void {
     $coverage = null;
     if ($ride['reader_group_id']) {
         try {
-            $rideStats = laborRideStats($dates, $ride['reader_group_id'], $ride);
+            $rideStats = laborRideStats($dates, $ride['reader_group_id']);
             if ($legacyDates === null) {
                 $members = array_map(function ($r) { return (string)$r['game_id']; }, DB::query(
                     'SELECT game_id FROM reader_group_games WHERE reader_group_id = :p0', [$ride['reader_group_id']]));
@@ -709,7 +654,7 @@ function laborRate(): void {
         echo json_encode($base + ['error' => $e->getMessage(), 'days' => [], 'money' => null]);
         return;
     }
-    $result = laborComposeResults($dates, $salesMap, $laborMap, $rideStats, $hourRows, $coverage, $ride);
+    $result = laborComposeResults($dates, $salesMap, $laborMap, $rideStats, $hourRows, $coverage);
 
     // ---- Hourly money: REAL ledger dollars per hour + punch-split wages ----
     // Best-effort and self-contained: a failure here (e.g. a hand-edited hourly
@@ -740,27 +685,23 @@ function laborRate(): void {
  * @param string[] $dates every ISO date in the window, ascending
  * @param array<string,float> $salesMap day => dollars (live SQL)
  * @param array<string,float> $laborMap day => wage dollars (live SQL)
- * @param array $rideStats laborRideStats() output (day => rides/pass/value)
+ * @param array $rideStats laborRideStats() output (day => rides/pass)
  * @param array $hourRows readerHourlyRows() output
  * @param ?array $coverage readerHourlyCoverage() output
- * @param array $ride laborRideConfig() output
  * @return array{days: array, hourly: ?array}
  */
-function laborComposeResults(array $dates, array $salesMap, array $laborMap, array $rideStats, array $hourRows, ?array $coverage, array $ride): array {
+function laborComposeResults(array $dates, array $salesMap, array $laborMap, array $rideStats, array $hourRows, ?array $coverage): array {
     // ---- Daily rows (every day in range, zeros included) ----
     $days = [];
     foreach ($dates as $d) {
         $cash  = round($salesMap[$d] ?? 0.0, 2);
         $labor = round($laborMap[$d] ?? 0.0, 2);
         $day = ['date' => $d, 'cash' => $cash, 'labor' => $labor];
+        // Sales are the recorded dollars from the POS query, full stop.
         $sales = $cash;
         if (isset($rideStats[$d])) {
             $rides = $rideStats[$d]['rides'];
             $pass  = $rideStats[$d]['pass'];
-            if ($ride['add_ride_value']) {
-                $sales += $rideStats[$d]['value'];
-                $day['ride_value'] = $rideStats[$d]['value'];
-            }
             $day['rides'] = $rides;
             $day['pass_rides'] = $pass;
             $day['paid_rides'] = max(0, $rides - $pass);
@@ -939,10 +880,15 @@ function laborHourlyMoney(MssqlClient $client, array $q, string $from, string $t
  * Compose the hour-of-day money rows, the weekday × hour heatmap, and totals.
  * Pure — directly testable without a connection.
  *
- * Averages: hours[].dollars_avg / wages_avg are per DAY in the window (a
- * typical day's curve); heatmap cells are per OCCURRENCE of that weekday (all
- * Saturdays' 2 PM averaged — the staffing view, same convention as Card Loads).
- * rate = wages ÷ dollars, computed on the cell/hour TOTALS so hours with more
+ * ACTUALS ONLY — every figure here is the real total for the selected period:
+ * hours[] carry the dollars taken and wages paid in that hour across the whole
+ * window, and each heatmap cell is the total for that weekday/hour slot. (Both
+ * used to be averages — per day and per weekday-occurrence respectively; that
+ * was removed so the page reports recorded numbers, never a typical day.)
+ * `occurrences` stays on each heatmap row as honest context: a window with
+ * three Saturdays and one Sunday says so.
+ *
+ * rate = wages ÷ dollars, computed on the cell/hour totals so hours with more
  * money weigh more (never an average of ratios).
  *
  * @param string[] $dates every ISO date in the window, ascending
@@ -951,7 +897,6 @@ function laborHourlyMoney(MssqlClient $client, array $q, string $from, string $t
  * @return array{hours:array,heatmap:array,totals:array,error:null}
  */
 function laborMoneyCompose(array $dates, array $buckets, array $wageMap): array {
-    $numDays = max(1, count($dates));
     $daySet = array_flip($dates);
     $dowOcc = array_fill(0, 7, 0);
     foreach ($dates as $d) $dowOcc[laborWeekday($d)]++;
@@ -985,13 +930,11 @@ function laborMoneyCompose(array $dates, array $buckets, array $wageMap): array 
     $hours = [];
     for ($h = 0; $h < 24; $h++) {
         $hours[] = [
-            'hour'        => $h,
-            'dollars'     => round($dolH[$h], 2),
-            'wages'       => round($wagH[$h], 2),
-            'plays'       => $plyH[$h],
-            'dollars_avg' => round($dolH[$h] / $numDays, 2),
-            'wages_avg'   => round($wagH[$h] / $numDays, 2),
-            'rate'        => $dolH[$h] > 0 ? round($wagH[$h] / $dolH[$h], 4) : null,
+            'hour'    => $h,
+            'dollars' => round($dolH[$h], 2),
+            'wages'   => round($wagH[$h], 2),
+            'plays'   => $plyH[$h],
+            'rate'    => $dolH[$h] > 0 ? round($wagH[$h] / $dolH[$h], 4) : null,
         ];
     }
 
@@ -999,26 +942,25 @@ function laborMoneyCompose(array $dates, array $buckets, array $wageMap): array 
     $rows = [];
     $maxDol = 0.0; $maxWag = 0.0;
     for ($w = 0; $w < 7; $w++) {
-        $occ = $dowOcc[$w];
         $cells = [];
         for ($h = 0; $h < 24; $h++) {
-            $dAvg = $occ > 0 ? $dolCell[$w][$h] / $occ : 0.0;
-            $wAvg = $occ > 0 ? $wagCell[$w][$h] / $occ : 0.0;
-            if ($dAvg > $maxDol) $maxDol = $dAvg;
-            if ($wAvg > $maxWag) $maxWag = $wAvg;
+            $dol = $dolCell[$w][$h];
+            $wag = $wagCell[$w][$h];
+            if ($dol > $maxDol) $maxDol = $dol;
+            if ($wag > $maxWag) $maxWag = $wag;
             $cells[] = [
-                'hour'        => $h,
-                'dollars_avg' => round($dAvg, 2),
-                'wages_avg'   => round($wAvg, 2),
-                'rate'        => $dolCell[$w][$h] > 0 ? round($wagCell[$w][$h] / $dolCell[$w][$h], 4) : null,
+                'hour'    => $h,
+                'dollars' => round($dol, 2),
+                'wages'   => round($wag, 2),
+                'rate'    => $dol > 0 ? round($wag / $dol, 4) : null,
             ];
         }
-        $rows[] = ['dow' => $w, 'label' => $dowNames[$w], 'occurrences' => $occ, 'cells' => $cells];
+        $rows[] = ['dow' => $w, 'label' => $dowNames[$w], 'occurrences' => $dowOcc[$w], 'cells' => $cells];
     }
 
     return [
         'hours'   => $hours,
-        'heatmap' => ['rows' => $rows, 'max_dollars_avg' => round($maxDol, 2), 'max_wages_avg' => round($maxWag, 2)],
+        'heatmap' => ['rows' => $rows, 'max_dollars' => round($maxDol, 2), 'max_wages' => round($maxWag, 2)],
         'totals'  => [
             'dollars' => round($totDol, 2),
             'wages'   => round($totWag, 2),
