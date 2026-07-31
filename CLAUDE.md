@@ -332,15 +332,35 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   INFORMATION_SCHEMA for every table having BOTH a reader-key-ish column
   (`rdrkey`/`readerkey`/`readerid`/…, see `explorerIsReaderKeyColumn`) AND a
   date column, sizes them via sys.partitions, then for the largest few
-  measures reader-key coverage in ONE probe month per era (never a full scan of
-  a 20M-row table) and — where legacy keys exist — how many resolve to a
-  current game through `ReaderDevices` + the same name normalization the
+  measures key coverage **YEAR BY YEAR** (`explorerProbeReaderYears`, one
+  grouped pass per table) and — whenever ANY year has keys — how many resolve
+  to a current game through `ReaderDevices` + the same name normalization the
   per-game backfill uses (`explorerNormName` mirrors
   `Scheduler::normReaderName`). Returns a `recommended` source or null, and the
-  UI prints a plain verdict either way. Every check is independently
-  try/caught, so one failure never takes the others down. Gate:
-  `data_explorer`; audit-logged; venue server only. **Both facts matter** — a
-  populated key that no longer maps to a game attributes to nothing.
+  UI prints a plain verdict either way plus the per-year table behind it. Every
+  check is independently try/caught, so one failure never takes the others
+  down. Gate: `data_explorer`; audit-logged; venue server only. **Both facts
+  matter** — a populated key that no longer maps to a game attributes to
+  nothing.
+  **Three false-negative bugs this shipped with, all fixed — do not
+  reintroduce:** (1) it sampled ONE hardcoded month per era (Feb 2026), but key
+  population varies WITHIN an era, so it read zeros and declared no per-game
+  history existed while eight fully-attributed years (2005-2012) sat in the
+  column it had just sampled; coverage is now measured per year, never assumed
+  from the cutover date. (2) the mapping check only ran when that sample month
+  had keys, so on this DB it never ran at all — yet the UI still reported the
+  full conjunction ("no populated key AND none resolve"), asserting a result it
+  had never tested; it now runs against the most recent year that HAS keys.
+  (3) the populated-test was `<> 0`, which THROWS on a varchar key (T-SQL tries
+  to convert), hiding the Embed `GameStation` columns entirely; the predicate is
+  now type-aware (`explorerKeyPopulatedExpr`). Also: the date column is chosen
+  by name preference (`explorerPickDateColumn`) rather than first-date-column-
+  wins, since a table whose `CreatedDate` precedes its `ShiftDate` would
+  otherwise be probed on the wrong column and read as empty.
+  **A mapping miss is a NAMING problem, not a missing-data one** — exact
+  normalized string equality can't match `1lazer tag` to a current "Laser Tag",
+  so unmatched readers want a hand-built crosswalk, not a conclusion that the
+  history is gone.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.
@@ -398,12 +418,17 @@ before building.
     (`Scheduler::backfillVenueDailyStatsFromMssql` / `refreshVenueDailyStatsRecent`).
     Venue-wide (no `rdrkey`→game mapping), so money/tickets/plays are real here
     where the per-game backfill can only leave them 0 once `rdrkey=0`.
-  - **`rdrkey` populated only pre-~2012 (CONFIRMED, era gotcha):** `TransType 1`
-    reader deductions carry a nonzero `rdrkey` in the early era (2011: all
-    `rdrkey<>0`) but `rdrkey = 0` afterward (2019 & 2026: all `rdrkey=0`). So the
-    per-game backfill (which joins `rdrkey`→game) can only attribute plays for
-    the early era, while a venue-wide count MUST use `TransType 1` alone. Real
-    per-play `DollarAmount` is 0 in the early era and populated from ~2013 on.
+  - **`rdrkey` dies after 2012 (CONFIRMED per-year, era gotcha):** measured
+    year by year over `TransType 1` on the venue DB — **2005-2011: 100%**
+    populated (18 readers in 2005 growing to 97 by 2011); **2012: 76%**
+    (760,744 of 997,431 — the transition year); **2013 onward: exactly 0**,
+    every year through 2026. So per-game attribution via this column covers
+    **2005-2012, ~4.94M plays across 98 readers**, and nothing after. A
+    venue-wide count MUST use `TransType 1` alone. Real per-play
+    `DollarAmount` is 0 in the early era and populated from ~2013 on — so the
+    attributable era and the money-bearing era barely overlap.
+    NOTE the shape of this: coverage is NOT uniform within an era, which is
+    why sampling one month is not a valid test (see the reach probe below).
 - **`Sales` — POS sales lines (CONFIRMED).** `ShiftDate` is a business DAY
   stamped at MIDNIGHT (not a clock time), so Sales-sourced reports are honest at
   day grain only — no real hour-of-day (that's why Revenue Mix / the go-kart
@@ -419,9 +444,50 @@ before building.
 - **`ReaderDevices` (CONFIRMED):** maps `rdrkey` → reader/game by name. The join
   used to attribute `PlayerCardTrans` TransType-1 plays and the reader feed to
   games (`normReaderName` in the scheduler backfill).
-- **Ticket attribution gotcha (CONFIRMED):** tickets exist ONLY at the division
-  grain. We checked exhaustively — there is no per-game ticket source anywhere
-  in the DB (every ticket credit's `rdrkey` is 0).
+- **Ticket attribution gotcha (CONFIRMED):** in the card ledger, tickets exist
+  ONLY at the division grain — every `ValueNo 3` credit has `rdrkey` 0. This is
+  why Ticket Trends is by-area and why the per-game backfill leaves `tickets` 0.
+  `ReaderTickets` (`rdrKey`, `ShiftDate`, `TicketsDispensed`, `TicketsOnCard`)
+  looked like a counterexample but **is EMPTY — the per-year sweep returns zero
+  rows.** The table exists in the schema and was never populated. One possible
+  early-era exception remains, see `ReaderTransSummary` below.
+- **PER-MACHINE IDENTITY DIES AT THE END OF 2012 (CONFIRMED, four independent
+  sources).** This is the single most important fact about per-game history on
+  this install, and it is now corroborated rather than inferred. Measured per
+  year:
+  | Source | Key populated | Then |
+  |---|---|---|
+  | `PlayerCardTrans.rdrkey` | 2005-2011 100%, 2012 76% | 0 from 2013 |
+  | `ReaderTransSummary.rdrKey` | 2005-2012 (~90%+) | 0 from 2013 |
+  | `CardActivity.rdrkey` | 2005-2012 (~54-78%) | 0 from 2013 |
+  | `ReaderSwipes.rdrKey` | 2007-2012 100% | table ENDS after 2012 |
+  Four tables, written by different subsystems, all stop recording machine
+  identity at the same boundary — so this is a venue-wide configuration change
+  in 2012, not a gap in any one table. **Per-game history for 2013 onward is
+  not recoverable via reader key from any of these.** Do not re-litigate this
+  without new evidence; do NOT read it as "the right table hasn't been found".
+  Untested leftovers, all narrow: `TicketTrans.rdrKey`, `TurnstileCounts.rdrKey`,
+  and the Embed **varchar** `GameStation` on `CustPassTrans`,
+  `PlayerCardPassTrans`, `MediaPassTrans`, `TicketPassTrans`,
+  `PassUsesCombined`, `CustPassEmbedDevices` (these sit alongside `InvNo`, so
+  they track pass / time-play usage, not card swipes).
+- **`ReaderTransSummary` — the best 2005-2012 per-game source (CONFIRMED).**
+  `ShiftDate`, `rdrKey`, `ValueNo`, `Quantity`, `TotalAmount`, `Dollars`;
+  pre-aggregated per (day, reader, ValueNo). Better than `PlayerCardTrans` for a
+  per-game backfill of that era on every axis: it is ~25x smaller (~196K rows
+  total for 2005-2012, vs ~5M plays), it is already in the shape
+  `game_daily_stats` wants, and **it carries `Dollars` where the early-era
+  `PlayerCardTrans.DollarAmount` is 0** ($891K in 2006 rising to $3.87M in
+  2011) — so per-game MONEY is available for 2006-2012 even though the raw
+  ledger has none. `ValueNo` semantics here: **1** = plays/value (22.19M qty,
+  $88.09M, 2005-2026), **2** = 2.33M qty / $27.6K, **3** = tickets (951,642 qty,
+  $0 — matching the ledger's ValueNo-3-is-tickets convention).
+  CAUTION on ValueNo 3: only 4,124 rows across two decades, which is sparse for
+  a ticket arcade — per-game tickets for the early era are PLAUSIBLE but the
+  density has not been verified. Measure ValueNo-3-with-`rdrKey` per year before
+  relying on it. `Dollars` in 2005 is 0; money starts 2006.
+  `StationNo` is NOT a machine identifier — it is a POS register (it appears on
+  `Till`, `TaxDocuments`, `RedeemScreens`, `PosKeys`…). Do not treat it as one.
 
 - **CARD-SYSTEM CUTOVER (important):** the venue switched from the **Embed**
   card system to **CenterEdge/Kiosoft** readers ~end of April 2026. Table
