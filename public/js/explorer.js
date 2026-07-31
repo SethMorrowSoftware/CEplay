@@ -432,8 +432,8 @@
                 App.el('div', {}, [
                     App.el('h3', { textContent: 'How far back can per-game history reach?' }),
                     App.el('div', { className: 'text-muted text-sm', textContent:
-                        'Checks whether Embed-era plays (before the ~May 2026 reader cutover) can still be '
-                        + 'attributed to today’s machines. Read-only, and bounded to one probe month per era.' })
+                        'Finds which years of play history can still be attributed to a machine, and whether '
+                        + 'those reader keys resolve to today’s games. Read-only; one grouped pass per table.' })
                 ])
             ]),
             App.el('div', { className: 'card-body' }, [
@@ -475,21 +475,26 @@
         if (rec) {
             var pct = rec.total_readers > 0
                 ? Math.round(rec.mapped_readers / rec.total_readers * 100) : 0;
+            var span = rec.first_key_year === rec.last_key_year
+                ? String(rec.first_key_year)
+                : rec.first_key_year + '–' + rec.last_key_year;
             results.appendChild(App.el('div', { className: 'alert-success', style: { marginTop: '0.8rem' } }, [
-                App.el('strong', { textContent: 'Embed-era per-game history looks recoverable. ' }),
+                App.el('strong', { textContent: 'Per-game history is recoverable for ' + span + '. ' }),
                 App.el('span', { textContent:
-                    rec.schema + '.' + rec.table + ' carries a populated ' + rec.key_col
-                    + ' on pre-cutover rows, and ' + rec.mapped_readers + ' of ' + rec.total_readers
-                    + ' readers (' + pct + '%) still map to a game this app knows about'
-                    + (rec.earliest ? '. Its data starts ' + rec.earliest.slice(0, 10) : '') + '.' })
+                    rec.schema + '.' + rec.table + ' carries a populated ' + rec.key_col + ' on '
+                    + fmtCount(rec.attributable) + ' rows across ' + rec.key_years
+                    + (rec.key_years === 1 ? ' year' : ' years') + ', and ' + rec.mapped_readers
+                    + ' of ' + rec.total_readers + ' readers (' + pct + '%) match a game this app knows '
+                    + 'about by name. Unmatched readers need a hand-built crosswalk — check the samples below.' })
             ]));
         } else {
             results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
-                App.el('strong', { textContent: 'No usable Embed-era source found. ' }),
+                App.el('strong', { textContent: 'No per-game source found in the tables probed. ' }),
                 App.el('span', { textContent:
-                    'No table carries both a populated reader key on pre-cutover plays AND keys that still '
-                    + 'resolve to current games. Per-game history can only grow forward from the cutover; '
-                    + 'venue-wide totals are unaffected (those never needed a reader key).' })
+                    'None of the tables below carry a populated machine key in any year whose keys also '
+                    + 'resolve to a current game. Check the per-year columns: a table with keys but no '
+                    + 'matches is a NAMING problem (fixable by hand), not a missing-data one. Venue-wide '
+                    + 'and per-area totals are unaffected — those never needed a reader key.' })
             ]));
         }
 
@@ -501,25 +506,32 @@
             return;
         }
 
-        var head = ['Table', 'Reader key', 'Date column', 'Rows',
-                    'Before cutover', 'After cutover', 'Readers → games'];
+        var head = ['Table', 'Machine key', 'Date column', 'Rows',
+                    'Years with keys', 'Attributable rows', 'Readers → games'];
         var body = cands.map(function(c) {
             var cov = c.coverage || {};
-            var leg = cov.legacy, cur = cov.current, map = c.mapping;
-            var era = function(e) {
-                if (!c.probed) return 'not probed';
-                if (cov.error) return '⚠ ' + cov.error;
-                if (!e) return '—';
-                if (!e.rows) return 'no rows';
-                return fmtCount(e.with_key) + ' / ' + fmtCount(e.rows)
-                    + ' (' + (e.key_pct == null ? '—' : e.key_pct + '%') + ')';
-            };
+            var map = c.mapping;
+            var yearsText, attrText;
+            if (!c.probed) {
+                yearsText = attrText = 'not probed';
+            } else if (cov.error) {
+                yearsText = attrText = '⚠ ' + cov.error;
+            } else if (!cov.first_key_year) {
+                yearsText = 'none';
+                attrText = '0';
+            } else {
+                yearsText = cov.first_key_year === cov.last_key_year
+                    ? String(cov.first_key_year)
+                    : cov.first_key_year + '–' + cov.last_key_year;
+                if (cov.key_years > 1) yearsText += ' (' + cov.key_years + ')';
+                attrText = fmtCount(cov.total_with_key);
+            }
             var mapText = '—';
             if (map) {
                 mapText = map.error
                     ? '⚠ ' + map.error
-                    : map.mapped + ' of ' + map.keys_seen + ' map';
-            } else if (c.probed && leg && !leg.with_key) {
+                    : map.mapped + ' of ' + map.keys_seen + ' map (' + map.year + ')';
+            } else if (c.probed && !cov.error) {
                 mapText = 'no keys to map';
             }
             return App.el('tr', {}, [
@@ -527,8 +539,8 @@
                 App.el('td', { className: 'text-muted', textContent: c.key_col }),
                 App.el('td', { className: 'text-muted', textContent: c.date_col }),
                 App.el('td', { className: 'text-right', textContent: c.rows == null ? '—' : fmtCount(c.rows) }),
-                App.el('td', { textContent: era(leg) }),
-                App.el('td', { textContent: era(cur) }),
+                App.el('td', { textContent: yearsText }),
+                App.el('td', { className: 'text-right', textContent: attrText }),
                 App.el('td', { textContent: mapText })
             ]);
         });
@@ -544,12 +556,37 @@
             ])
         ]));
 
-        var lp = d.legacy_probe || {}, cp = d.current_probe || {};
         results.appendChild(App.el('p', { className: 'text-muted text-xs', style: { marginTop: '0.5rem' },
-            textContent: 'Cutover assumed ' + (d.cutover || '?') + '. "Before" samples '
-                + (lp.from || '?') + ' → ' + (lp.to || '?') + ', "after" samples '
-                + (cp.from || '?') + ' → ' + (cp.to || '?') + ' — one month each, so a multi-million-row '
-                + 'table is never scanned end to end. Only the largest few tables are probed.' }));
+            textContent: 'Reader cutover was ~' + (d.cutover || '?') + ', but coverage is measured per YEAR '
+                + 'rather than assumed from the cutover — key population can stop long before a system '
+                + 'change. Only the largest few tables are probed; POS register columns (StationNo) are '
+                + 'excluded, since they identify a till rather than a machine.' }));
+
+        // Per-year coverage for the deepest candidate — the evidence behind the verdict.
+        var deepest = cands.filter(function(c) {
+            return c.coverage && (c.coverage.years || []).length && c.coverage.first_key_year;
+        })[0];
+        if (deepest) {
+            results.appendChild(App.el('div', { className: 'stat-label', style: { margin: '0.9rem 0 0.4rem' },
+                textContent: 'Year-by-year key coverage (' + deepest.table + ')' }));
+            results.appendChild(App.el('div', { className: 'explorer-scroll' }, [
+                App.el('table', { className: 'data-table' }, [
+                    App.el('thead', {}, [App.el('tr', {}, ['Year', 'Rows', 'With key', 'Coverage', 'Readers'].map(function(h) {
+                        return App.el('th', { textContent: h });
+                    }))]),
+                    App.el('tbody', {}, deepest.coverage.years.map(function(y) {
+                        return App.el('tr', { className: y.with_key ? '' : 'text-muted' }, [
+                            App.el('td', {}, [App.el('strong', { textContent: String(y.year) })]),
+                            App.el('td', { className: 'text-right', textContent: fmtCount(y.rows) }),
+                            App.el('td', { className: 'text-right', textContent: fmtCount(y.with_key) }),
+                            App.el('td', { className: 'text-right',
+                                textContent: y.key_pct == null ? '—' : y.key_pct + '%' }),
+                            App.el('td', { className: 'text-right', textContent: fmtCount(y.distinct_keys) })
+                        ]);
+                    }))
+                ])
+            ]));
+        }
 
         // Reader → game samples make a bad mapping obvious at a glance.
         var withSamples = cands.filter(function(c) { return c.mapping && (c.mapping.samples || []).length; });

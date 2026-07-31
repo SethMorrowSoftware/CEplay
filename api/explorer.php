@@ -557,47 +557,99 @@ function explorerQuery(array $input): void {
 /** The Embed → CenterEdge/Kiosoft reader cutover, per docs (end of April 2026). */
 const EXPLORER_CUTOVER_DATE = '2026-05-01';
 
-/** Column names that look like a reader/device key. */
+/**
+ * Column names that identify the MACHINE a transaction happened at.
+ *
+ * Deliberately NOT `StationNo`: that is a POS register (it appears on
+ * Till, TaxDocuments, RedeemScreens, PosKeys…), so treating it as a game
+ * identifier would bury the real candidates under dozens of false ones.
+ */
 function explorerIsReaderKeyColumn(string $name): bool {
     $n = strtolower(str_replace(['_', ' '], '', $name));
-    return in_array($n, ['rdrkey', 'readerkey', 'readerid', 'rdrid', 'deviceid', 'devicekey'], true);
+    return in_array($n, [
+        'rdrkey', 'readerkey', 'readerid', 'rdrid', 'deviceid', 'devicekey',
+        // Embed-era naming — varchar station identifiers on the pass/media tables.
+        'gamestation', 'machineno', 'machno', 'attractionno', 'equipmentno',
+    ], true);
+}
+
+/** Char-typed keys can't be compared to 0 — T-SQL would try to convert and throw. */
+function explorerIsCharType(string $type): bool {
+    return in_array(strtolower($type), ['char', 'varchar', 'nchar', 'nvarchar', 'text', 'ntext'], true);
+}
+
+/** SQL predicate for "this row actually carries a machine identity". */
+function explorerKeyPopulatedExpr(string $k, string $type): string {
+    if (explorerIsCharType($type)) {
+        return "($k IS NOT NULL AND LTRIM(RTRIM($k)) <> '' AND LTRIM(RTRIM($k)) <> '0')";
+    }
+    return "($k IS NOT NULL AND $k <> 0)";
 }
 
 /**
- * One candidate table's per-era reader-key coverage. Bounded to a single probe
- * month per era so a 20M-row table is never scanned end to end.
- *
- * @return array reader-key coverage before and after the cutover, or an error
+ * Pick the column most likely to be the TRANSACTION date. Taking the first
+ * date-typed column in ordinal order is a false-negative machine: a table
+ * whose `CreatedDate` precedes its `ShiftDate` gets probed on a column that
+ * may be null or uniformly recent, and reads as having no history at all.
  */
-function explorerProbeReaderCoverage(MssqlClient $client, string $schema, string $table, string $keyCol, string $dateCol): array {
+function explorerPickDateColumn(array $dateCols): ?string {
+    foreach ([['transdatetime', 'shiftdate'], ['trans', 'shift'], ['date']] as $round) {
+        foreach ($dateCols as $col) {
+            $n = strtolower(str_replace(['_', ' '], '', $col));
+            foreach ($round as $want) {
+                if ($n === $want || strpos($n, $want) !== false) return $col;
+            }
+        }
+    }
+    return $dateCols[0] ?? null;
+}
+
+/**
+ * One candidate table's reader-key coverage, YEAR BY YEAR.
+ *
+ * This replaced a two-window probe (one month before the cutover, one after)
+ * that produced a false negative on this venue's data: key population is not
+ * uniform across an era. `PlayerCardTrans.rdrkey` is 100% populated 2005-2011,
+ * 76% through 2012, and exactly 0 from 2013 on — so sampling a month in early
+ * 2026 saw zeros and concluded no per-game history existed anywhere, when in
+ * fact eight fully-attributed years were sitting in the same column.
+ *
+ * One grouped pass per table, whatever the index situation, instead of N
+ * bounded windows that are only cheap if the date column happens to be indexed.
+ */
+function explorerProbeReaderYears(MssqlClient $client, string $schema, string $table, string $keyCol, string $keyType, string $dateCol): array {
     $t = explorerIdent($schema) . '.' . explorerIdent($table);
     $k = explorerIdent($keyCol);
     $d = explorerIdent($dateCol);
+    $pop = explorerKeyPopulatedExpr($k, $keyType);
 
-    $era = function (string $from, string $toExcl) use ($client, $t, $k, $d) {
-        $sql = "SELECT COUNT(*) AS total,"
-             . " SUM(CASE WHEN $k IS NOT NULL AND $k <> 0 THEN 1 ELSE 0 END) AS with_key,"
-             . " COUNT(DISTINCT CASE WHEN $k IS NOT NULL AND $k <> 0 THEN $k END) AS distinct_keys"
-             . " FROM $t WHERE $d >= " . explorerLit($from) . " AND $d < " . explorerLit($toExcl);
-        $rows = $client->rows($sql, 1);
-        $r = $rows[0] ?? [];
-        $v = array_values($r);
-        $total = (int)($r['total'] ?? $v[0] ?? 0);
-        $withKey = (int)($r['with_key'] ?? $v[1] ?? 0);
-        return [
-            'rows'          => $total,
-            'with_key'      => $withKey,
-            'distinct_keys' => (int)($r['distinct_keys'] ?? $v[2] ?? 0),
-            'key_pct'       => $total > 0 ? round($withKey / $total * 100, 1) : null,
-        ];
-    };
-
-    $out = ['legacy' => null, 'current' => null, 'error' => null];
+    $out = ['years' => [], 'first_key_year' => null, 'last_key_year' => null,
+            'key_years' => 0, 'total_with_key' => 0, 'error' => null];
     try {
-        // A month safely inside each era. Legacy = the winter before the
-        // cutover; current = the month after it.
-        $out['legacy']  = $era('2026-02-01', '2026-03-01');
-        $out['current'] = $era('2026-05-01', '2026-06-01');
+        $sql = "SELECT YEAR($d) AS yr, COUNT(*) AS total,"
+             . " SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS with_key,"
+             . " COUNT(DISTINCT CASE WHEN $pop THEN $k END) AS distinct_keys"
+             . " FROM $t WHERE $d IS NOT NULL GROUP BY YEAR($d) ORDER BY YEAR($d)";
+        foreach ($client->rows($sql, 200) as $r) {
+            $v = array_values($r);
+            $yr = (int)($r['yr'] ?? $v[0] ?? 0);
+            if ($yr <= 0) continue;
+            $total   = (int)($r['total'] ?? $v[1] ?? 0);
+            $withKey = (int)($r['with_key'] ?? $v[2] ?? 0);
+            $out['years'][] = [
+                'year'          => $yr,
+                'rows'          => $total,
+                'with_key'      => $withKey,
+                'distinct_keys' => (int)($r['distinct_keys'] ?? $v[3] ?? 0),
+                'key_pct'       => $total > 0 ? round($withKey / $total * 100, 1) : null,
+            ];
+            if ($withKey > 0) {
+                if ($out['first_key_year'] === null) $out['first_key_year'] = $yr;
+                $out['last_key_year'] = $yr;
+                $out['key_years']++;
+                $out['total_with_key'] += $withKey;
+            }
+        }
     } catch (Exception $e) {
         $out['error'] = $e->getMessage();
     }
@@ -610,20 +662,24 @@ function explorerProbeReaderCoverage(MssqlClient $client, string $schema, string
  * AND they resolve — an Embed-era key pointing at a reader that was ripped out
  * and deleted from ReaderDevices attributes to nothing.
  */
-function explorerProbeReaderMapping(MssqlClient $client, string $schema, string $table, string $keyCol, string $dateCol): array {
+function explorerProbeReaderMapping(MssqlClient $client, string $schema, string $table, string $keyCol, string $keyType, string $dateCol, int $year): array {
     $t = explorerIdent($schema) . '.' . explorerIdent($table);
     $k = explorerIdent($keyCol);
     $d = explorerIdent($dateCol);
-    $out = ['keys_seen' => 0, 'mapped' => 0, 'unmapped' => 0, 'samples' => [], 'error' => null];
+    $pop = explorerKeyPopulatedExpr($k, $keyType);
+    $out = ['keys_seen' => 0, 'mapped' => 0, 'unmapped' => 0, 'year' => $year,
+            'samples' => [], 'error' => null];
     try {
-        // Reader keys actually used in the legacy era (bounded probe month).
+        // Keys actually used in the most recent year that HAS them — the era
+        // most likely to still correspond to machines on the floor today.
         $keys = [];
         foreach ($client->rows(
             "SELECT DISTINCT $k AS rk FROM $t"
-            . " WHERE $d >= " . explorerLit('2026-02-01') . " AND $d < " . explorerLit('2026-03-01')
-            . " AND $k IS NOT NULL AND $k <> 0", 2000) as $r) {
-            $rk = (int)($r['rk'] ?? array_values($r)[0] ?? 0);
-            if ($rk !== 0) $keys[$rk] = true;
+            . " WHERE $d >= " . explorerLit($year . '-01-01') . " AND $d < " . explorerLit(($year + 1) . '-01-01')
+            . " AND $pop", 2000) as $r) {
+            $raw = $r['rk'] ?? array_values($r)[0] ?? null;
+            if ($raw === null || trim((string)$raw) === '') continue;
+            $keys[trim((string)$raw)] = true;
         }
         $out['keys_seen'] = count($keys);
         if (!$keys) return $out;
@@ -634,7 +690,7 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
         try {
             foreach ($client->rows('SELECT rdrKey, Description FROM dbo.ReaderDevices', 100000) as $rd) {
                 $rk = (int)($rd['rdrKey'] ?? 0);
-                if ($rk !== 0) $desc[$rk] = (string)($rd['Description'] ?? '');
+                if ($rk !== 0) $desc[(string)$rk] = (string)($rd['Description'] ?? '');
             }
         } catch (Exception $e) {
             $out['error'] = 'ReaderDevices not readable: ' . $e->getMessage();
@@ -647,9 +703,14 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
         }
 
         foreach (array_keys($keys) as $rk) {
+            // A char key (Embed's GameStation) may BE the machine name rather
+            // than a lookup key, so try the key itself as a name too.
             $description = $desc[$rk] ?? '';
-            $n = explorerNormName($description);
-            $match = ($n !== '' && isset($byName[$n])) ? $byName[$n] : null;
+            $match = null;
+            foreach ([$description, $rk] as $cand) {
+                $n = explorerNormName((string)$cand);
+                if ($n !== '' && isset($byName[$n])) { $match = $byName[$n]; break; }
+            }
             if ($match !== null) { $out['mapped']++; } else { $out['unmapped']++; }
             if (count($out['samples']) < 15) {
                 $out['samples'][] = [
@@ -681,7 +742,9 @@ function explorerHistorySources(): void {
 
     try {
         $client = new MssqlClient();
-        $client->setTimeout(120);
+        // A grouped scan per table is one full pass; the old windowed probe was
+        // cheaper but wrong. Give it room rather than time out mid-sweep.
+        $client->setTimeout(300);
     } catch (Exception $e) {
         explorerJson(['configured' => true, 'error' => $e->getMessage(), 'candidates' => []]);
         return;
@@ -702,16 +765,21 @@ function explorerHistorySources(): void {
             $type = strtolower((string)($c['DATA_TYPE'] ?? $v[3] ?? ''));
             if ($tbl === '' || $col === '') continue;
             $key = $sch . '.' . $tbl;
-            if (!isset($byTable[$key])) $byTable[$key] = ['schema' => $sch, 'table' => $tbl, 'key_col' => null, 'date_col' => null];
+            if (!isset($byTable[$key])) {
+                $byTable[$key] = ['schema' => $sch, 'table' => $tbl,
+                                  'key_col' => null, 'key_type' => '', 'date_cols' => []];
+            }
             if ($byTable[$key]['key_col'] === null && explorerIsReaderKeyColumn($col)) {
-                $byTable[$key]['key_col'] = $col;
+                $byTable[$key]['key_col']  = $col;
+                $byTable[$key]['key_type'] = $type;
             }
-            if ($byTable[$key]['date_col'] === null && explorerIsDateType($type)) {
-                $byTable[$key]['date_col'] = $col;
-            }
+            if (explorerIsDateType($type)) $byTable[$key]['date_cols'][] = $col;
         }
         foreach ($byTable as $t) {
-            if ($t['key_col'] !== null && $t['date_col'] !== null) $candidates[] = $t;
+            if ($t['key_col'] === null || !$t['date_cols']) continue;
+            $t['date_col'] = explorerPickDateColumn($t['date_cols']);
+            unset($t['date_cols']);
+            $candidates[] = $t;
         }
     } catch (Exception $e) {
         explorerJson(['configured' => true, 'error' => 'Schema scan failed: ' . $e->getMessage(), 'candidates' => []]);
@@ -743,22 +811,28 @@ function explorerHistorySources(): void {
         $entry = $c + ['coverage' => null, 'mapping' => null, 'probed' => false];
         if ($i < $probeLimit) {
             $entry['probed'] = true;
-            $entry['coverage'] = explorerProbeReaderCoverage($client, $c['schema'], $c['table'], $c['key_col'], $c['date_col']);
-            $legacy = $entry['coverage']['legacy'] ?? null;
-            // Only worth a mapping trip when the legacy era actually has keys.
-            if ($legacy && ($legacy['with_key'] ?? 0) > 0) {
-                $entry['mapping'] = explorerProbeReaderMapping($client, $c['schema'], $c['table'], $c['key_col'], $c['date_col']);
+            $entry['coverage'] = explorerProbeReaderYears(
+                $client, $c['schema'], $c['table'], $c['key_col'], $c['key_type'], $c['date_col']);
+            // Map against the most recent year that has keys — WHENEVER one
+            // exists. The old code only tried when the pre-cutover sample month
+            // had keys, so on this database the mapping check never ran at all
+            // and the UI reported "keys don't resolve" without ever testing it.
+            $lastKeyYear = $entry['coverage']['last_key_year'] ?? null;
+            if ($lastKeyYear) {
+                $entry['mapping'] = explorerProbeReaderMapping(
+                    $client, $c['schema'], $c['table'], $c['key_col'], $c['key_type'],
+                    $c['date_col'], (int)$lastKeyYear);
             }
         }
         $results[] = $entry;
     }
 
-    // ---- Verdict: is the Embed era recoverable, and via what? ----
+    // ---- Verdict: which source reaches furthest back, and does it resolve? ----
     $best = null;
     foreach ($results as $r) {
-        $legacy = $r['coverage']['legacy'] ?? null;
+        $cov = $r['coverage'] ?? null;
         $map = $r['mapping'] ?? null;
-        if (!$legacy || ($legacy['with_key'] ?? 0) <= 0 || !$map) continue;
+        if (!$cov || !$map || ($cov['total_with_key'] ?? 0) <= 0) continue;
         $score = (int)($map['mapped'] ?? 0);
         if ($score > 0 && ($best === null || $score > $best['mapped_readers'])) {
             $best = [
@@ -768,22 +842,11 @@ function explorerHistorySources(): void {
                 'date_col'       => $r['date_col'],
                 'mapped_readers' => $score,
                 'total_readers'  => (int)($map['keys_seen'] ?? 0),
+                'first_key_year' => $cov['first_key_year'] ?? null,
+                'last_key_year'  => $cov['last_key_year'] ?? null,
+                'key_years'      => (int)($cov['key_years'] ?? 0),
+                'attributable'   => (int)($cov['total_with_key'] ?? 0),
             ];
-        }
-    }
-
-    // How deep does the winning source actually go?
-    if ($best !== null) {
-        try {
-            $t = explorerIdent($best['schema']) . '.' . explorerIdent($best['table']);
-            $d = explorerIdent($best['date_col']);
-            $rows = $client->rows("SELECT MIN($d) AS lo, MAX($d) AS hi FROM $t", 1);
-            $r = $rows[0] ?? [];
-            $v = array_values($r);
-            $best['earliest'] = substr((string)($r['lo'] ?? $v[0] ?? ''), 0, 19) ?: null;
-            $best['latest']   = substr((string)($r['hi'] ?? $v[1] ?? ''), 0, 19) ?: null;
-        } catch (Exception $e) {
-            $best['range_error'] = $e->getMessage();
         }
     }
 
@@ -791,8 +854,6 @@ function explorerHistorySources(): void {
         'configured'  => true,
         'driver'      => $client->driver(),
         'cutover'     => EXPLORER_CUTOVER_DATE,
-        'legacy_probe'  => ['from' => '2026-02-01', 'to' => '2026-03-01'],
-        'current_probe' => ['from' => '2026-05-01', 'to' => '2026-06-01'],
         'candidates'  => $results,
         'recommended' => $best,
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
