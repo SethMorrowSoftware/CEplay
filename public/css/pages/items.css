@@ -379,3 +379,14 @@
 /* Keep tabular cells that pair a figure with a qualifier on one line — the
    history table's Margin cell and its period labels both wrap badly otherwise. */
 .items-nowrap { white-space: nowrap; }
+
+/* Probe inputs sit BEFORE the Test button they feed — placed after it they
+   read as unrelated controls and get left blank. */
+.items-probe-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    width: 100%;
+    margin-bottom: 0.4rem;
+}

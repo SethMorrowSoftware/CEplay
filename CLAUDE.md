@@ -363,10 +363,11 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   whose figures are the union, with a per-InvNo breakdown on the detail view
   showing which member is actually moving. Source: MSSQL `Sales` grouped by
   `InvNo` — `SUM(QtySold)` units, `SUM(AmtSold)` dollars, `SUM(Discounts)`,
-  `SUM(CostSold)` (this is the ONLY report with a cost source, so it is the only
-  one showing gross margin; `has_cost` is computed per response and the margin
-  columns hide entirely when the venue leaves `CostSold` at 0 rather than
-  printing a fake 100%).
+  `SUM(CostSold)` (the only cost source in the schema — but see the `Sales`
+  entry below: `CostSold` is EMPTY on this install, so in practice the margin
+  columns stay hidden here. `has_cost` is computed per response and the margin
+  UI hides itself entirely rather than printing a fake 100%; the code path is
+  live and correct for a venue that does record cost).
   Grain is DAY, never hour — `Sales.ShiftDate` is a business day stamped at
   midnight, so there is no hour-of-day panel here (same honesty as Revenue Mix /
   Ticket Trends). FOUR admin-editable single-SELECT queries: `items_range_sql`
@@ -432,8 +433,13 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   `items_manage` (its own catalog key, granted once to roles holding
   `promotions_manage` by `migration_items_manage_v1`); config gate: `settings`;
   Test gate: `data_explorer` (the Test button dumps the window's top InvNos with
-  names — the fastest way to find an item's number — and reconciles the
-  day-grain query against the totals query, which must agree). Teal `--items`
+  names and per-item cost — the fastest way to find an item's number — states
+  the `CostSold` coverage ratio outright, reconciles the day-grain query against
+  the totals query, and runs the history query on ALL FIVE grains checking each
+  ties back to those totals. With the InvNo box left blank it probes the range's
+  top seller automatically, so the reconcile and grain checks never depend on
+  remembering to fill a field — they were skipped on two consecutive venue runs
+  before that fallback existed). Teal `--items`
   theme. Items can be pinned before MSSQL is configured (numbers fill in later).
   Venue server only for the live numbers (no sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
@@ -566,11 +572,17 @@ before building.
   `SubCatNo`, `DivNo`, **`InvNo`** (the inventory item — CONFIRMED: the venue
   already tracks a kart deal in Grafana with `SELECT SUM(QtySold) FROM Sales
   WHERE InvNo = 7157`, and the Item Watch page groups this table by it).
-  `CostSold` makes `Sales` the ONLY confirmed source of cost of goods, so
-  per-item gross margin is available here and nowhere else — but confirm it is
-  actually populated before promising margin, since a venue can leave it 0
-  (Item Watch hides its margin columns when the response carries no cost rather
-  than reporting a fake 100%). Confirmed codes on this install: **`CatNo 108` = Go
+  `CostSold` is the ONLY cost-of-goods column anywhere in this schema — but
+  **on THIS install it is empty. MEASURED August 2026 via the Item Watch Test
+  button: 0 of the 150 items sold in a 30-day window record any cost**, across
+  reader aggregates, admissions, merchandise and F&B alike. So **per-item gross
+  margin is NOT available at this venue** and no report should promise it. Item
+  Watch already handles this correctly — `has_cost` comes back false and the
+  margin columns hide themselves rather than printing a fake 100% — and its
+  Test button now reports the coverage ratio outright. Do not re-derive this;
+  re-run that button if you suspect the POS config changed. If margin is ever
+  wanted, a NEW source is needed (an `Inventory` unit-cost column would be the
+  first place to look, unconfirmed), not a different read of `Sales`. Confirmed codes on this install: **`CatNo 108` = Go
   Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
   cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
   aggregated daily dollars spent at the kart readers — the go-kart sales figure

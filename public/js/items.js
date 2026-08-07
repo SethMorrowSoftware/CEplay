@@ -1493,7 +1493,9 @@
                 saveBtn.disabled = false;
             } });
 
-        var probeInv  = App.el('input', { className: 'form-input form-input-sm', type: 'text', placeholder: 'InvNo(s), e.g. 7157', style: { maxWidth: '12rem' } });
+        var probeInv  = App.el('input', { className: 'form-input form-input-sm', type: 'text',
+            id: 'items-probe-inv', placeholder: 'blank = top seller', style: { maxWidth: '11rem' },
+            title: 'Which item to reconcile. Leave blank and the range\'s best seller is probed automatically.' });
         var probeFrom = App.el('input', { className: 'form-input form-input-sm', type: 'date', 'aria-label': 'Probe from (blank = 30 days ago)' });
         var probeTo   = App.el('input', { className: 'form-input form-input-sm', type: 'date', 'aria-label': 'Probe to (blank = today)' });
         var testBtn = App.el('button', { className: 'btn btn-secondary', textContent: 'Test & reconcile',
@@ -1530,8 +1532,14 @@
             : 'No MSSQL connection yet — set it up on the Go-Kart Labor page first; this report shares it.';
 
         var canTest = App.canAccess('data_explorer');
+        var probeRow = App.el('div', { className: 'items-probe-row' }, [
+            App.el('label', { className: 'text-sm text-secondary', 'for': 'items-probe-inv', textContent: 'Probe InvNo' }),
+            probeInv,
+            App.el('span', { className: 'text-sm text-secondary', textContent: 'from' }), probeFrom,
+            App.el('span', { className: 'text-sm text-secondary', textContent: 'to' }), probeTo
+        ]);
         var controls = canTest
-            ? [saveBtn, testBtn, probeInv, probeFrom, probeTo, statusEl]
+            ? [probeRow, saveBtn, testBtn, statusEl]
             : [saveBtn, statusEl];
 
         box.appendChild(App.el('details', { className: 'card labor-admin-details' }, [
