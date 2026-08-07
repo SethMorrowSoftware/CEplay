@@ -1042,7 +1042,7 @@ function explorerMoneyPopulatedExpr(string $col): string {
  */
 function explorerProbeCostColumn(
     MssqlClient $client, string $schema, string $table, string $keyCol, string $col, array $sellers,
-    ?float $deadline = null
+    ?float $deadline = null, bool $fullScanOk = true
 ): array {
     $expired = function () use ($deadline) { return $deadline !== null && microtime(true) > $deadline; };
     $t = explorerIdent($schema) . '.' . explorerIdent($table);
@@ -1052,12 +1052,19 @@ function explorerProbeCostColumn(
 
     $out = ['rows' => null, 'populated' => null, 'populated_pct' => null,
             'sellers_matched' => null, 'sellers_populated' => null, 'sellers_pct' => null,
-            'min' => null, 'max' => null, 'samples' => [], 'error' => null];
+            'rows_per_key' => null, 'min' => null, 'max' => null, 'samples' => [], 'error' => null];
     if ($expired()) {
         $out['error'] = 'skipped — time budget reached';
         return $out;
     }
+    // On a big table the whole-table pass is the expensive part and the least
+    // informative. Skip it and go straight to the bounded seller lookup, which
+    // is the measure the verdict actually rests on.
+    if (!$fullScanOk) {
+        $out['scan_skipped'] = true;
+    }
     try {
+        if (!$fullScanOk) { throw new RuntimeException('__skip_full_scan__'); }
         $r = $client->rows(
             "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p,"
             . " MIN(CASE WHEN $pop THEN $c END) AS lo, MAX(CASE WHEN $pop THEN $c END) AS hi"
@@ -1071,22 +1078,35 @@ function explorerProbeCostColumn(
             $out['populated_pct'] = $out['rows'] > 0 ? round($out['populated'] / $out['rows'] * 100, 1) : null;
         }
     } catch (Exception $e) {
-        $out['error'] = $e->getMessage();
-        return $out;   // a column we can't read is not worth probing further
+        if ($e->getMessage() !== '__skip_full_scan__') {
+            $out['error'] = $e->getMessage();
+            return $out;   // a column we can't read is not worth probing further
+        }
+        // Deliberate skip — fall through to the bounded seller lookup.
     }
 
     if ($sellers && !$expired()) {
         try {
+            // COUNT(DISTINCT), not COUNT(*): on a master table one row IS one
+            // item, but on a transaction table there are many rows per item —
+            // GroupLineItems reported "25,949 of 120 sellers (21,624%)" and
+            // consequently outranked the correct master-table answer.
             $inList = MssqlClient::bindIntList(
-                "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p"
-                . " FROM $t WHERE $k IN (:invnos)", ':invnos', $sellers);
+                "SELECT COUNT(DISTINCT $k) AS n, COUNT(DISTINCT CASE WHEN $pop THEN $k END) AS p,"
+                . " COUNT(*) AS r FROM $t WHERE $k IN (:invnos)", ':invnos', $sellers);
             $r = $client->rows($inList, 1);
             if ($r) {
                 $v = array_values($r[0]);
                 $out['sellers_matched']   = (int)($r[0]['n'] ?? $v[0] ?? 0);
                 $out['sellers_populated'] = (int)($r[0]['p'] ?? $v[1] ?? 0);
+                $matchRows                = (int)($r[0]['r'] ?? $v[2] ?? 0);
                 $out['sellers_pct'] = count($sellers) > 0
                     ? round($out['sellers_populated'] / count($sellers) * 100, 1) : null;
+                // Rows per item separates a master table (~1) from a
+                // transaction log (many) — the former is what a list price or
+                // unit cost should be read from.
+                $out['rows_per_key'] = $out['sellers_matched'] > 0
+                    ? round($matchRows / $out['sellers_matched'], 1) : null;
             }
             $sampleSql = MssqlClient::bindIntList(
                 "SELECT TOP 8 $k AS inv, $c AS val FROM $t WHERE $k IN (:invnos) AND $pop ORDER BY $k",
@@ -1225,15 +1245,14 @@ function explorerCostSources(): void {
             continue;
         }
 
-        if ($c['rows'] === null) {
+        if ($c['rows'] === 0) {
+            $entry['skip_reason'] = 'empty table';
+        } elseif ($c['rows'] === null) {
             // No sys.partitions row means a VIEW (or an unreadable catalog).
             // A view over Sales looks tiny and scans like Sales — this is the
             // hole SalesForAllInventory fell through, killing the connection.
             $entry['skip_reason'] = 'size unknown (likely a view) — not scanned, since a view over a '
                 . 'transaction table costs the same as scanning it';
-        } elseif ($c['rows'] > EXPLORER_COST_SCAN_MAX_ROWS) {
-            $entry['skip_reason'] = 'too large to scan (' . number_format($c['rows'])
-                . ' rows) — a per-item unit cost lives on a master table, not a transaction table';
         } elseif ($probedCount >= $probeTables) {
             $entry['skip_reason'] = 'beyond the ' . $probeTables . '-table probe limit';
         } elseif ($budgetHit || (microtime(true) - $started) > EXPLORER_COST_TIME_BUDGET) {
@@ -1250,7 +1269,8 @@ function explorerCostSources(): void {
                 }
                 $probe = $cc + explorerProbeCostColumn(
                     $client, $c['schema'], $c['table'], $c['key_col'], $cc['col'], $sellers,
-                    $started + EXPLORER_COST_TIME_BUDGET);
+                    $started + EXPLORER_COST_TIME_BUDGET,
+                    $c['rows'] !== null && $c['rows'] <= EXPLORER_COST_SCAN_MAX_ROWS);
                 $cols[] = $probe;
                 if (!empty($probe['error']) && explorerIsFatalDbError((string)$probe['error'])) {
                     $connectionDead = true;
@@ -1281,8 +1301,17 @@ function explorerCostSources(): void {
                 'populated_pct' => $c['populated_pct'],
                 'min' => $c['min'], 'max' => $c['max'], 'samples' => $c['samples'],
             ];
+            $cand['rows_per_key'] = $c['rows_per_key'] ?? null;
+            // ~1 row per item means master data; many rows per item means a
+            // transaction log, where a "price" is what was charged once, not
+            // the item's price.
+            $cand['master_like'] = ($c['rows_per_key'] !== null && $c['rows_per_key'] <= 2.0);
             $kind = $c['kind'];
-            if ($best[$kind] === null || $cand['sellers_populated'] > $best[$kind]['sellers_populated']) {
+            $cur = $best[$kind];
+            if ($cur === null
+                || ($cand['master_like'] && !$cur['master_like'])
+                || ($cand['master_like'] === $cur['master_like']
+                    && $cand['sellers_populated'] > $cur['sellers_populated'])) {
                 $best[$kind] = $cand;
             }
         }
