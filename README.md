@@ -137,9 +137,10 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   up front — one click turns any row into a watched card.
 - Definitions live locally; every number is computed live from the POS `Sales`
   table (`QtySold`, `AmtSold`, `Discounts`, `CostSold`) grouped by `InvNo`.
-  This is the only report with a cost source, so it's the only one showing
-  gross margin — and it hides the margin columns entirely if this install
-  leaves `CostSold` at 0, rather than reporting a fake 100%.
+  It's the only report with a cost source, so it's the only one that *can*
+  show gross margin — though this venue's POS leaves `CostSold` empty
+  (confirmed August 2026), so the margin columns stay hidden rather than
+  reporting a fake 100%.
 - **"How it's tracking"** answers the multi-period question directly, and
   ignores the period picker on purpose: the last N calendar **days, weeks,
   months, quarters or years** side by side, each row with units, money and the

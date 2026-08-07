@@ -1387,6 +1387,8 @@ function itemsTest(?array $input = null): void {
 
         // Best sellers for the probe range — also the answer to "what InvNo is
         // the thing I want to watch?".
+        $topTotals = [];   // stays empty if the query below fails, so the
+                           // auto-probe fallback simply doesn't fire
         try {
             $topTotals = itemsTotalsFromRows($client->rows(
                 MssqlClient::bindRange(itemsBindRankExpr(itemsTopSql(), 'revenue'), $from, $to), 300));
@@ -1436,6 +1438,16 @@ function itemsTest(?array $input = null): void {
             }
         } catch (Exception $e) {
             $diag['top_items'] = 'error: ' . $e->getMessage();
+        }
+
+        // With no InvNo supplied, probe the range's top seller. The reconcile
+        // and per-grain history checks are the whole point of this button, so
+        // they must not depend on remembering to fill a box.
+        if (!$probe && !empty($topTotals)) {
+            $probe = [(string)array_key_first($topTotals)];
+            $result['probe_auto'] = true;
+            $diag['probe_source'] = 'No InvNo given, so the range\'s top seller (InvNo ' . $probe[0]
+                . ') was probed automatically. Enter one above to check a specific item.';
         }
 
         // Reconcile the two watched-item queries against each other for the
