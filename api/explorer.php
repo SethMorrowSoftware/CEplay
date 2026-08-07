@@ -671,7 +671,7 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
     $d = explorerIdent($dateCol);
     $pop = explorerKeyPopulatedExpr($k, $keyType);
     $out = ['keys_seen' => 0, 'mapped' => 0, 'unmapped' => 0, 'year' => $year,
-            'samples' => [], 'error' => null];
+            'games_known' => 0, 'samples' => [], 'error' => null];
     try {
         // Keys actually used in the most recent year that HAS them — the era
         // most likely to still correspond to machines on the floor today.
@@ -705,6 +705,8 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
             if ($n !== '' && !isset($byName[$n])) $byName[$n] = (string)$g['game_name'];
         }
 
+        $out['games_known'] = count($byName);
+
         foreach (array_keys($keys) as $rk) {
             // A char key (Embed's GameStation) may BE the machine name rather
             // than a lookup key, so try the key itself as a name too.
@@ -716,11 +718,24 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
             }
             if ($match !== null) { $out['mapped']++; } else { $out['unmapped']++; }
             if (count($out['samples']) < 15) {
-                $out['samples'][] = [
+                $sample = [
                     'reader_key'  => $rk,
                     'description' => $description !== '' ? $description : null,
                     'game'        => $match,
+                    'near'        => null,
+                    'near_score'  => null,
                 ];
+                // A bare "no match" is not interpretable: it can mean the
+                // machine is long gone, or that two names differ by a hyphen.
+                // Showing the closest current game separates those — and
+                // decides whether a hand-built crosswalk is worth the effort.
+                if ($match === null) {
+                    list($near, $score) = explorerNearestName(
+                        explorerNormName($description !== '' ? $description : (string)$rk), $byName);
+                    $sample['near'] = $near;
+                    $sample['near_score'] = $score;
+                }
+                $out['samples'][] = $sample;
             }
         }
     } catch (Exception $e) {
@@ -734,6 +749,26 @@ function explorerNormName(string $s): string {
     $s = function_exists('mb_strtolower') ? mb_strtolower(trim($s)) : strtolower(trim($s));
     $s = preg_replace('/^\d+\s*/', '', (string)$s);
     return trim((string)preg_replace('/\s+/', ' ', (string)$s));
+}
+
+/**
+ * The closest current game name to an unmatched reader, as [name, 0-100 score].
+ *
+ * Exact normalized equality is all the matcher does, so a miss says nothing
+ * about WHY. This turns the negative into evidence: a high score means the two
+ * names differ by punctuation or a word ("go kart mini indy" vs "go-kart mini
+ * indy") and a crosswalk would pay off; a low one means the machine simply
+ * isn't on the floor any more, and no amount of mapping brings it back.
+ */
+function explorerNearestName(string $needle, array $byName): array {
+    if ($needle === '' || !$byName) return [null, null];
+    $best = null; $bestScore = -1.0;
+    foreach ($byName as $norm => $display) {
+        $pct = 0.0;
+        similar_text($needle, (string)$norm, $pct);
+        if ($pct > $bestScore) { $bestScore = $pct; $best = $display; }
+    }
+    return $bestScore >= 0 ? [$best, round($bestScore, 1)] : [null, null];
 }
 
 function explorerHistorySources(): void {

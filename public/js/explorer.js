@@ -771,18 +771,41 @@
             var s = withSamples[0];
             results.appendChild(App.el('div', { className: 'stat-label', style: { margin: '0.9rem 0 0.4rem' },
                 textContent: 'Sample reader → game matches (' + s.table + ')' }));
+            // Say what the pool was. "No match" against 12 known games means
+            // something very different from "no match" against 400.
+            if (s.mapping.games_known != null) {
+                results.appendChild(App.el('p', { className: 'text-xs text-muted', style: { marginBottom: '0.4rem' },
+                    textContent: 'Compared against the ' + s.mapping.games_known
+                        + ' game name' + (s.mapping.games_known === 1 ? '' : 's') + ' this app currently knows. '
+                        + 'The closest one is shown for every miss: a high score means the names differ only in '
+                        + 'wording or punctuation and a crosswalk would work; a low one means the machine is no '
+                        + 'longer on the floor.' }));
+            }
             results.appendChild(App.el('div', { className: 'explorer-scroll' }, [
                 App.el('table', { className: 'data-table' }, [
-                    App.el('thead', {}, [App.el('tr', {}, ['Reader key', 'Reader description', 'Matched game'].map(function(h) {
-                        return App.el('th', { textContent: h });
-                    }))]),
+                    App.el('thead', {}, [App.el('tr', {},
+                        ['Reader key', 'Reader description', 'Matched game', 'Closest current game'].map(function(h) {
+                            return App.el('th', { textContent: h });
+                        }))]),
                     App.el('tbody', {}, s.mapping.samples.map(function(r) {
+                        var near;
+                        if (r.game) {
+                            near = App.el('span', { className: 'text-muted', textContent: '—' });
+                        } else if (r.near) {
+                            // Roughly: >70 is a wording/punctuation gap worth a
+                            // crosswalk entry; below that the names are unrelated.
+                            near = App.el('span', { className: r.near_score >= 70 ? '' : 'text-muted',
+                                textContent: r.near + ' (' + r.near_score + '%)' });
+                        } else {
+                            near = App.el('span', { className: 'text-muted', textContent: 'nothing comparable' });
+                        }
                         return App.el('tr', {}, [
                             App.el('td', { textContent: String(r.reader_key) }),
                             App.el('td', { className: 'text-muted', textContent: r.description || '(not in ReaderDevices)' }),
                             App.el('td', {}, r.game
                                 ? [App.el('strong', { textContent: r.game })]
-                                : [App.el('span', { className: 'text-muted', textContent: 'no match' })])
+                                : [App.el('span', { className: 'text-muted', textContent: 'no match' })]),
+                            App.el('td', {}, [near])
                         ]);
                     }))
                 ])
