@@ -1394,13 +1394,46 @@ function itemsTest(?array $input = null): void {
             uasort($topTotals, function ($a, $b) { return $b['amount'] <=> $a['amount']; });
             $lines = [];
             $n = 0;
+            $withCost = 0; $totalCost = 0.0; $totalAmt = 0.0;
             foreach ($topTotals as $inv => $t) {
-                if ($n++ >= 15) break;
+                $totalCost += $t['cost'];
+                $totalAmt  += $t['amount'];
+                if ($t['cost'] != 0.0) $withCost++;
+                if ($n++ >= 15) continue; // keep counting for coverage, print only the top 15
                 $nm = isset($topNames[$inv]) && $topNames[$inv] !== '' ? ' "' . $topNames[$inv] . '"' : '';
                 $lines[] = 'InvNo ' . $inv . $nm . ': ' . rtrim(rtrim(number_format($t['qty'], 2), '0'), '.')
-                    . ' units, $' . number_format($t['amount'], 2);
+                    . ' units, $' . number_format($t['amount'], 2)
+                    . ($t['cost'] != 0.0
+                        ? ', cost $' . number_format($t['cost'], 2)
+                          // A refund-heavy item can net to zero or negative
+                          // revenue, where a margin percentage is meaningless.
+                          . ($t['amount'] > 0
+                              ? ' (margin ' . number_format(($t['amount'] - $t['cost']) / $t['amount'] * 100, 1) . '%)'
+                              : ' (no positive revenue — margin n/a)')
+                        : ', no cost recorded');
             }
             $diag['top_items_' . $from . '_to_' . $to] = $lines ?: 'no sales in that range';
+
+            // Does this install populate Sales.CostSold? That single fact
+            // decides whether the page shows gross margin at all, so answer it
+            // outright instead of leaving it to be inferred.
+            $totalItems = count($topTotals);
+            if ($totalItems === 0) {
+                $diag['cost_coverage'] = 'no rows in this range — cannot tell yet';
+            } elseif ($withCost === 0) {
+                $diag['cost_coverage'] = 'NONE of the ' . $totalItems . ' items in this range record a cost. '
+                    . 'Item Watch will hide its margin columns (by design — it will not print a fake 100%).';
+            } else {
+                $diag['cost_coverage'] = $withCost . ' of ' . $totalItems . ' items record a cost ('
+                    . number_format($withCost / $totalItems * 100, 1) . '%). Total cost $'
+                    . number_format($totalCost, 2) . ' against $' . number_format($totalAmt, 2) . ' revenue'
+                    . ($totalAmt > 0
+                        ? ' = ' . number_format(($totalAmt - $totalCost) / $totalAmt * 100, 1) . '% blended margin. '
+                        : ' (no positive revenue in this range, so no blended margin). ')
+                    . ($withCost < $totalItems
+                        ? 'Margin columns will show, but items with no cost read as 100% margin — treat those rows with care.'
+                        : 'Margin columns will show for every item.');
+            }
         } catch (Exception $e) {
             $diag['top_items'] = 'error: ' . $e->getMessage();
         }
@@ -1416,13 +1449,16 @@ function itemsTest(?array $input = null): void {
 
                 $totals = itemsTotalsFromRows($client->rows(
                     itemsBindSql(itemsTotalsSql(), $from, $to, $probe), ITEMS_MAX_INV_PER_ENTRY + 10));
-                $totQty = 0.0; $totAmt = 0.0;
-                foreach ($totals as $t) { $totQty += $t['qty']; $totAmt += $t['amount']; }
+                $totQty = 0.0; $totAmt = 0.0; $totCost = 0.0;
+                foreach ($totals as $t) { $totQty += $t['qty']; $totAmt += $t['amount']; $totCost += $t['cost']; }
 
                 $result['probe'] = [
                     'inv_nos'      => $probe,
                     'qty'          => round($totQty, 2),
                     'amount'       => round($totAmt, 2),
+                    'cost'         => round($totCost, 2),
+                    'margin'       => round($totAmt - $totCost, 2),
+                    'has_cost'     => $totCost != 0.0,
                     'daily_rows'   => count($buckets),
                     'daily_qty'    => round($dayQty, 2),
                     'daily_amount' => round($dayAmt, 2),
