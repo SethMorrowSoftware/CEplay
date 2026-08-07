@@ -519,8 +519,20 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   Lookalike columns are excluded BY NAME (`PriceLevel`, `PriceGroup`,
   `CostCenter`, `PriceCode`…): they are integers that look monetary, and type
   alone can't separate them since some installs store money in int cents — so
-  int types are deliberately still accepted. Gate: `data_explorer`;
-  audit-logged; venue server only.
+  int types are deliberately still accepted.
+  **BOUNDED, because the first version timed out on the venue.** Every column
+  probe is a full aggregate pass, and the candidate set includes `Sales` and
+  `ReaderSales` — both carry an `InvNo` and are ~21M rows here, so scanning
+  them (times several columns) blew the request budget. Three limits now apply,
+  all reported rather than silent: tables over `EXPLORER_COST_SCAN_MAX_ROWS`
+  (750k) are listed with "too large to scan" and never touched (a per-item unit
+  cost lives on a MASTER table, so this loses nothing); a wall-clock
+  `EXPLORER_COST_TIME_BUDGET` (30s) stops the sweep and marks the rest "time
+  budget reached"; and the deadline is checked before EVERY query inside a
+  column probe, not just between columns, so worst-case overshoot is one
+  12s driver timeout rather than three. When the budget bites, the UI says the
+  sweep was incomplete so a "none found" verdict is not mistaken for a definite
+  answer. Gate: `data_explorer`; audit-logged; venue server only.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.

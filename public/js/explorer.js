@@ -520,9 +520,20 @@
                     + d.sellers_days + ' days.') + ' Coverage figures below are not meaningful without them.' })
             ]));
         } else {
+            var meta = 'Measured against the ' + d.sellers_found + ' top-selling items of the last '
+                + d.sellers_days + ' days. Probed ' + d.tables_probed + ' table'
+                + (d.tables_probed === 1 ? '' : 's') + ' in ' + d.probe_seconds + 's.';
             results.appendChild(App.el('p', { className: 'text-muted text-sm', style: { marginTop: '0.8rem' },
-                textContent: 'Measured against the ' + d.sellers_found + ' top-selling items of the last '
-                    + d.sellers_days + ' days.' }));
+                textContent: meta }));
+            // A partial sweep must not be read as a complete answer.
+            if (d.budget_hit) {
+                results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.5rem' } }, [
+                    App.el('strong', { textContent: 'Stopped early on time. ' }),
+                    App.el('span', { textContent:
+                        'The tables below marked "time budget reached" were not examined, so a cost column could '
+                        + 'still be hiding in one of them — treat a "none found" verdict as incomplete.' })
+                ]));
+            }
             var rec = d.recommended || {};
             results.appendChild(costVerdict('cost', rec.cost, d.sellers_found));
             results.appendChild(costVerdict('price', rec.price, d.sellers_found));
@@ -538,7 +549,10 @@
         var rows = [];
         cands.forEach(function(c) {
             if (!c.probed) {
-                rows.push([c.schema + '.' + c.table, '(not probed)', '', '', '', '', '']);
+                var cols = (c.cols || []).map(function(x) { return x.col; }).join(', ');
+                rows.push([c.schema + '.' + c.table, cols || '—', '',
+                           c.rows != null ? fmtCount(c.rows) + ' rows' : '',
+                           'not probed — ' + (c.skip_reason || 'skipped'), '', '']);
                 return;
             }
             (c.cols || []).forEach(function(col) {

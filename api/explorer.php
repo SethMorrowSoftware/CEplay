@@ -882,8 +882,32 @@ function explorerHistorySources(): void {
 /** How many recent top sellers the coverage check is measured against. */
 const EXPLORER_COST_SELLER_SAMPLE = 120;
 
-/** How far back to look for "items that actually sell". */
-const EXPLORER_COST_SELLER_DAYS = 90;
+/**
+ * How far back to look for "items that actually sell". 30 days is the window
+ * the Item Watch Test button already runs comfortably on this venue's Sales
+ * table (~21M rows); 90 was enough slower to matter once it was one of a dozen
+ * queries in the same request.
+ */
+const EXPLORER_COST_SELLER_DAYS = 30;
+
+/**
+ * Biggest table this probe will SCAN.
+ *
+ * Every column probe is a full aggregate pass, and the candidate set includes
+ * transaction tables — `Sales` and `ReaderSales` both carry an InvNo and are
+ * ~21M rows here. Scanning those (times several columns) is what made the first
+ * version time out. A per-item unit cost lives on a MASTER table, which is
+ * small by nature, so anything above this is listed but not probed, with the
+ * reason shown rather than silently dropped.
+ */
+const EXPLORER_COST_SCAN_MAX_ROWS = 750000;
+
+/**
+ * Wall-clock seconds to spend probing before stopping and returning what we
+ * have. A partial answer that names the tables it skipped beats a request that
+ * dies at the gateway and reports nothing at all.
+ */
+const EXPLORER_COST_TIME_BUDGET = 30;
 
 /**
  * Classify a column as a unit COST, a list PRICE, or neither.
@@ -943,8 +967,10 @@ function explorerMoneyPopulatedExpr(string $col): string {
  * @param string[] $sellers recent top-selling InvNos
  */
 function explorerProbeCostColumn(
-    MssqlClient $client, string $schema, string $table, string $keyCol, string $col, array $sellers
+    MssqlClient $client, string $schema, string $table, string $keyCol, string $col, array $sellers,
+    ?float $deadline = null
 ): array {
+    $expired = function () use ($deadline) { return $deadline !== null && microtime(true) > $deadline; };
     $t = explorerIdent($schema) . '.' . explorerIdent($table);
     $k = explorerIdent($keyCol);
     $c = explorerIdent($col);
@@ -953,6 +979,10 @@ function explorerProbeCostColumn(
     $out = ['rows' => null, 'populated' => null, 'populated_pct' => null,
             'sellers_matched' => null, 'sellers_populated' => null, 'sellers_pct' => null,
             'min' => null, 'max' => null, 'samples' => [], 'error' => null];
+    if ($expired()) {
+        $out['error'] = 'skipped — time budget reached';
+        return $out;
+    }
     try {
         $r = $client->rows(
             "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p,"
@@ -971,7 +1001,7 @@ function explorerProbeCostColumn(
         return $out;   // a column we can't read is not worth probing further
     }
 
-    if ($sellers) {
+    if ($sellers && !$expired()) {
         try {
             $inList = MssqlClient::bindIntList(
                 "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p"
@@ -987,7 +1017,7 @@ function explorerProbeCostColumn(
             $sampleSql = MssqlClient::bindIntList(
                 "SELECT TOP 8 $k AS inv, $c AS val FROM $t WHERE $k IN (:invnos) AND $pop ORDER BY $k",
                 ':invnos', $sellers);
-            foreach ($client->rows($sampleSql, 8) as $s) {
+            foreach ($expired() ? [] : $client->rows($sampleSql, 8) as $s) {
                 $sv = array_values($s);
                 $out['samples'][] = [
                     'inv' => (string)($s['inv'] ?? $sv[0] ?? ''),
@@ -1014,7 +1044,10 @@ function explorerCostSources(): void {
 
     try {
         $client = new MssqlClient();
-        $client->setTimeout(180);
+        // Deliberately short: a single query that can't finish in this long is
+        // one to skip and report, not one to wait out — the budget loop below
+        // needs room to cover the other candidates.
+        $client->setTimeout(12);
     } catch (Exception $e) {
         explorerJson(['configured' => true, 'error' => $e->getMessage(), 'candidates' => []]);
         return;
@@ -1099,24 +1132,41 @@ function explorerCostSources(): void {
         return ($a['rows'] ?? PHP_INT_MAX) <=> ($b['rows'] ?? PHP_INT_MAX);
     });
 
-    // ---- Probe the most promising tables ----
+    // ---- Probe the most promising tables, inside a wall-clock budget ----
     $probeTables = 8;
-    $probeColsPerTable = 6;
+    $probeColsPerTable = 4;
+    $started = microtime(true);
+    $budgetHit = false;
     $results = [];
-    foreach ($candidates as $i => $c) {
+    $probedCount = 0;
+    foreach ($candidates as $c) {
         unset($c['_rank']);
-        $entry = $c + ['probed' => false];
-        if ($i < $probeTables) {
+        $entry = $c + ['probed' => false, 'skip_reason' => null];
+
+        if ($c['rows'] !== null && $c['rows'] > EXPLORER_COST_SCAN_MAX_ROWS) {
+            $entry['skip_reason'] = 'too large to scan (' . number_format($c['rows'])
+                . ' rows) — a per-item unit cost lives on a master table, not a transaction table';
+        } elseif ($probedCount >= $probeTables) {
+            $entry['skip_reason'] = 'beyond the ' . $probeTables . '-table probe limit';
+        } elseif ($budgetHit || (microtime(true) - $started) > EXPLORER_COST_TIME_BUDGET) {
+            $budgetHit = true;
+            $entry['skip_reason'] = 'time budget reached';
+        } else {
+            $probedCount++;
             $entry['probed'] = true;
             $cols = [];
             foreach (array_slice($c['cols'], 0, $probeColsPerTable) as $cc) {
+                if ((microtime(true) - $started) > EXPLORER_COST_TIME_BUDGET) {
+                    $budgetHit = true;
+                    break;
+                }
                 $cols[] = $cc + explorerProbeCostColumn(
-                    $client, $c['schema'], $c['table'], $c['key_col'], $cc['col'], $sellers);
+                    $client, $c['schema'], $c['table'], $c['key_col'], $cc['col'], $sellers,
+                    $started + EXPLORER_COST_TIME_BUDGET);
             }
             $entry['cols'] = $cols;
-            if (count($c['cols']) > $probeColsPerTable) {
-                $entry['cols_not_probed'] = count($c['cols']) - $probeColsPerTable;
-            }
+            $unprobed = count($c['cols']) - count($cols);
+            if ($unprobed > 0) $entry['cols_not_probed'] = $unprobed;
         }
         $results[] = $entry;
     }
@@ -1153,6 +1203,10 @@ function explorerCostSources(): void {
         'sellers_error' => $sellerErr,
         'candidates'    => $results,
         'recommended'   => $best,
+        'tables_probed' => $probedCount,
+        'budget_hit'    => $budgetHit,
+        'probe_seconds' => round(microtime(true) - $started, 1),
+        'scan_max_rows' => EXPLORER_COST_SCAN_MAX_ROWS,
         'generated_at'  => gmdate('Y-m-d\TH:i:s\Z'),
     ]);
 }
