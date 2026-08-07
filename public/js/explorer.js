@@ -480,17 +480,25 @@
             ]);
         }
         var pct = rec.sellers_pct != null ? rec.sellers_pct : 0;
-        var strong = pct >= 80;
+        var strong = pct >= 80 && rec.master_like !== false;
+        var txt = rec.sellers_populated + ' of ' + rec.sellers_total + ' recent sellers (' + pct + '%) carry a value, '
+            + 'joined on ' + rec.key_col + '. Range ' + costMoney(rec.min) + ' – ' + costMoney(rec.max) + '. ';
+        if (rec.master_like === false) {
+            // A price on a transaction table is what was charged on one
+            // booking, not the item's price — worth flagging outright.
+            txt += 'Note this is a TRANSACTION table (' + rec.rows_per_key + ' rows per item), so the figure is '
+                + 'what was recorded on individual lines, not a master ' + noun + '. Useful as history, but not '
+                + 'a substitute for a master value.';
+        } else {
+            txt += strong
+                ? 'Enough coverage to compute ' + (kind === 'cost' ? 'margin' : 'list-vs-actual') + ' for most items.'
+                : 'Thin coverage — items without a value would have to be shown as unknown rather than as '
+                  + (kind === 'cost' ? '100% margin' : 'zero discount') + '.';
+        }
         return App.el('div', { className: strong ? 'alert-success' : 'alert-warning', style: { marginTop: '0.8rem' } }, [
             App.el('strong', { textContent:
                 (strong ? 'Usable ' : 'Partial ') + noun + ': ' + rec.table + '.' + rec.column + '. ' }),
-            App.el('span', { textContent:
-                rec.sellers_populated + ' of ' + rec.sellers_total + ' recent sellers (' + pct + '%) carry a value, '
-                + 'joined on ' + rec.key_col + '. Range ' + costMoney(rec.min) + ' – ' + costMoney(rec.max) + '. '
-                + (strong
-                    ? 'Enough coverage to compute ' + (kind === 'cost' ? 'margin' : 'list-vs-actual') + ' for most items.'
-                    : 'Thin coverage — items without a value would have to be shown as unknown rather than as '
-                      + (kind === 'cost' ? '100% margin' : 'zero discount') + '.') })
+            App.el('span', { textContent: txt })
         ]);
     }
 
@@ -571,7 +579,7 @@
                 var cols = (c.cols || []).map(function(x) { return x.col; }).join(', ');
                 rows.push([c.schema + '.' + c.table, cols || '—', '',
                            c.rows != null ? fmtCount(c.rows) + ' rows' : '',
-                           'not probed — ' + (c.skip_reason || 'skipped'), '', '']);
+                           'not probed — ' + (c.skip_reason || 'skipped'), '', '', '']);
                 return;
             }
             (c.cols || []).forEach(function(col) {
@@ -586,17 +594,21 @@
                     col.col,
                     col.kind,
                     col.type,
-                    col.populated == null ? '—'
-                        : fmtCount(col.populated) + ' / ' + fmtCount(col.rows)
-                          + (col.populated_pct != null ? ' (' + col.populated_pct + '%)' : ''),
+                    col.scan_skipped ? 'not scanned (large)'
+                        : (col.populated == null ? '—'
+                            : fmtCount(col.populated) + ' / ' + fmtCount(col.rows)
+                              + (col.populated_pct != null ? ' (' + col.populated_pct + '%)' : '')),
                     col.sellers_populated == null ? '—'
                         : col.sellers_populated + (col.sellers_pct != null ? ' (' + col.sellers_pct + '%)' : ''),
+                    col.rows_per_key == null ? '—'
+                        : (col.rows_per_key <= 2 ? col.rows_per_key + ' (master)' : col.rows_per_key + ' (txn)'),
                     samples || '—'
                 ]);
             });
         });
 
-        var head = ['Table', 'Column', 'Kind', 'Type', 'Rows populated', 'Sellers covered', 'Samples'];
+        var head = ['Table', 'Column', 'Kind', 'Type', 'Rows populated', 'Sellers covered',
+                    'Rows per item', 'Samples'];
         var table = App.el('table', { className: 'data-table', style: { marginTop: '0.8rem' } }, [
             App.el('thead', {}, [App.el('tr', {}, head.map(function(h) {
                 return App.el('th', { scope: 'col', textContent: h });

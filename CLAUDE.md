@@ -442,6 +442,10 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   before that fallback existed). Teal `--items`
   theme. Items can be pinned before MSSQL is configured (numbers fill in later).
   Venue server only for the live numbers (no sandbox driver).
+  **VERIFIED against the live venue August 2026** via that Test button: connected
+  through dblib, the day-grain and totals queries agree to the penny (5,034
+  units / $179,289.46 on a 30-day window), and item names resolve through
+  `Inventory.Description`. The page's numbers are confirmed, not just unit-tested.
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column
@@ -568,7 +572,22 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   stopped testing anything. `explorerIsFatalDbError` now halts the sweep on a
   connection-fatal error, and the payload carries `connection_lost` plus an
   `unfinished` count so the UI downgrades "none found" to "not finished" rather
-  than asserting a negative it never established. When the budget bites, the UI says the
+  than asserting a negative it never established.
+  **A fourth defect, found on the second run and the most misleading of them:**
+  seller coverage counted `COUNT(*)` — rows, not items. On a master table those
+  are the same; on the 135k-row `GroupLineItems` it reported "25,949 of 120
+  recent sellers (21,624%)" and, being the largest number, OUTRANKED the correct
+  `Inventory.Price1` answer. Coverage is now `COUNT(DISTINCT key)`, which is
+  mathematically bounded by the seller list, and each column also reports
+  ROWS PER ITEM so a transaction log is visibly not master data. Ranking
+  prefers a master-like source (≤2 rows per item) over a transactional one even
+  when the latter shows higher coverage.
+  Two smaller ones from the same run: empty tables (`0 / 0`) consumed four of
+  the eight probe slots and are now skipped outright, and tables over the scan
+  cap are no longer skipped ENTIRELY — the whole-table pass is dropped but the
+  bounded `IN (:invnos)` seller lookup still runs, which is the measure the
+  verdict rests on. That is what finally tested `InvSnapShot.AvgCost` and the
+  `Sales`/`TimeSales`/`CashierSales` cost columns. When the budget bites, the UI says the
   sweep was incomplete so a "none found" verdict is not mistaken for a definite
   answer. Gate: `data_explorer`; audit-logged; venue server only.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
@@ -661,14 +680,23 @@ before building.
   below) to find out whether one exists on this install.
   **MEASURED August 2026 by that probe: `Inventory.Price1` IS a usable per-item
   LIST PRICE** — 102 of the 120 recent top sellers (85%) carry a value, range
-  $0.01-$3,000, joined on `InvNo`. `Price2`/`Price3`/`Price4` are 0% populated.
-  So list-vs-actual and discount-depth analysis IS available even though margin
-  is not. **The cost question is NOT yet closed:** that same run lost its
-  database connection partway (see the probe notes below), so
-  `InvReceiptItems.Cost`/`StandardCost`, `InvReductionItems.Cost` and
-  `InvAuditItems.OriginalAvgCost` — the purchase/receiving costs, the most
-  likely remaining home for a unit cost — were never actually tested. Re-run
-  the probe before concluding anything. Confirmed codes on this install: **`CatNo 108` = Go
+  $0.01-$3,000, joined on `InvNo`, one row per item. `Price2`/`Price3`/`Price4`
+  are 0% populated. So list-vs-actual and discount-depth analysis IS available
+  even though margin is not.
+  **The cost question IS now closed — there is no per-item unit cost on this
+  install.** The second run tested every remaining candidate and none covers a
+  single current seller: `InvReceiptItems.Cost`/`StandardCost` are 100%
+  populated but across only 162 receipt lines, none of them recent sellers;
+  `InvAuditItems.AdjCost`/`OriginalAvgCost` sit at 7% of 717 rows, also zero
+  sellers; `InvSnapShot.AvgCost` (6.9M rows) covers zero; `InvReductionItems`
+  is empty. Purchase costs exist in the abstract and attach to nothing being
+  sold, so margin cannot be computed for the items anyone actually cares about.
+  Do not re-open this without new evidence.
+  **`GroupLineItems.Price`/`OrigPrice`/`NewPrice` are NOT a master price** — 89%
+  populated across 135k rows, but ~220 rows per item, because it is a
+  party/booking line-item log. It records what was charged on one booking, not
+  the item's price. The probe reports rows-per-item precisely so a transaction
+  table cannot masquerade as master data (it briefly did — see below). Confirmed codes on this install: **`CatNo 108` = Go
   Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
   cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
   aggregated daily dollars spent at the kart readers — the go-kart sales figure
