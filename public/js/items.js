@@ -26,10 +26,29 @@
 
     var state;
 
+    var SORTS = {
+        units:   { label: 'Most units',    fn: function(a, b) { return sv(b, 'qty') - sv(a, 'qty'); } },
+        revenue: { label: 'Most revenue',  fn: function(a, b) { return sv(b, 'amount') - sv(a, 'amount'); } },
+        gain:    { label: 'Biggest gain',  fn: function(a, b) { return dv(b) - dv(a); } },
+        drop:    { label: 'Biggest drop',  fn: function(a, b) { return dv(a) - dv(b); } },
+        name:    { label: 'Name (A–Z)',    fn: function(a, b) { return a.name.localeCompare(b.name); } },
+        added:   { label: 'Recently added', fn: function(a, b) { return (b.id || 0) - (a.id || 0); } }
+    };
+    /** Stat accessor that treats a stats-less entry as zero, so sorting never throws. */
+    function sv(item, key) { return (item.stats && item.stats[key] != null) ? Number(item.stats[key]) : 0; }
+    /** Change-vs-comparison for sorting. "No prior" sorts to the middle, not the bottom. */
+    function dv(item) {
+        var d = item.stats ? item.stats.qty_delta_pct : null;
+        return d == null ? 0 : Number(d);
+    }
+
     function freshState() {
         return {
             range: 'week', offset: 0, custom: { from: '', to: '' },
+            compare: 'prev',
+            search: '', tag: '', sort: 'units',
             itemId: null, list: null, detail: null, top: null,
+            topRank: 'revenue', topLimit: 25,
             genList: 0, genDetail: 0, genTop: 0,
             live: false, timer: null
         };
@@ -94,6 +113,7 @@
 
         container.appendChild(buildHeader());
         container.appendChild(buildControls());
+        container.appendChild(buildToolbar());
         container.appendChild(App.el('div', { id: 'items-note' }));
 
         container.appendChild(App.el('div', { className: 'card', style: { marginBottom: '1.5rem' } }, [
@@ -198,6 +218,146 @@
         ]);
     }
 
+    /**
+     * Second control row: what "vs last" compares against, plus search / tag /
+     * sort over the watchlist and a CSV of exactly what's on screen. Everything
+     * except the comparison basis is client-side over the loaded payload, so
+     * these are instant and cost no extra query.
+     */
+    function buildToolbar() {
+        function sel(id, options, current, onChange, title) {
+            var s = App.el('select', { className: 'form-input form-input-sm items-toolbar-select', id: id, title: title || null },
+                options.map(function(o) {
+                    return App.el('option', { value: o[0], textContent: o[1], selected: o[0] === current });
+                }));
+            s.addEventListener('change', function() { onChange(s.value); });
+            return s;
+        }
+
+        var compareSel = sel('items-compare', [
+            ['prev', 'vs previous period'],
+            ['yoy', 'vs same period last year']
+        ], state.compare, function(v) {
+            state.compare = v;
+            loadAll();  // the comparison window is computed server-side
+        }, 'What the change figures are measured against');
+
+        var searchIn = App.el('input', {
+            className: 'form-input form-input-sm', type: 'search', id: 'items-search',
+            placeholder: 'Search name, tag or InvNo…', value: state.search,
+            'aria-label': 'Filter the watchlist'
+        });
+        searchIn.addEventListener('input', function() {
+            state.search = searchIn.value;
+            renderList(state.list);
+        });
+
+        var sortSel = sel('items-sort', Object.keys(SORTS).map(function(k) { return [k, SORTS[k].label]; }),
+            state.sort, function(v) { state.sort = v; renderList(state.list); }, 'Order of the watchlist cards');
+
+        return App.el('div', { className: 'card items-toolbar' }, [
+            App.el('div', { className: 'card-body items-toolbar-body' }, [
+                App.el('div', { className: 'items-toolbar-group' }, [
+                    App.el('label', { className: 'text-sm text-secondary', 'for': 'items-compare', textContent: 'Compare' }),
+                    compareSel
+                ]),
+                App.el('div', { className: 'items-toolbar-group items-toolbar-grow' }, [searchIn]),
+                App.el('div', { className: 'items-toolbar-group', id: 'items-tagfilter' }),
+                App.el('div', { className: 'items-toolbar-group' }, [
+                    App.el('label', { className: 'text-sm text-secondary', 'for': 'items-sort', textContent: 'Sort' }),
+                    sortSel
+                ]),
+                App.el('button', { className: 'btn btn-sm btn-ghost', textContent: '⭳ CSV',
+                    title: 'Download the watchlist exactly as filtered and sorted below',
+                    onClick: function() { exportCsv(); } })
+            ])
+        ]);
+    }
+
+    /** Tag chips, rebuilt from whatever tags the current watchlist actually uses. */
+    function renderTagFilter(data) {
+        var box = document.getElementById('items-tagfilter');
+        if (!box) return;
+        box.innerHTML = '';
+        var tags = [];
+        (data.items || []).forEach(function(i) {
+            if (i.tag && tags.indexOf(i.tag) === -1) tags.push(i.tag);
+        });
+        if (tags.length < 2) { state.tag = ''; return; }  // one tag filters nothing
+        tags.sort();
+        if (state.tag && tags.indexOf(state.tag) === -1) state.tag = '';
+        box.appendChild(App.el('span', { className: 'text-sm text-secondary', textContent: 'Tag' }));
+        [''].concat(tags).forEach(function(t) {
+            box.appendChild(App.el('button', {
+                className: 'btn btn-sm ' + (state.tag === t ? 'btn-primary' : 'btn-ghost'),
+                textContent: t === '' ? 'All' : t,
+                onClick: function() { state.tag = t; renderTagFilter(state.list); renderList(state.list); }
+            }));
+        });
+    }
+
+    /** Search + tag filter + sort, applied to the loaded watchlist. */
+    function visibleItems(data) {
+        var items = (data.items || []).slice();
+        var q = state.search.trim().toLowerCase();
+        if (q) {
+            items = items.filter(function(i) {
+                return i.name.toLowerCase().indexOf(q) !== -1
+                    || (i.tag || '').toLowerCase().indexOf(q) !== -1
+                    || (i.inv_nos || []).some(function(n) { return String(n).indexOf(q) !== -1; })
+                    || Object.keys(data.names || {}).some(function(n) {
+                        return (i.inv_nos || []).indexOf(n) !== -1
+                            && String(data.names[n]).toLowerCase().indexOf(q) !== -1;
+                    });
+            });
+        }
+        if (state.tag) items = items.filter(function(i) { return i.tag === state.tag; });
+        var sorter = (SORTS[state.sort] || SORTS.units).fn;
+        items.sort(sorter);
+        return items;
+    }
+
+    function exportCsv() {
+        if (!state || !state.list) { App.toast('Nothing to export yet.', 'warning'); return; }
+        var data = state.list;
+        var money = moneyOK(data);
+        var items = visibleItems(data);
+        if (!items.length) { App.toast('No items match the current filter.', 'warning'); return; }
+
+        var cols = ['Name', 'Tag', 'InvNos', 'Units'];
+        if (money) cols = cols.concat(['Revenue', 'Discounts', 'Avg price']);
+        if (money && data.has_cost) cols = cols.concat(['Cost', 'Margin', 'Margin %']);
+        cols = cols.concat(['Days sold', 'Best ' + (isMonthly(data) ? 'month' : 'day'),
+                            'Prior units', 'Units change %']);
+
+        var esc = function(v) {
+            var s = v === null || v === undefined ? '' : String(v);
+            return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
+        var lines = [cols.map(esc).join(',')];
+        items.forEach(function(i) {
+            var s = i.stats || {};
+            var row = [i.name, i.tag || '', (i.inv_nos || []).join(' '), s.qty != null ? s.qty : ''];
+            if (money) row = row.concat([s.amount, s.discounts, s.avg_price]);
+            if (money && data.has_cost) row = row.concat([s.cost, s.margin,
+                s.margin_pct != null ? (s.margin_pct * 100).toFixed(1) : '']);
+            row = row.concat([s.days_with_sales, s.best_key || '',
+                s.prior_qty != null ? s.prior_qty : '',
+                s.qty_delta_pct != null ? (s.qty_delta_pct * 100).toFixed(1) : '']);
+            lines.push(row.map(esc).join(','));
+        });
+
+        var win = data.window || {};
+        var name = 'item-watch-' + (win.from || 'range') + '-to-' + (win.to || '') + '.csv';
+        var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    }
+
     function refreshPresetButtons() {
         var wrap = document.getElementById('items-presets');
         if (!wrap) return;
@@ -221,7 +381,8 @@
 
     /** The window query string shared by every endpoint on this page. */
     function windowQs() {
-        var qs = 'range=' + encodeURIComponent(state.range) + '&offset=' + encodeURIComponent(state.offset);
+        var qs = 'range=' + encodeURIComponent(state.range) + '&offset=' + encodeURIComponent(state.offset)
+               + '&compare=' + encodeURIComponent(state.compare);
         if (state.range === 'custom') {
             qs += '&from=' + encodeURIComponent(state.custom.from) + '&to=' + encodeURIComponent(state.custom.to);
         }
@@ -272,6 +433,7 @@
             if (!state || state.genList !== gen) return;
             state.list = data;
             renderNote(data);
+            renderTagFilter(data);
             renderList(data);
         } catch (err) {
             if (!state || state.genList !== gen) return;
@@ -317,14 +479,34 @@
 
     function renderList(data) {
         var box = document.getElementById('items-list');
-        if (!box) return;
+        if (!box || !data) return;
         box.innerHTML = '';
-        var items = data.items || [];
         var money = moneyOK(data);
 
-        if (items.length === 0) { box.appendChild(buildEmptyState()); return; }
+        if ((data.items || []).length === 0) { box.appendChild(buildEmptyState()); return; }
 
         box.appendChild(buildSummaryStrip(data, money));
+
+        var items = visibleItems(data);
+        if (!items.length) {
+            box.appendChild(App.el('div', { className: 'items-empty' }, [
+                App.el('div', { className: 'items-empty-title', textContent: 'Nothing matches that filter' }),
+                App.el('div', { className: 'items-empty-sub', textContent:
+                    'No watched item matches "' + state.search + '"' + (state.tag ? ' in the "' + state.tag + '" tag' : '') + '.' }),
+                App.el('button', { className: 'btn btn-secondary', textContent: 'Clear filters',
+                    onClick: function() {
+                        state.search = ''; state.tag = '';
+                        var s = document.getElementById('items-search');
+                        if (s) s.value = '';
+                        renderTagFilter(data); renderList(data);
+                    } })
+            ]));
+            return;
+        }
+        if (items.length !== (data.items || []).length) {
+            box.appendChild(App.el('div', { className: 'text-muted text-xs', style: { marginBottom: '0.6rem' },
+                textContent: 'Showing ' + items.length + ' of ' + data.items.length + ' watched items.' }));
+        }
 
         var grid = App.el('div', { className: 'items-grid' });
         items.forEach(function(it) { grid.appendChild(buildItemCard(it, data, money)); });
@@ -363,6 +545,16 @@
             App.el('div', { className: 'items-summary-value', textContent: value }),
             App.el('div', { className: 'items-summary-label', textContent: label })
         ]);
+    }
+
+    /** How the current comparison basis reads in prose ("previous period"). */
+    function compareLabel(data) {
+        return (data && data.window && data.window.compare_label) || 'previous period';
+    }
+    /** Sentence-cased, for tooltips. */
+    function compareLabelCap(data) {
+        var l = compareLabel(data);
+        return l.charAt(0).toUpperCase() + l.slice(1);
     }
 
     /** Change-vs-previous-period pill. null delta renders a neutral "no prior data". */
@@ -446,7 +638,9 @@
         ];
         if (s) {
             figures.push(deltaPill(s.qty_delta_pct,
-                s.prior_qty != null ? 'Previous period: ' + fmtUnits(s.prior_qty) + ' units' : 'No prior data'));
+                s.prior_qty != null
+                    ? compareLabelCap(data) + ': ' + fmtUnits(s.prior_qty) + ' units'
+                    : 'No data for the ' + compareLabel(data)));
         }
         if (money && s) {
             figures.push(App.el('div', { className: 'items-card-money', textContent: fmtMoney(s.amount) }));
@@ -570,6 +764,10 @@
             var trend = buildTrend(s.series, data, money);
             if (trend) kids.push(trend);
             if ((item.inv_nos || []).length > 1) kids.push(buildBreakdown(data, names, money));
+            // Multi-period history, independent of the page's period picker.
+            var histHost = App.el('div');
+            kids.push(histHost);
+            mountHistoryPanel(histHost, { id: item.id });
         } else {
             kids.push(App.el('div', { className: 'text-secondary text-sm', textContent: 'No sales found for this item in this period.' }));
         }
@@ -585,9 +783,13 @@
             App.el('div', { className: 'text-secondary', textContent: 'units sold in ' + ((data.window && data.window.label) || 'this period') })
         ];
         var row = App.el('div', { className: 'items-hero-row' }, [
-            deltaPill(s.qty_delta_pct, s.prior_qty != null ? 'Previous period: ' + fmtUnits(s.prior_qty) + ' units' : 'No prior data'),
+            deltaPill(s.qty_delta_pct, s.prior_qty != null
+                ? compareLabelCap(data) + ': ' + fmtUnits(s.prior_qty) + ' units'
+                : 'No data for the ' + compareLabel(data)),
             App.el('span', { className: 'text-muted text-sm', textContent:
-                s.prior_qty != null ? 'vs ' + fmtUnits(s.prior_qty) + ' units last period' : 'no comparable previous period' })
+                s.prior_qty != null
+                    ? 'vs ' + fmtUnits(s.prior_qty) + ' units — ' + compareLabel(data)
+                    : 'nothing sold in the ' + compareLabel(data) })
         ]);
         lines.push(row);
         if (money) {
@@ -684,7 +886,9 @@
             head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Avg price' }));
             if (data.has_cost) head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Margin' }));
         }
-        head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Prev units' }));
+        head.push(App.el('th', { scope: 'col', className: 'text-right',
+            title: 'Units in the ' + compareLabel(data),
+            textContent: state.compare === 'yoy' ? 'Last yr units' : 'Prev units' }));
 
         var tbody = App.el('tbody', {}, rows.map(function(r) {
             var cells = [
@@ -719,6 +923,256 @@
     }
 
     // ------------------------------------------------------------------
+    // Multi-period history ("How it's tracking")
+    //
+    // Deliberately independent of the page's period picker: the picker answers
+    // "how did it do in THIS window", this answers "how has it been doing over
+    // the last N weeks / months / quarters / years". Works for a watched entry
+    // (by id) or any ad-hoc InvNo, so an item can be examined straight from the
+    // best-sellers list without pinning it.
+    // ------------------------------------------------------------------
+    var HISTORY_GRAINS = [
+        ['day', 'Days'], ['week', 'Weeks'], ['month', 'Months'],
+        ['quarter', 'Quarters'], ['year', 'Years']
+    ];
+    var HISTORY_COUNTS = {
+        day: [14, 30, 60, 90], week: [8, 12, 26, 52],
+        month: [6, 12, 24, 36], quarter: [4, 8, 12, 20], year: [3, 5, 10, 20]
+    };
+    var HISTORY_DEFAULT_COUNT = { day: 30, week: 12, month: 12, quarter: 8, year: 5 };
+
+    /**
+     * Mount a self-contained history panel into `target`. Each instance keeps
+     * its own grain/count in a closure, so the inline copy on the detail view
+     * and a modal copy from the leaderboard never fight over shared state.
+     *
+     * @param {{id?:number, inv?:string, compact?:boolean}} opts
+     */
+    function mountHistoryPanel(target, opts) {
+        opts = opts || {};
+        var st = { grain: 'month', count: HISTORY_DEFAULT_COUNT.month, gen: 0, data: null };
+
+        var controls = App.el('div', { className: 'items-hist-controls' });
+        var body = App.el('div', { className: 'items-hist-body' }, [App.loading()]);
+        target.appendChild(App.el('div', { className: 'items-hist' }, [controls, body]));
+
+        function buildControls() {
+            controls.innerHTML = '';
+            controls.appendChild(App.el('span', { className: 'stat-label', textContent: 'How it\'s tracking' }));
+            var grainWrap = App.el('div', { className: 'items-hist-seg' }, HISTORY_GRAINS.map(function(g) {
+                return App.el('button', {
+                    className: 'btn btn-sm ' + (st.grain === g[0] ? 'btn-primary' : 'btn-ghost'),
+                    textContent: g[1],
+                    onClick: function() {
+                        if (st.grain === g[0]) return;
+                        st.grain = g[0];
+                        st.count = HISTORY_DEFAULT_COUNT[g[0]];
+                        buildControls(); load();
+                    }
+                });
+            }));
+            var countSel = App.el('select', { className: 'form-input form-input-sm items-toolbar-select',
+                'aria-label': 'How many periods to show' },
+                (HISTORY_COUNTS[st.grain] || [12]).map(function(n) {
+                    return App.el('option', { value: String(n), textContent: 'Last ' + n, selected: n === st.count });
+                }));
+            countSel.addEventListener('change', function() { st.count = Number(countSel.value); load(); });
+            controls.appendChild(grainWrap);
+            controls.appendChild(countSel);
+            controls.appendChild(App.el('button', { className: 'btn btn-sm btn-ghost', textContent: '⭳ CSV',
+                title: 'Download this period-by-period history',
+                onClick: function() { exportHistoryCsv(st.data); } }));
+        }
+
+        async function load() {
+            var gen = ++st.gen;
+            body.innerHTML = '';
+            body.appendChild(App.loading());
+            var qs = 'grain=' + encodeURIComponent(st.grain) + '&count=' + encodeURIComponent(st.count);
+            qs += opts.id ? '&id=' + encodeURIComponent(opts.id) : '&inv=' + encodeURIComponent(opts.inv || '');
+            try {
+                var data = await API.get('items/history?' + qs);
+                if (st.gen !== gen) return;
+                st.data = data;
+                render(data);
+            } catch (err) {
+                if (st.gen !== gen) return;
+                body.innerHTML = '';
+                body.appendChild(App.el('div', { className: 'text-danger text-sm', textContent:
+                    'Could not load history: ' + (err && err.message ? err.message : 'unknown error') }));
+            }
+        }
+
+        function render(data) {
+            body.innerHTML = '';
+            if (!data.configured) {
+                body.appendChild(App.el('div', { className: 'text-secondary text-sm', textContent:
+                    'History appears once the POS database connection is configured (Go-Kart Labor page).' }));
+                return;
+            }
+            if (data.error) {
+                body.appendChild(App.el('div', { className: 'text-danger text-sm', textContent: 'Query error: ' + data.error }));
+                return;
+            }
+            var rows = data.periods || [];
+            var money = moneyOK(data);
+            if (!rows.length) {
+                body.appendChild(App.el('div', { className: 'text-muted text-sm', textContent: 'No history for this item.' }));
+                return;
+            }
+
+            var sum = data.summary || {};
+            if (sum.complete_periods) {
+                var bits = [fmtUnits(sum.qty) + ' units over ' + sum.complete_periods + ' complete '
+                    + (sum.complete_periods === 1 ? grainNoun(data.grain) : grainNoun(data.grain) + 's')];
+                if (sum.avg_qty != null) bits.push('avg ' + fmtUnits(sum.avg_qty) + '/' + grainNoun(data.grain));
+                if (money) bits.push(fmtMoney(sum.amount) + ' total');
+                if (sum.best_key) bits.push('best ' + histLabel(sum.best_key, data.grain) + ' (' + fmtUnits(sum.best_qty) + ')');
+                body.appendChild(App.el('div', { className: 'items-hist-summary text-sm', textContent: bits.join(' · ') }));
+            }
+
+            var max = rows.reduce(function(m, r) { return Math.max(m, r.qty || 0); }, 0);
+            var head = [
+                App.el('th', { scope: 'col', textContent: grainNounCap(data.grain) }),
+                App.el('th', { scope: 'col', className: 'text-right', textContent: 'Units' }),
+                App.el('th', { scope: 'col', className: 'text-right', textContent: 'Change' })
+            ];
+            if (money) {
+                head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Revenue' }));
+                head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Avg price' }));
+                if (data.has_cost) head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Margin' }));
+            }
+            head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Days sold' }));
+            head.push(App.el('th', { scope: 'col', 'aria-label': 'Relative units (bar)', 'data-nosort': '' }));
+
+            var tbody = App.el('tbody', {}, rows.map(function(r) {
+                var w = max > 0 ? Math.max(r.qty > 0 ? 2 : 0, Math.round((r.qty || 0) / max * 100)) : 0;
+                var nameCell = [App.el('strong', { className: 'items-nowrap', textContent: histLabel(r.key, data.grain) })];
+                // A period still in progress is not comparable to a finished
+                // one — flag it instead of letting it read as a collapse.
+                if (!r.complete) {
+                    nameCell.push(App.el('span', { className: 'items-hist-partial',
+                        title: 'Still in progress — ' + r.start + ' to ' + r.end, textContent: 'in progress' }));
+                }
+                var cells = [
+                    App.el('td', { 'data-sort': r.key }, nameCell),
+                    App.el('td', { className: 'text-right', 'data-sort': r.qty, textContent: fmtUnits(r.qty) }),
+                    App.el('td', { className: 'text-right', 'data-sort': r.qty_delta_pct == null ? null : r.qty_delta_pct }, [
+                        r.qty_delta_pct == null
+                            ? App.el('span', { className: 'text-muted', textContent: '—' })
+                            // A period still running is compared against a
+                            // finished one, so the number is real but the
+                            // colour would lie — a month that is 3 days old is
+                            // not "down 70%". Keep the figure, drop the verdict.
+                            : App.el('span', {
+                                className: 'items-delta ' + (!r.complete ? 'items-delta-flat'
+                                    : (r.qty_delta_pct > 0.0005 ? 'items-delta-up'
+                                        : (r.qty_delta_pct < -0.0005 ? 'items-delta-down' : 'items-delta-flat'))),
+                                title: r.complete ? null
+                                    : 'This ' + grainNoun(data.grain) + ' is only part-way through ('
+                                        + r.start + ' to today), so it is not comparable with a full one yet.',
+                                textContent: fmtPct(r.qty_delta_pct) + (r.complete ? '' : ' so far') })
+                    ])
+                ];
+                if (money) {
+                    cells.push(App.el('td', { className: 'text-right', 'data-sort': r.amount, textContent: fmtMoney(r.amount) }));
+                    cells.push(App.el('td', { className: 'text-right', 'data-sort': r.avg_price == null ? null : r.avg_price,
+                        textContent: r.avg_price == null ? '—' : fmtMoney2(r.avg_price) }));
+                    if (data.has_cost) {
+                        cells.push(App.el('td', { className: 'text-right items-nowrap', 'data-sort': r.margin }, [
+                            App.el('span', { textContent: fmtMoney(r.margin) }),
+                            r.margin_pct != null
+                                ? App.el('span', { className: 'text-muted text-xs', textContent: ' ' + fmtRate(r.margin_pct) })
+                                : null
+                        ].filter(Boolean)));
+                    }
+                }
+                cells.push(App.el('td', { className: 'text-right', 'data-sort': r.days_sold, textContent: fmtUnits(r.days_sold) }));
+                cells.push(App.el('td', { style: { width: '22%' } }, [
+                    App.el('div', { className: 'labor-bar-track', title: fmtUnits(r.qty) + ' units' }, [
+                        App.el('div', { className: 'items-bar-fill' + (r.complete ? '' : ' items-bar-partial'),
+                            style: { width: w + '%' } })
+                    ])
+                ]));
+                return App.el('tr', { className: r.complete ? null : 'items-hist-row-partial' }, cells);
+            }));
+
+            var table = App.el('table', { className: 'data-table items-table' }, [
+                App.el('thead', {}, [App.el('tr', {}, head)]), tbody
+            ]);
+            App.enhanceTableSort(table);
+            body.appendChild(App.el('div', { className: 'table-scroll-x' }, [table]));
+            body.appendChild(App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
+                'Each row is a calendar ' + grainNoun(data.grain) + ' (' + data.from + ' → ' + data.to
+                + '). Change compares each row with the one above it. Totals and averages above count complete '
+                + grainNoun(data.grain) + 's only.' }));
+        }
+
+        buildControls();
+        load();
+        return { reload: load };
+    }
+
+    /** CSV of a loaded history payload — same money rules as the table above it. */
+    function exportHistoryCsv(data) {
+        if (!data || !(data.periods || []).length) { App.toast('Nothing to export yet.', 'warning'); return; }
+        var money = moneyOK(data);
+        var cols = [grainNounCap(data.grain), 'Start', 'End', 'Complete', 'Units', 'Units change %'];
+        if (money) cols = cols.concat(['Revenue', 'Avg price']);
+        if (money && data.has_cost) cols = cols.concat(['Cost', 'Margin', 'Margin %']);
+        cols.push('Days sold');
+        var esc = function(v) {
+            var t = v === null || v === undefined ? '' : String(v);
+            return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+        };
+        var lines = [cols.map(esc).join(',')];
+        data.periods.forEach(function(r) {
+            var row = [r.key, r.start, r.end, r.complete ? 'yes' : 'in progress', r.qty,
+                r.qty_delta_pct != null ? (r.qty_delta_pct * 100).toFixed(1) : ''];
+            if (money) row = row.concat([r.amount, r.avg_price]);
+            if (money && data.has_cost) row = row.concat([r.cost, r.margin,
+                r.margin_pct != null ? (r.margin_pct * 100).toFixed(1) : '']);
+            row.push(r.days_sold);
+            lines.push(row.map(esc).join(','));
+        });
+        var slug = String(data.label || 'item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'item-history-' + (slug || 'item') + '-' + data.grain + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    }
+
+    function grainNoun(g) { return g === 'day' ? 'day' : (g === 'week' ? 'week' : (g === 'quarter' ? 'quarter' : (g === 'year' ? 'year' : 'month'))); }
+    function grainNounCap(g) { var n = grainNoun(g); return n.charAt(0).toUpperCase() + n.slice(1); }
+
+    /** Period keys are grain-specific: "2026-07", "2026-Q3", "2026", "2026-07-19". */
+    function histLabel(key, grain) {
+        if (!key) return '';
+        if (grain === 'quarter') return key.replace('-', ' ');
+        if (grain === 'year') return key;
+        if (grain === 'month') return new Date(key + '-15T12:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+        if (grain === 'week') return 'w/c ' + new Date(key + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        return new Date(key + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    /** History for any InvNo, in a modal — the leaderboard's "History" action. */
+    function openHistoryModal(inv, label) {
+        var body = App.el('div', { className: 'items-hist-modal' });
+        mountHistoryPanel(body, { inv: String(inv) });
+        var footer = App.el('div', { className: 'flex gap-sm', style: { justifyContent: 'flex-end' } }, [
+            App.el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: function() { App.hideModal(); } })
+        ]);
+        if (canManage()) {
+            footer.insertBefore(App.el('button', { className: 'btn btn-primary', textContent: '+ Watch this item',
+                onClick: function() { App.hideModal(); openEditor(null, { name: label, inv_nos: String(inv) }); } }), footer.firstChild);
+        }
+        App.showModal(label + ' · #' + inv, body, footer);
+    }
+
+    // ------------------------------------------------------------------
     // Best sellers
     // ------------------------------------------------------------------
     async function loadTop() {
@@ -727,7 +1181,7 @@
         if (customIncomplete()) return;
         var gen = ++state.genTop;
         try {
-            var data = await API.get('items/top?' + windowQs());
+            var data = await API.get('items/top?' + windowQs() + '&rank=' + encodeURIComponent(state.topRank));
             if (!state || state.genTop !== gen) return;
             state.top = data;
             renderTop(data);
@@ -756,8 +1210,8 @@
             ]));
             return;
         }
-        var rows = data.items || [];
-        if (!rows.length) {
+        var allRows = data.items || [];
+        if (!allRows.length) {
             box.appendChild(App.el('div', { className: 'card' }, [
                 App.el('div', { className: 'card-header' }, [App.el('h3', { textContent: 'Best sellers' })]),
                 App.el('div', { className: 'card-body' }, [
@@ -766,6 +1220,9 @@
             ]));
             return;
         }
+        // The server returns the whole ranked pool; showing fewer is a display
+        // choice, so it stays client-side and switching is instant.
+        var rows = state.topLimit === 0 ? allRows : allRows.slice(0, state.topLimit);
 
         var maxAmt = rows.reduce(function(m, r) { return Math.max(m, r.amount || 0); }, 0);
         var head = [
@@ -777,7 +1234,7 @@
         ];
         if (data.has_cost) head.push(App.el('th', { scope: 'col', className: 'text-right', textContent: 'Margin' }));
         head.push(App.el('th', { scope: 'col', 'aria-label': 'Relative revenue (bar)', 'data-nosort': '' }));
-        if (canManage()) head.push(App.el('th', { scope: 'col', 'aria-label': 'Watch this item', 'data-nosort': '' }));
+        head.push(App.el('th', { scope: 'col', 'aria-label': 'Actions', 'data-nosort': '' }));
 
         var tbody = App.el('tbody', {}, rows.map(function(r) {
             var w = maxAmt > 0 ? Math.max(r.amount > 0 ? 2 : 0, Math.round((r.amount || 0) / maxAmt * 100)) : 0;
@@ -806,15 +1263,19 @@
                     App.el('div', { className: 'items-bar-fill', style: { width: w + '%' } })
                 ])
             ]));
-            if (canManage()) {
-                cells.push(App.el('td', {}, [
-                    r.watch_id
-                        ? App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'Open',
-                            onClick: function(e) { e.stopPropagation(); selectItem(r.watch_id); } })
-                        : App.el('button', { className: 'btn btn-sm btn-secondary', textContent: '+ Watch',
-                            onClick: function(e) { e.stopPropagation(); openEditor(null, { name: label, inv_nos: String(r.inv) }); } })
-                ]));
+            // History works for ANY item, watched or not — that is the point of
+            // the leaderboard as a discovery surface.
+            var actions = [App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'History',
+                title: 'How this item has sold over the last months / quarters / years',
+                onClick: function(e) { e.stopPropagation(); openHistoryModal(r.inv, label); } })];
+            if (r.watch_id) {
+                actions.push(App.el('button', { className: 'btn btn-sm btn-ghost', textContent: 'Open',
+                    onClick: function(e) { e.stopPropagation(); selectItem(r.watch_id); } }));
+            } else if (canManage()) {
+                actions.push(App.el('button', { className: 'btn btn-sm btn-secondary', textContent: '+ Watch',
+                    onClick: function(e) { e.stopPropagation(); openEditor(null, { name: label, inv_nos: String(r.inv) }); } }));
             }
+            cells.push(App.el('td', {}, [App.el('div', { className: 'items-row-actions' }, actions)]));
             return App.el('tr', {}, cells);
         }));
 
@@ -823,16 +1284,42 @@
         ]);
         App.enhanceTableSort(table, { defaultSort: { index: 1, dir: 'desc' } });
 
+        var RANKS = { revenue: 'revenue', units: 'units sold', margin: 'gross margin' };
+        var rankSel = App.el('select', { className: 'form-input form-input-sm items-toolbar-select',
+            'aria-label': 'Rank the leaderboard by', disabled: !!data.rank_locked,
+            title: data.rank_locked
+                ? 'The best-sellers query has been customised with its own ORDER BY, so the ranking is fixed. Restore the default query to re-enable this.'
+                : 'Which measure decides the ranking' },
+            Object.keys(RANKS).map(function(k) {
+                return App.el('option', { value: k, textContent: 'By ' + RANKS[k], selected: k === (data.rank || 'revenue') });
+            }));
+        rankSel.addEventListener('change', function() { state.topRank = rankSel.value; loadTop(); });
+
+        var limitSel = App.el('select', { className: 'form-input form-input-sm items-toolbar-select',
+            'aria-label': 'How many rows to show' },
+            [[10, 'Top 10'], [25, 'Top 25'], [50, 'Top 50'], [0, 'All ' + allRows.length]].map(function(o) {
+                return App.el('option', { value: String(o[0]), textContent: o[1], selected: o[0] === state.topLimit });
+            }));
+        limitSel.addEventListener('change', function() { state.topLimit = Number(limitSel.value); renderTop(state.top); });
+
+        // Say exactly what the pool is: the SQL picked its TOP N on the ranked
+        // measure, so an item outside that N is genuinely absent, not hidden.
+        var note = 'Ranked by ' + RANKS[data.rank || 'revenue'] + ' for ' + ((data.window && data.window.label) || 'this period')
+            + ', from the POS Sales table grouped by InvNo. Showing ' + rows.length + ' of the '
+            + allRows.length + ' items the query returned. This is a business-day roll-up, so there is no hour-of-day here.';
+        if (data.rank_locked) note += ' Ranking is fixed because the query has been customised with its own ORDER BY.';
+
         box.appendChild(App.el('div', { className: 'card' }, [
-            App.el('div', { className: 'card-header' }, [
-                App.el('h3', { textContent: 'Best sellers' }),
-                App.el('span', { className: 'text-muted text-sm', textContent: (data.window && data.window.label) || '' })
+            App.el('div', { className: 'card-header items-top-header' }, [
+                App.el('div', {}, [
+                    App.el('h3', { textContent: 'Best sellers' }),
+                    App.el('span', { className: 'text-muted text-sm', textContent: (data.window && data.window.label) || '' })
+                ]),
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', flexWrap: 'wrap' } }, [rankSel, limitSel])
             ]),
             App.el('div', { className: 'card-body' }, [
                 App.el('div', { className: 'table-scroll' }, [table]),
-                App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent:
-                    'The top ' + rows.length + ' items by revenue for this period, from the POS Sales table (grouped by InvNo). '
-                    + 'This is a business-day roll-up, so there is no hour-of-day here.' })
+                App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' }, textContent: note })
             ])
         ]));
     }
@@ -963,7 +1450,8 @@
         var editors = [
             { key: 'range_sql',  label: 'Units & dollars by day and item (:from, :to, :invnos) — drives the cards and the trend' },
             { key: 'totals_sql', label: 'Period totals per item (:from, :to, :invnos) — previous-period comparison and since-launch totals' },
-            { key: 'top_sql',    label: 'Best sellers (:from, :to) — the leaderboard, ranked by revenue' }
+            { key: 'top_sql',    label: 'Best sellers (:from, :to, :rankexpr) — the leaderboard; :rankexpr is filled from the By-revenue/units/margin control' },
+            { key: 'history_sql', label: 'Calendar-period history (:from, :to, :invnos, :periodexpr) — the "How it\'s tracking" table; :periodexpr is filled per grain' }
         ];
         var areas = {};
         var fields = editors.map(function(ed) {
@@ -992,7 +1480,8 @@
                     await API.put('items/settings', {
                         range_sql: areas.range_sql.value,
                         totals_sql: areas.totals_sql.value,
-                        top_sql: areas.top_sql.value
+                        top_sql: areas.top_sql.value,
+                        history_sql: areas.history_sql.value
                     });
                     statusEl.textContent = 'Saved.';
                     App.toast('Item Watch queries saved.', 'success');
@@ -1051,7 +1540,7 @@
                 App.el('p', { className: 'text-sm text-secondary', textContent: connNote })
             ].concat(fields).concat([
                 App.el('p', { className: 'text-xs text-muted', textContent:
-                    'Each must be a single read-only SELECT containing its placeholders. :invnos is replaced with the watched inventory numbers as a comma-separated list, so keep it inside an IN (…). Defaults read the POS Sales table grouped by InvNo.' }),
+                    'Each must be a single read-only SELECT containing its placeholders. :invnos becomes a comma-separated list of the watched inventory numbers, so keep it inside an IN (…). :periodexpr and :rankexpr are filled from a fixed server-side list (never from the browser) — leave them in place to keep the grain and ranking controls working. Defaults read the POS Sales table grouped by InvNo.' }),
                 App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center', marginTop: '0.6rem', flexWrap: 'wrap' } }, controls),
                 diag
             ]))

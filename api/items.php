@@ -58,7 +58,53 @@ const ITEMS_DEFAULT_TOTALS_SQL = "SELECT InvNo AS inv,\n       SUM(QtySold) AS q
  * watching. Ranked by revenue; TOP keeps the row count bounded no matter how
  * many items the venue stocks.
  */
-const ITEMS_DEFAULT_TOP_SQL = "SELECT TOP 100 InvNo AS inv,\n       SUM(QtySold) AS qty,\n       SUM(AmtSold) AS amount,\n       SUM(Discounts) AS discounts,\n       SUM(CostSold) AS cost\nFROM [CenterEdge].[dbo].[Sales]\nWHERE ShiftDate >= :from\n  AND ShiftDate < DATEADD(DAY, 1, :to)\nGROUP BY InvNo\nORDER BY SUM(AmtSold) DESC";
+const ITEMS_DEFAULT_TOP_SQL = "SELECT TOP 150 InvNo AS inv,\n       SUM(QtySold) AS qty,\n       SUM(AmtSold) AS amount,\n       SUM(Discounts) AS discounts,\n       SUM(CostSold) AS cost\nFROM [CenterEdge].[dbo].[Sales]\nWHERE ShiftDate >= :from\n  AND ShiftDate < DATEADD(DAY, 1, :to)\nGROUP BY InvNo\nORDER BY :rankexpr DESC";
+
+/**
+ * One row per CALENDAR PERIOD (week/month/quarter/year…) for the watched
+ * inventory numbers — the "how is this item doing over various periods" table.
+ *
+ * Grouping by the period IN SQL rather than rolling up day rows in PHP is what
+ * makes a 5-year lookback cheap: the row count is the number of periods asked
+ * for (12, 24…), not days × items. `:periodexpr` is substituted from a
+ * server-side allowlist (ITEMS_PERIOD_EXPR) — never from user input — so it is
+ * a fixed expression, not an injection surface.
+ */
+const ITEMS_DEFAULT_HISTORY_SQL = "SELECT :periodexpr AS period,\n       SUM(QtySold) AS qty,\n       SUM(AmtSold) AS amount,\n       SUM(Discounts) AS discounts,\n       SUM(CostSold) AS cost,\n       COUNT(DISTINCT CONVERT(VARCHAR(10), ShiftDate, 120)) AS days_sold\nFROM [CenterEdge].[dbo].[Sales]\nWHERE ShiftDate >= :from\n  AND ShiftDate < DATEADD(DAY, 1, :to)\n  AND InvNo IN (:invnos)\nGROUP BY :periodexpr";
+
+/**
+ * The calendar-period expressions the history query may group by, and the PHP
+ * side's matching key format. Server-side constants, never user input.
+ *
+ * The week expression deliberately avoids DATEPART(WEEKDAY, …), which shifts
+ * with the connection's SET DATEFIRST: counting days from a known Sunday
+ * (1900-01-07) yields Sunday-start weeks on any server, matching the
+ * Sunday-start weeks the rest of the app uses.
+ */
+const ITEMS_PERIOD_EXPR = [
+    'day'     => "CONVERT(VARCHAR(10), ShiftDate, 120)",
+    'week'    => "CONVERT(VARCHAR(10), DATEADD(DAY, -(DATEDIFF(DAY, '19000107', ShiftDate) % 7), ShiftDate), 120)",
+    'month'   => "CONVERT(VARCHAR(7), ShiftDate, 120)",
+    'quarter' => "CONVERT(VARCHAR(4), YEAR(ShiftDate)) + '-Q' + CONVERT(VARCHAR(1), DATEPART(QUARTER, ShiftDate))",
+    'year'    => "CONVERT(VARCHAR(4), YEAR(ShiftDate))",
+];
+
+/** How many periods of history each grain will look back over, at most. */
+const ITEMS_PERIOD_MAX = ['day' => 90, 'week' => 104, 'month' => 60, 'quarter' => 40, 'year' => 20];
+
+/** Default period count per grain (a useful first view without any fiddling). */
+const ITEMS_PERIOD_DEFAULT = ['day' => 30, 'week' => 12, 'month' => 12, 'quarter' => 8, 'year' => 5];
+
+/**
+ * What the best-sellers leaderboard may be ranked by. Allowlisted server-side
+ * for the same reason as ITEMS_PERIOD_EXPR — the value is chosen by key, so the
+ * SQL fragment can never come from the request.
+ */
+const ITEMS_RANK_EXPR = [
+    'revenue' => 'SUM(AmtSold)',
+    'units'   => 'SUM(QtySold)',
+    'margin'  => 'SUM(AmtSold) - SUM(CostSold)',
+];
 
 /** Most InvNo values one watch entry may bundle (a deal, not a whole category). */
 const ITEMS_MAX_INV_PER_ENTRY = 50;
@@ -101,6 +147,10 @@ function handleItems(string $method, array $parts, ?array $input): void {
         if ($method === 'GET') { itemsTop(); return; }
         http_response_code(405); echo json_encode(['error' => 'Method not allowed']); return;
     }
+    if ($action === 'history') {
+        if ($method === 'GET') { itemsHistory(); return; }
+        http_response_code(405); echo json_encode(['error' => 'Method not allowed']); return;
+    }
 
     $itemId = is_numeric($action) ? (int)$action : null;
 
@@ -141,6 +191,42 @@ function itemsTotalsSql(): string {
 /** The editable best-sellers query. */
 function itemsTopSql(): string {
     return DB::getConfig('items_top_sql') ?: ITEMS_DEFAULT_TOP_SQL;
+}
+
+/** The editable calendar-period history query. */
+function itemsHistorySql(): string {
+    return DB::getConfig('items_history_sql') ?: ITEMS_DEFAULT_HISTORY_SQL;
+}
+
+/**
+ * Substitute :periodexpr with the allowlisted grouping expression for $grain.
+ * The replacement is a server constant chosen by key, so nothing from the
+ * request reaches the SQL text.
+ */
+function itemsBindPeriodExpr(string $sql, string $grain): string {
+    if (!isset(ITEMS_PERIOD_EXPR[$grain])) {
+        throw new RuntimeException('Unknown period grain: ' . $grain);
+    }
+    if (strpos($sql, ':periodexpr') === false) {
+        throw new RuntimeException('Query must contain the :periodexpr placeholder.');
+    }
+    return str_replace(':periodexpr', ITEMS_PERIOD_EXPR[$grain], $sql);
+}
+
+/**
+ * Substitute :rankexpr with the allowlisted ORDER BY expression. A stored query
+ * that predates the ranking control (or an admin who hard-coded their own
+ * ORDER BY) simply has no placeholder — that is not an error, it just means the
+ * ranking is fixed, which itemsTop() reports back as `rank_locked`.
+ */
+function itemsBindRankExpr(string $sql, string $rank): string {
+    if (strpos($sql, ':rankexpr') === false) {
+        return $sql;
+    }
+    if (!isset(ITEMS_RANK_EXPR[$rank])) {
+        throw new RuntimeException('Unknown ranking: ' . $rank);
+    }
+    return str_replace(':rankexpr', ITEMS_RANK_EXPR[$rank], $sql);
 }
 
 // ------------------------------------------------------------------
@@ -494,6 +580,22 @@ function itemsWindow(): array {
 
     $meta = perfRangeMeta($win, $tzName);
     $meta['to'] = $to;
+
+    // What "vs last" means: the immediately preceding span (default), or the
+    // same calendar dates a year earlier. For a seasonal venue the second is
+    // usually the honest comparison — an August week against the previous week
+    // says less than August against last August.
+    $basis = (isset($_GET['compare']) && (string)$_GET['compare'] === 'yoy') ? 'yoy' : 'prev';
+    if ($basis === 'yoy') {
+        // analyticsYoyPriorDate clamps Feb 29 to Feb 28 rather than rolling
+        // into March — the same convention the YoY dashboard card uses.
+        $win['prev_from'] = analyticsYoyPriorDate($win['from']);
+        $win['prev_to']   = analyticsYoyPriorDate($to);
+    }
+    $meta['compare']       = $basis;
+    $meta['compare_label'] = $basis === 'yoy' ? 'same period last year' : 'previous period';
+    $meta['prev_from']     = $win['prev_from'];
+    $meta['prev_to']       = $win['prev_to'];
     // Sales is a business-day ledger, so an "hour" window (a single day) still
     // reports at day grain — say so rather than implying an hourly breakdown.
     $grain = $win['granularity'] === 'month' ? 'month' : 'day';
@@ -517,6 +619,219 @@ function itemsBindSql(string $sql, string $from, string $to, ?array $invNos = nu
         $bound = MssqlClient::bindIntList($bound, ':invnos', $invNos);
     }
     return $bound;
+}
+
+// ------------------------------------------------------------------
+// Calendar periods (the multi-period history table)
+// ------------------------------------------------------------------
+
+/**
+ * The period key for a date, in the SAME format ITEMS_PERIOD_EXPR produces in
+ * SQL — these two must agree or the zero-fill silently drops every row.
+ */
+function itemsPeriodKey(DateTime $d, string $grain): string {
+    switch ($grain) {
+        case 'day':     return $d->format('Y-m-d');
+        case 'week':    return (clone $d)->modify('-' . (int)$d->format('w') . ' days')->format('Y-m-d');
+        case 'month':   return $d->format('Y-m');
+        case 'quarter': return $d->format('Y') . '-Q' . (int)ceil((int)$d->format('n') / 3);
+        default:        return $d->format('Y');
+    }
+}
+
+/** First day of the calendar period containing $d. */
+function itemsPeriodStart(DateTime $d, string $grain, DateTimeZone $tz): DateTime {
+    $s = (clone $d)->setTime(0, 0, 0);
+    switch ($grain) {
+        case 'day':   return $s;
+        case 'week':  return $s->modify('-' . (int)$s->format('w') . ' days');
+        case 'month': return DateTime::createFromFormat('!Y-m-d', $s->format('Y-m') . '-01', $tz);
+        case 'quarter':
+            $q = (int)ceil((int)$s->format('n') / 3);
+            return DateTime::createFromFormat('!Y-m-d', sprintf('%s-%02d-01', $s->format('Y'), ($q - 1) * 3 + 1), $tz);
+        default:      return DateTime::createFromFormat('!Y-m-d', $s->format('Y') . '-01-01', $tz);
+    }
+}
+
+/** How far one period of $grain advances. */
+function itemsPeriodStep(string $grain): string {
+    switch ($grain) {
+        case 'day':     return '1 day';
+        case 'week':    return '7 days';
+        case 'month':   return '1 month';
+        case 'quarter': return '3 months';
+        default:        return '1 year';
+    }
+}
+
+/**
+ * The last $count calendar periods ending with the one in progress right now.
+ * Returns the ordered period descriptors (oldest first) plus the overall date
+ * range to scan. The newest entry is normally PARTIAL — `complete` says so, so
+ * the UI never reads "this month is down 60%" on the 10th.
+ *
+ * @return array{periods:array<int,array{key:string,start:string,end:string,complete:bool}>,from:string,to:string}
+ */
+function itemsPeriodSeries(DateTimeZone $tz, string $grain, int $count): array {
+    $today = (new DateTime('now', $tz))->setTime(0, 0, 0);
+    $step = itemsPeriodStep($grain);
+    $starts = [];
+    $cursor = itemsPeriodStart($today, $grain, $tz);
+    for ($i = 0; $i < $count; $i++) {
+        array_unshift($starts, clone $cursor);
+        $cursor = itemsPeriodStart((clone $cursor)->modify('-' . $step), $grain, $tz);
+    }
+    $todayStr = $today->format('Y-m-d');
+    $periods = [];
+    foreach ($starts as $start) {
+        $endExcl = itemsPeriodStart((clone $start)->modify('+' . $step), $grain, $tz);
+        $end = (clone $endExcl)->modify('-1 day')->format('Y-m-d');
+        $periods[] = [
+            'key'      => itemsPeriodKey($start, $grain),
+            'start'    => $start->format('Y-m-d'),
+            'end'      => $end,
+            'complete' => $end < $todayStr,
+        ];
+    }
+    return ['periods' => $periods, 'from' => $periods[0]['start'], 'to' => $todayStr];
+}
+
+/**
+ * Multi-period history for ONE watched entry (?id=) or ANY ad-hoc set of
+ * inventory numbers (?inv=7157,7158) — so an item can be examined straight off
+ * the best-sellers leaderboard without pinning it first.
+ *
+ * Params: id | inv, grain (day|week|month|quarter|year), count.
+ */
+function itemsHistory(): void {
+    $hideMoney = !Auth::hasPermission('view_revenue');
+
+    $grain = isset($_GET['grain']) ? (string)$_GET['grain'] : 'month';
+    if (!isset(ITEMS_PERIOD_EXPR[$grain])) { $grain = 'month'; }
+    $count = isset($_GET['count']) ? (int)$_GET['count'] : ITEMS_PERIOD_DEFAULT[$grain];
+    $count = max(2, min(ITEMS_PERIOD_MAX[$grain], $count));
+
+    // Either a saved entry or a bare InvNo list.
+    $item = null;
+    if (isset($_GET['id']) && (int)$_GET['id'] > 0) {
+        $row = DB::queryOne('SELECT * FROM watch_items WHERE id = :p0', [(int)$_GET['id']]);
+        if (!$row) { http_response_code(404); echo json_encode(['error' => 'Watched item not found']); return; }
+        $item = itemsRow($row);
+        $invNos = $item['inv_nos'];
+        $label = $item['name'];
+    } else {
+        $invNos = itemsSplitInvNos((string)($_GET['inv'] ?? ''));
+        if (!$invNos) { throw new RuntimeException('Pass an id, or one or more inventory numbers.'); }
+        if (count($invNos) > ITEMS_MAX_INV_PER_ENTRY) {
+            throw new RuntimeException('At most ' . ITEMS_MAX_INV_PER_ENTRY . ' inventory numbers at a time.');
+        }
+        $label = 'Item ' . implode(', ', $invNos);
+    }
+
+    list($tz, $tzName) = perfTimezone();
+    $series = itemsPeriodSeries($tz, $grain, $count);
+
+    $payload = [
+        'configured'   => MssqlClient::isConfigured(),
+        'item'         => $item,
+        'inv_nos'      => $invNos,
+        'label'        => $label,
+        'grain'        => $grain,
+        'count'        => $count,
+        'max_count'    => ITEMS_PERIOD_MAX[$grain],
+        'from'         => $series['from'],
+        'to'           => $series['to'],
+        'timezone'     => $tzName,
+        'periods'      => [],
+        'names'        => new stdClass(),
+        'has_cost'     => false,
+        'hide_money'   => $hideMoney,
+        'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    ];
+    if (!MssqlClient::isConfigured()) { echo json_encode($payload); return; }
+
+    try {
+        $client = new MssqlClient();
+        $sql = itemsBindPeriodExpr(itemsHistorySql(), $grain);
+        $sql = itemsBindSql($sql, $series['from'], $series['to'], $invNos);
+        // One row per period, so the count bounds the result — not days × items.
+        $rows = $client->rows($sql, $count + 8);
+        $names = itemsNames($client, $invNos);
+    } catch (Exception $e) {
+        $payload['error'] = $e->getMessage();
+        echo json_encode($payload);
+        return;
+    }
+
+    $byKey = [];
+    foreach ($rows as $row) {
+        $vals = array_values($row);
+        $key = trim((string)itemsCell($row, $vals, 'period', 0));
+        if ($key === '') continue;
+        $byKey[$key] = [
+            'qty'       => (float)itemsCell($row, $vals, 'qty', 1),
+            'amount'    => (float)itemsCell($row, $vals, 'amount', 2),
+            'discounts' => (float)itemsCell($row, $vals, 'discounts', 3),
+            'cost'      => (float)itemsCell($row, $vals, 'cost', 4),
+            'days_sold' => (int)itemsCell($row, $vals, 'days_sold', 5),
+        ];
+    }
+
+    $out = []; $prev = null; $anyCost = false;
+    foreach ($series['periods'] as $p) {
+        $v = $byKey[$p['key']] ?? ['qty' => 0.0, 'amount' => 0.0, 'discounts' => 0.0, 'cost' => 0.0, 'days_sold' => 0];
+        if ($v['cost'] != 0.0) $anyCost = true;
+        $margin = $v['amount'] - $v['cost'];
+        $row = $p + [
+            'qty'        => round($v['qty'], 2),
+            'amount'     => round($v['amount'], 2),
+            'discounts'  => round($v['discounts'], 2),
+            'cost'       => round($v['cost'], 2),
+            'margin'     => round($margin, 2),
+            'margin_pct' => $v['amount'] > 0 ? round($margin / $v['amount'], 4) : null,
+            'avg_price'  => $v['qty'] > 0 ? round($v['amount'] / $v['qty'], 2) : null,
+            'days_sold'  => $v['days_sold'],
+            // Step change against the period before it. Null on the first row,
+            // and null when the previous period sold nothing (no honest base).
+            'qty_delta_pct'    => ($prev !== null && $prev['qty'] > 0) ? round(($v['qty'] - $prev['qty']) / $prev['qty'], 4) : null,
+            'amount_delta_pct' => ($prev !== null && $prev['amount'] > 0) ? round(($v['amount'] - $prev['amount']) / $prev['amount'], 4) : null,
+        ];
+        $out[] = $row;
+        $prev = $v;
+    }
+
+    // Headline totals across the whole span (complete periods only, so a
+    // half-finished month can't drag the average or the best/worst pick).
+    $done = array_values(array_filter($out, function ($r) { return $r['complete']; }));
+    $tq = 0.0; $ta = 0.0; $tc = 0.0;
+    foreach ($done as $r) { $tq += $r['qty']; $ta += $r['amount']; $tc += $r['cost']; }
+    $best = null; $worst = null;
+    foreach ($done as $r) {
+        if ($best === null || $r['qty'] > $best['qty']) $best = $r;
+        if ($worst === null || $r['qty'] < $worst['qty']) $worst = $r;
+    }
+
+    $payload['periods']  = $out;
+    $payload['names']    = (object)$names;
+    $payload['has_cost'] = $anyCost;
+    $payload['summary']  = [
+        'complete_periods' => count($done),
+        'qty'              => round($tq, 2),
+        'amount'           => round($ta, 2),
+        'cost'             => round($tc, 2),
+        'margin'           => round($ta - $tc, 2),
+        // An average ACROSS periods is the metric here (not an estimate of
+        // anything), which the actuals-only rule allows.
+        'avg_qty'          => $done ? round($tq / count($done), 2) : null,
+        'avg_amount'       => $done ? round($ta / count($done), 2) : null,
+        'best_key'         => $best ? $best['key'] : null,
+        'best_qty'         => $best ? $best['qty'] : null,
+        'worst_key'        => $worst ? $worst['key'] : null,
+        'worst_qty'        => $worst ? $worst['qty'] : null,
+    ];
+
+    if ($hideMoney) { itemsScrubMoney($payload); }
+    echo json_encode($payload);
 }
 
 // ------------------------------------------------------------------
@@ -840,11 +1155,20 @@ function itemsTop(): void {
     Auth::requireAccess('view_revenue');
     $w = itemsWindow();
 
+    $rank = isset($_GET['rank']) ? (string)$_GET['rank'] : 'revenue';
+    if (!isset(ITEMS_RANK_EXPR[$rank])) { $rank = 'revenue'; }
+    // A hand-customized query with its own ORDER BY has no :rankexpr to swap;
+    // say so rather than letting the control silently do nothing.
+    $rankLocked = strpos(itemsTopSql(), ':rankexpr') === false;
+    if ($rankLocked) { $rank = 'revenue'; }
+
     $payload = [
-        'window'     => $w['meta'],
-        'configured' => MssqlClient::isConfigured(),
-        'items'      => [],
-        'has_cost'   => false,
+        'window'      => $w['meta'],
+        'configured'  => MssqlClient::isConfigured(),
+        'items'       => [],
+        'has_cost'    => false,
+        'rank'        => $rank,
+        'rank_locked' => $rankLocked,
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
     ];
     if (!MssqlClient::isConfigured()) {
@@ -865,7 +1189,8 @@ function itemsTop(): void {
 
     try {
         $client = new MssqlClient();
-        $rows = $client->rows(MssqlClient::bindRange(itemsTopSql(), $w['from'], $w['to']), 250);
+        $topSql = itemsBindRankExpr(itemsTopSql(), $rank);
+        $rows = $client->rows(MssqlClient::bindRange($topSql, $w['from'], $w['to']), 300);
         $totals = itemsTotalsFromRows($rows);
         $names = itemsNames($client, array_keys($totals));
     } catch (Exception $e) {
@@ -895,7 +1220,10 @@ function itemsTop(): void {
             'watch_name' => $watched[$inv]['name'] ?? null,
         ];
     }
-    usort($out, function ($a, $b) { return $b['amount'] <=> $a['amount']; });
+    // Re-sort by the ranked metric so the arrival order matches what the SQL
+    // selected the TOP N on (row order isn't guaranteed across drivers).
+    $rankKey = $rank === 'units' ? 'qty' : ($rank === 'margin' ? 'margin' : 'amount');
+    usort($out, function ($a, $b) use ($rankKey) { return $b[$rankKey] <=> $a[$rankKey]; });
 
     $payload['items']    = $out;
     $payload['has_cost'] = $anyCost;
@@ -915,7 +1243,7 @@ function itemsTop(): void {
  * scrub the other reports apply.
  */
 function itemsScrubMoney(array &$payload): void {
-    $zeroKeys = ['amount', 'discounts', 'cost', 'margin', 'avg_price', 'prior_amount'];
+    $zeroKeys = ['amount', 'discounts', 'cost', 'margin', 'avg_price', 'prior_amount', 'avg_amount'];
     $nullKeys = ['margin_pct', 'amount_delta_pct'];
     $scrub = function (&$s) use ($zeroKeys, $nullKeys) {
         if (!is_array($s)) return;
@@ -935,9 +1263,11 @@ function itemsScrubMoney(array &$payload): void {
     if (isset($payload['summary']))  { $scrub($payload['summary']); }
     if (isset($payload['totals']))   { $scrub($payload['totals']); }
     if (isset($payload['lifetime'])) { $scrub($payload['lifetime']); }
-    if (isset($payload['breakdown']) && is_array($payload['breakdown'])) {
-        foreach ($payload['breakdown'] as &$b) { $scrub($b); }
-        unset($b);
+    foreach (['breakdown', 'periods'] as $listKey) {
+        if (isset($payload[$listKey]) && is_array($payload[$listKey])) {
+            foreach ($payload[$listKey] as &$r) { $scrub($r); }
+            unset($r);
+        }
     }
     // Cost is the only reason the margin columns render at all — hide them.
     $payload['has_cost'] = false;
@@ -952,13 +1282,15 @@ function itemsGetSettings(): void {
     echo json_encode([
         'configured' => MssqlClient::isConfigured(),
         'drivers'    => MssqlClient::availableDrivers(),
-        'range_sql'  => itemsRangeSql(),
-        'totals_sql' => itemsTotalsSql(),
-        'top_sql'    => itemsTopSql(),
+        'range_sql'   => itemsRangeSql(),
+        'totals_sql'  => itemsTotalsSql(),
+        'top_sql'     => itemsTopSql(),
+        'history_sql' => itemsHistorySql(),
         'defaults'   => [
-            'range_sql'  => ITEMS_DEFAULT_RANGE_SQL,
-            'totals_sql' => ITEMS_DEFAULT_TOTALS_SQL,
-            'top_sql'    => ITEMS_DEFAULT_TOP_SQL,
+            'range_sql'   => ITEMS_DEFAULT_RANGE_SQL,
+            'totals_sql'  => ITEMS_DEFAULT_TOTALS_SQL,
+            'top_sql'     => ITEMS_DEFAULT_TOP_SQL,
+            'history_sql' => ITEMS_DEFAULT_HISTORY_SQL,
         ],
         'connection' => [
             'host'     => (MssqlClient::settings()['host'] ?? '') !== '',
@@ -989,11 +1321,22 @@ function itemsPutSettings(array $input): void {
     if (array_key_exists('top_sql', $input)) {
         $sql = Validator::requireString($input, 'top_sql', 4000);
         MssqlClient::assertReadOnly($sql);
-        MssqlClient::bindRange($sql, '2000-01-01', '2000-01-02');
+        MssqlClient::bindRange(itemsBindRankExpr($sql, 'revenue'), '2000-01-01', '2000-01-02');
         DB::setConfig('items_top_sql', $sql);
         $saved[] = 'top';
     }
-    if (!$saved) { throw new RuntimeException('Nothing to save — send range_sql, totals_sql or top_sql.'); }
+    if (array_key_exists('history_sql', $input)) {
+        $sql = Validator::requireString($input, 'history_sql', 4000);
+        MssqlClient::assertReadOnly($sql);
+        // Dry-run every grain: a query that only works for one of them would
+        // fail later on a control the page offers.
+        foreach (array_keys(ITEMS_PERIOD_EXPR) as $g) {
+            itemsBindSql(itemsBindPeriodExpr($sql, $g), '2000-01-01', '2000-01-02', ['1']);
+        }
+        DB::setConfig('items_history_sql', $sql);
+        $saved[] = 'history';
+    }
+    if (!$saved) { throw new RuntimeException('Nothing to save — send range_sql, totals_sql, top_sql or history_sql.'); }
 
     try {
         DB::execute(
@@ -1045,8 +1388,8 @@ function itemsTest(?array $input = null): void {
         // Best sellers for the probe range — also the answer to "what InvNo is
         // the thing I want to watch?".
         try {
-            $topTotals = itemsTotalsFromRows(
-                $client->rows(MssqlClient::bindRange(itemsTopSql(), $from, $to), 250));
+            $topTotals = itemsTotalsFromRows($client->rows(
+                MssqlClient::bindRange(itemsBindRankExpr(itemsTopSql(), 'revenue'), $from, $to), 300));
             $topNames = itemsNames($client, array_keys($topTotals));
             uasort($topTotals, function ($a, $b) { return $b['amount'] <=> $a['amount']; });
             $lines = [];
@@ -1090,6 +1433,25 @@ function itemsTest(?array $input = null): void {
                 ];
                 $probeNames = itemsNames($client, $probe);
                 $diag['probe_names'] = $probeNames ?: 'no names found for those InvNos';
+
+                // Exercise the history query on every grain — each one swaps in
+                // a different period expression, so a broken edit can hide in
+                // just one of them.
+                $grainLines = [];
+                foreach (array_keys(ITEMS_PERIOD_EXPR) as $g) {
+                    try {
+                        $hs = itemsBindSql(itemsBindPeriodExpr(itemsHistorySql(), $g), $from, $to, $probe);
+                        $hr = $client->rows($hs, 80);
+                        $hq = 0.0;
+                        foreach ($hr as $x) { $hq += (float)itemsCell($x, array_values($x), 'qty', 1); }
+                        $grainLines[] = $g . ': ' . count($hr) . ' periods, '
+                            . rtrim(rtrim(number_format($hq, 2), '0'), '.') . ' units'
+                            . (abs($hq - $totQty) < 0.01 ? ' ✓ ties to the totals query' : ' ⚠ differs from ' . $totQty);
+                    } catch (Exception $e) {
+                        $grainLines[] = $g . ': error: ' . $e->getMessage();
+                    }
+                }
+                $diag['history_by_grain'] = $grainLines;
             } catch (Exception $e) {
                 $result['probe'] = ['error' => $e->getMessage()];
             }

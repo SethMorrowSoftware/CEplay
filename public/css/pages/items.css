@@ -297,6 +297,70 @@
     .items-trend-list .labor-hour-val { min-width: 3.5rem; }
 }
 
+/* ---- Toolbar (compare basis, search, tag filter, sort, export) ---- */
+.items-toolbar { margin-bottom: 1rem; }
+.items-toolbar-body {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding-top: 0.7rem;
+    padding-bottom: 0.7rem;
+}
+.items-toolbar-group { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+/* The search box takes the slack so the controls sit at the two ends. */
+.items-toolbar-grow { flex: 1 1 12rem; min-width: 9rem; }
+.items-toolbar-grow .form-input { width: 100%; }
+.items-toolbar-select { width: auto; min-width: 7.5rem; }
+
+/* ---- Multi-period history ("How it's tracking") ---- */
+.items-hist { margin-top: 1.25rem; border-top: 1px solid var(--border); padding-top: 0.9rem; }
+.items-hist-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+.items-hist-seg { display: flex; gap: 0.2rem; flex-wrap: wrap; }
+.items-hist-summary {
+    color: var(--text-secondary);
+    background: rgba(var(--items-rgb), 0.06);
+    border-left: 3px solid var(--items);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.7rem;
+    margin-bottom: 0.7rem;
+}
+/* A period still running isn't comparable to a finished one — mute the row and
+   hatch its bar so it never reads as a real drop. */
+.items-hist-row-partial td { opacity: 0.72; }
+.items-hist-partial {
+    margin-left: 0.4rem;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm);
+    background: var(--warning-subtle);
+    color: var(--warning);
+    white-space: nowrap;
+}
+.items-bar-partial {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--items) 0 6px,
+        rgba(var(--items-rgb), 0.45) 6px 12px
+    );
+}
+.items-hist-modal { min-width: min(70rem, 78vw); }
+@media (max-width: 720px) {
+    .items-hist-modal { min-width: 0; }
+}
+
+/* Leaderboard header + per-row actions. */
+.items-top-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.items-row-actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; }
+
 /* ---- Editor ---- */
 .items-form-row {
     display: grid;
@@ -311,3 +375,7 @@
     .items-hero { flex-direction: column; align-items: flex-start; gap: 1rem; }
     .items-hero-spark { width: 100%; flex: 0 0 auto; }
 }
+
+/* Keep tabular cells that pair a figure with a qualifier on one line — the
+   history table's Margin cell and its period labels both wrap badly otherwise. */
+.items-nowrap { white-space: nowrap; }
