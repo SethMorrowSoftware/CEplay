@@ -140,6 +140,24 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   This is the only report with a cost source, so it's the only one showing
   gross margin — and it hides the margin columns entirely if this install
   leaves `CostSold` at 0, rather than reporting a fake 100%.
+- **"How it's tracking"** answers the multi-period question directly, and
+  ignores the period picker on purpose: the last N calendar **days, weeks,
+  months, quarters or years** side by side, each row with units, money and the
+  step change against the row above. Works for any inventory number, not just
+  pinned ones — the **History** button on any best-sellers row opens it, so you
+  can size up an item before deciding to watch it. The period still running is
+  flagged "in progress", hatched, left out of the totals and averages, and its
+  change reads neutral with a "so far" suffix — a month that's three days old
+  isn't down 70%.
+- **Compare against last year, not just last week.** One control switches every
+  change figure between "vs previous period" and "vs same period last year" —
+  usually the honest reading for a seasonal venue.
+- **Find things fast:** search by name, tag or inventory number, filter by tag,
+  and sort by most units, most revenue, biggest gain, biggest drop, name, or
+  recently added. The **best sellers** list can be ranked by revenue, units or
+  gross margin, and sized to the top 10/25/50 or all.
+- **CSV export** on both the watchlist (exactly what's filtered and sorted on
+  screen) and any item's period history.
 - Day grain only (`ShiftDate` is midnight-stamped), so there is no hour-of-day
   here. Money is hidden from roles without `view_revenue` (units, trends and
   days-sold stay visible); the revenue leaderboard needs `view_revenue`
@@ -622,7 +640,7 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 | `/api/analytics/reader-group` | GET | One area: heatmap, trend, per-game breakdown. |
 | `/api/reader-groups` | GET/POST/PUT/DELETE | Reader-group CRUD. Read gate `analytics`; write gate `reader_groups_manage`. |
 | `/api/promotions` | GET/POST/PUT/DELETE | Promotional card-batch CRUD + `/analyze` (per-batch MSSQL analysis), `/settings`, `/test`. Read gate `analytics` (money scrubbed without `view_revenue`); write gate `promotions_manage`; test gate `data_explorer`. |
-| `/api/items` | GET/POST/PUT/DELETE | Item Watch CRUD + `/detail` (one entry: trend, per-InvNo breakdown, since-launch), `/top` (best sellers), `/settings`, `/test`. Read gate `analytics` (money scrubbed without `view_revenue`); `/top` additionally requires `view_revenue`; write gate `items_manage`; test gate `data_explorer`. |
+| `/api/items` | GET/POST/PUT/DELETE | Item Watch CRUD + `/detail` (one entry: trend, per-InvNo breakdown, since-launch), `/history` (last N days/weeks/months/quarters/years for a watched entry or any `?inv=`), `/top` (best sellers, `?rank=revenue\|units\|margin`), `/settings`, `/test`. All window-aware endpoints take `?compare=prev\|yoy`. Read gate `analytics` (money scrubbed without `view_revenue`); `/top` additionally requires `view_revenue`; write gate `items_manage`; test gate `data_explorer`. |
 | `/api/capabilities` | GET | CenterEdge capability flags (drives kiosk controls, card-admin UI). |
 
 ### MSSQL Reports (Labor / Card Loads / Ticket Trends / Revenue Mix)

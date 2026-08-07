@@ -369,16 +369,49 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   printing a fake 100%).
   Grain is DAY, never hour — `Sales.ShiftDate` is a business day stamped at
   midnight, so there is no hour-of-day panel here (same honesty as Revenue Mix /
-  Ticket Trends). THREE admin-editable single-SELECT queries: `items_range_sql`
+  Ticket Trends). FOUR admin-editable single-SELECT queries: `items_range_sql`
   (per day + InvNo, placeholders `:from`/`:to`/`:invnos` — drives the cards and
   the trend), `items_totals_sql` (per-InvNo totals for the same placeholders —
   used for the prior-period comparison and the since-launch figures, so a
   multi-year lookback costs one row per item instead of one per item per day),
-  and `items_top_sql` (the leaderboard, `:from`/`:to` only). `:invnos` is
-  inlined as a validated comma-separated integer list by
-  `MssqlClient::bindIntList` (digits-only → injection-proof, same rationale as
-  bindDate/bindRange/bindCardRange); an EMPTY list throws rather than producing
-  `IN ()` or an unfiltered scan.
+  `items_top_sql` (the leaderboard, `:from`/`:to`/`:rankexpr`), and
+  `items_history_sql` (the multi-period table, `:from`/`:to`/`:invnos`/
+  `:periodexpr`). `:invnos` is inlined as a validated comma-separated integer
+  list by `MssqlClient::bindIntList` (digits-only → injection-proof, same
+  rationale as bindDate/bindRange/bindCardRange); an EMPTY list throws rather
+  than producing `IN ()` or an unfiltered scan.
+  **`GET /api/items/history`** is the "how is it doing over various periods"
+  view, deliberately INDEPENDENT of the page's period picker: the last N
+  calendar days/weeks/months/quarters/years for one item, each row with units,
+  money and the step change against the row above. Takes `?id=` (a watched
+  entry) OR `?inv=7157,7158` (any ad-hoc InvNo), so an item can be examined
+  straight off the best-sellers leaderboard without pinning it first — that is
+  what the per-row "History" button opens. Grouping happens IN SQL via
+  `:periodexpr`, so a 5-year lookback returns ~5 rows, not days × items;
+  `ITEMS_PERIOD_EXPR` is a server-side ALLOWLIST (never request input) keyed by
+  grain, and the PHP key builder (`itemsPeriodKey`) must produce byte-identical
+  keys or the zero-fill silently drops every row — there is a unit test pinning
+  the two together. The week expression counts days from a known Sunday
+  (1900-01-07) instead of using `DATEPART(WEEKDAY, …)`, which shifts with the
+  connection's `SET DATEFIRST`. The newest row is normally a period IN PROGRESS:
+  it is flagged, hatched, excluded from the totals/averages/best-period picks,
+  and its change renders NEUTRAL with a "so far" suffix — a month that is three
+  days old is not "down 70%".
+  **Comparison basis** (`?compare=prev|yoy`) switches every change figure
+  between the immediately preceding span and the same calendar dates a year
+  earlier (via `analyticsYoyPriorDate`, so Feb 29 clamps to Feb 28). For a
+  seasonal venue the year-over-year reading is usually the honest one.
+  **Leaderboard ranking** (`?rank=revenue|units|margin`) swaps the `ORDER BY`
+  through the `ITEMS_RANK_EXPR` allowlist, so the SQL picks its TOP N on the
+  measure actually being ranked rather than re-sorting a revenue-shaped pool. A
+  stored query customized with its own `ORDER BY` has no `:rankexpr` to swap —
+  that is not an error, it reports `rank_locked` and the UI disables the control
+  with the reason.
+  The watchlist toolbar (search by name/tag/InvNo, tag chips, sort by
+  units/revenue/biggest gain/biggest drop/name/recently added) and both CSV
+  exports are pure client-side work over the already-loaded payload, so they
+  cost no extra query; the CSV mirrors exactly what is filtered and sorted on
+  screen, and drops every money column for a money-blind role.
   **ACTUALS ONLY** — every figure is a real total for the selected window. The
   prior-period fields are null (not 0) when the previous period has no rows for
   those items at all, so a newly-added item says "no prior" instead of showing a
