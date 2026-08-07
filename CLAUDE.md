@@ -492,10 +492,21 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   by name preference (`explorerPickDateColumn`) rather than first-date-column-
   wins, since a table whose `CreatedDate` precedes its `ShiftDate` would
   otherwise be probed on the wrong column and read as empty.
-  **A mapping miss is a NAMING problem, not a missing-data one** — exact
-  normalized string equality can't match `1lazer tag` to a current "Laser Tag",
-  so unmatched readers want a hand-built crosswalk, not a conclusion that the
-  history is gone.
+  **A mapping miss can be a NAMING problem rather than a missing-data one** —
+  exact normalized string equality can't match `1lazer tag` to a current "Laser
+  Tag". But it can equally mean the machine is simply gone, and a bare "no
+  match" cannot tell the two apart, so the probe reports the CLOSEST current
+  game name and a 0-100 similarity for every miss (`explorerNearestName`), plus
+  the size of the pool it compared against. Measured separation: a punctuation
+  or spelling gap scores 89-100 (`1lazer tag`→"Laser Tag" 88.9, `1Go Kart Mini
+  Indy`→"Go-Kart Mini Indy" 94.1, `tin can alley #1`→"Tin Can Alley 1" 96.8),
+  while a retired machine scores 29-39 (`crane 2 mp3` 38.5, `Yellow Submarine`
+  33.3). So the near-miss column decides whether a hand-built crosswalk would
+  pay off or whether the floor has simply turned over — do not assume either.
+  NOTE the normalizer ALREADY lowercases and strips a leading digit run
+  (`^\d+\s*`), so `1Batting Cage 1` → `batting cage 1`: a miss on one of those
+  means the name is genuinely absent from `game_state_cache`, not that the
+  prefix defeated it.
 - **Per-item cost / price probe (`GET /api/explorer/cost-sources`,** "Is there a
   per-item unit cost or list price?" card on `#/explorer`). `Sales.CostSold` is
   the schema's only cost-of-goods column and it is EMPTY here, so gross margin
