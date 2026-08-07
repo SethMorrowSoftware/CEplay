@@ -745,10 +745,23 @@ function explorerProbeReaderMapping(MssqlClient $client, string $schema, string 
 }
 
 /** Same normalization the per-game backfill uses (lower, strip sort prefix, collapse spaces). */
+/**
+ * Normalize a machine name for matching. Lowercased, a leading location-digit
+ * run dropped, then EVERY non-alphanumeric character folded away.
+ *
+ * That last step is what makes the match work on this venue: the app's game
+ * names come from the card system as CamelCase with no spaces
+ * (`BattingCage1`, `WheelOfFortune`, `E-ClawCosmic`) while the reader
+ * descriptions are spaced prose (`1Batting Cage 1`, `Wheel Of Fortune`).
+ * Collapsing whitespace was not enough — the two forms only meet once spaces,
+ * hyphens and `#` are gone entirely. Measured against the venue's own names,
+ * this converts misses scoring 92-93%% into exact matches without creating any
+ * false ones among the machines sampled.
+ */
 function explorerNormName(string $s): string {
     $s = function_exists('mb_strtolower') ? mb_strtolower(trim($s)) : strtolower(trim($s));
     $s = preg_replace('/^\d+\s*/', '', (string)$s);
-    return trim((string)preg_replace('/\s+/', ' ', (string)$s));
+    return (string)preg_replace('/[^a-z0-9]+/', '', (string)$s);
 }
 
 /**
@@ -914,6 +927,21 @@ function explorerHistorySources(): void {
 // populated on discontinued stock and nothing else buys no margin at all.
 // ---------------------------------------------------------------------------
 
+/**
+ * Is this a driver error that has killed the CONNECTION rather than just
+ * failed one query? dblib reports a query timeout once, then answers
+ * "DBPROCESS is dead or not enabled" for everything after it — so continuing
+ * the sweep produces a wall of identical failures and, worse, a "nothing
+ * found" verdict from a run that stopped testing anything.
+ */
+function explorerIsFatalDbError(string $msg): bool {
+    foreach (['DBPROCESS is dead', 'not enabled', 'connection timed out', 'Adaptive Server connection',
+              'server has gone away', 'Broken pipe'] as $needle) {
+        if (stripos($msg, $needle) !== false) return true;
+    }
+    return false;
+}
+
 /** How many recent top sellers the coverage check is measured against. */
 const EXPLORER_COST_SELLER_SAMPLE = 120;
 
@@ -966,6 +994,17 @@ function explorerCostColumnKind(string $name): ?string {
         return 'price';
     }
     return null;
+}
+
+/**
+ * Integer-ish enough to be joined against an inventory number.
+ *
+ * The venue run hit `Operand type clash: uniqueidentifier is incompatible with
+ * smallint` on `PaymentPlanInventory.InvID` — a GUID column whose NAME looked
+ * like an inventory key. Name matching alone is not enough.
+ */
+function explorerIsInvKeyType(string $type): bool {
+    return in_array(strtolower($type), ['int', 'bigint', 'smallint', 'tinyint', 'numeric', 'decimal'], true);
 }
 
 /** Column names that carry the inventory number a Sales row would join on. */
@@ -1123,7 +1162,8 @@ function explorerCostSources(): void {
             if (!isset($byTable[$key])) {
                 $byTable[$key] = ['schema' => $sch, 'table' => $tbl, 'key_col' => null, 'cols' => []];
             }
-            if ($byTable[$key]['key_col'] === null && explorerIsInvKeyColumn($col, $tbl)) {
+            if ($byTable[$key]['key_col'] === null
+                && explorerIsInvKeyColumn($col, $tbl) && explorerIsInvKeyType($type)) {
                 $byTable[$key]['key_col'] = $col;
             }
             $kind = explorerCostColumnKind($col);
@@ -1172,13 +1212,26 @@ function explorerCostSources(): void {
     $probeColsPerTable = 4;
     $started = microtime(true);
     $budgetHit = false;
+    $connectionDead = false;
     $results = [];
     $probedCount = 0;
     foreach ($candidates as $c) {
         unset($c['_rank']);
         $entry = $c + ['probed' => false, 'skip_reason' => null];
 
-        if ($c['rows'] !== null && $c['rows'] > EXPLORER_COST_SCAN_MAX_ROWS) {
+        if ($connectionDead) {
+            $entry['skip_reason'] = 'not reached — the database connection dropped earlier in the sweep';
+            $results[] = $entry;
+            continue;
+        }
+
+        if ($c['rows'] === null) {
+            // No sys.partitions row means a VIEW (or an unreadable catalog).
+            // A view over Sales looks tiny and scans like Sales — this is the
+            // hole SalesForAllInventory fell through, killing the connection.
+            $entry['skip_reason'] = 'size unknown (likely a view) — not scanned, since a view over a '
+                . 'transaction table costs the same as scanning it';
+        } elseif ($c['rows'] > EXPLORER_COST_SCAN_MAX_ROWS) {
             $entry['skip_reason'] = 'too large to scan (' . number_format($c['rows'])
                 . ' rows) — a per-item unit cost lives on a master table, not a transaction table';
         } elseif ($probedCount >= $probeTables) {
@@ -1195,9 +1248,14 @@ function explorerCostSources(): void {
                     $budgetHit = true;
                     break;
                 }
-                $cols[] = $cc + explorerProbeCostColumn(
+                $probe = $cc + explorerProbeCostColumn(
                     $client, $c['schema'], $c['table'], $c['key_col'], $cc['col'], $sellers,
                     $started + EXPLORER_COST_TIME_BUDGET);
+                $cols[] = $probe;
+                if (!empty($probe['error']) && explorerIsFatalDbError((string)$probe['error'])) {
+                    $connectionDead = true;
+                    break;
+                }
             }
             $entry['cols'] = $cols;
             $unprobed = count($c['cols']) - count($cols);
@@ -1230,8 +1288,25 @@ function explorerCostSources(): void {
         }
     }
 
+    // A "nothing found" verdict is only trustworthy if the sweep actually
+    // finished. Count what went untested so the UI can say so.
+    $unfinished = 0;
+    foreach ($results as $r) {
+        if (empty($r['probed'])) {
+            // Deliberate size/view skips are a decision, not a gap.
+            if (strpos((string)$r['skip_reason'], 'too large') === 0
+                || strpos((string)$r['skip_reason'], 'size unknown') === 0) continue;
+            $unfinished++;
+            continue;
+        }
+        foreach ($r['cols'] as $c) { if (!empty($c['error'])) $unfinished++; }
+        $unfinished += (int)($r['cols_not_probed'] ?? 0);
+    }
+
     explorerJson([
-        'configured'    => true,
+        'configured'      => true,
+        'connection_lost' => $connectionDead,
+        'unfinished'      => $unfinished,
         'driver'        => $client->driver(),
         'sellers_found' => count($sellers),
         'sellers_days'  => EXPLORER_COST_SELLER_DAYS,

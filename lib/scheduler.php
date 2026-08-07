@@ -2114,11 +2114,20 @@ class Scheduler {
      * MSSQL ReaderDevices.Description). Lower-cases, strips a leading sort-order
      * digit prefix (e.g. "1Batting Cage 1"), and collapses whitespace.
      */
+    /**
+     * Normalize a reader/game name for matching: lowercased, a leading
+     * location-digit run dropped, then every non-alphanumeric character folded
+     * away. The card system reports game names as CamelCase with no spaces
+     * (`BattingCage1`) while ReaderDevices descriptions are spaced prose
+     * (`1Batting Cage 1`), so the two only meet once punctuation and
+     * whitespace are gone. Mirrored exactly by explorerNormName() in
+     * api/explorer.php — the probe reports what THIS function would do, so the
+     * two must not drift.
+     */
     private static function normReaderName(string $s): string {
         $s = function_exists('mb_strtolower') ? mb_strtolower(trim($s)) : strtolower(trim($s));
         $s = preg_replace('/^\d+\s*/', '', $s);
-        $s = preg_replace('/\s+/', ' ', $s);
-        return trim((string)$s);
+        return (string)preg_replace('/[^a-z0-9]+/', '', (string)$s);
     }
 
     /**

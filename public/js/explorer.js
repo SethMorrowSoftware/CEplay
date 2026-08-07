@@ -458,9 +458,19 @@
     }
 
     /** One verdict line per kind, saying plainly whether it is usable. */
-    function costVerdict(kind, rec, sellersFound) {
+    function costVerdict(kind, rec, sellersFound, unfinished) {
         var noun = kind === 'cost' ? 'unit cost' : 'list price';
         if (!rec) {
+            // An aborted sweep has not earned the word "no". Say what was
+            // actually established, and what still needs testing.
+            if (unfinished > 0) {
+                return App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
+                    App.el('strong', { textContent: 'No ' + noun + ' found yet — but the sweep did not finish. ' }),
+                    App.el('span', { textContent:
+                        unfinished + ' column' + (unfinished === 1 ? '' : 's') + ' errored or went untested, so '
+                        + 'this is not evidence that no ' + kind + ' exists. Re-run to cover the rest.' })
+                ]);
+            }
             return App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
                 App.el('strong', { textContent: 'No usable ' + noun + ' found. ' }),
                 App.el('span', { textContent:
@@ -525,6 +535,15 @@
                 + (d.tables_probed === 1 ? '' : 's') + ' in ' + d.probe_seconds + 's.';
             results.appendChild(App.el('p', { className: 'text-muted text-sm', style: { marginTop: '0.8rem' },
                 textContent: meta }));
+            if (d.connection_lost) {
+                results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.5rem' } }, [
+                    App.el('strong', { textContent: 'The database connection dropped mid-sweep. ' }),
+                    App.el('span', { textContent:
+                        'A query timed out and took the connection with it, so everything after it went '
+                        + 'untested — the tables below say which. Re-running usually gets further, since the '
+                        + 'table that killed it is now skipped by size or reported as a view.' })
+                ]));
+            }
             // A partial sweep must not be read as a complete answer.
             if (d.budget_hit) {
                 results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.5rem' } }, [
@@ -535,8 +554,8 @@
                 ]));
             }
             var rec = d.recommended || {};
-            results.appendChild(costVerdict('cost', rec.cost, d.sellers_found));
-            results.appendChild(costVerdict('price', rec.price, d.sellers_found));
+            results.appendChild(costVerdict('cost', rec.cost, d.sellers_found, d.unfinished || 0));
+            results.appendChild(costVerdict('price', rec.price, d.sellers_found, d.unfinished || 0));
         }
 
         var cands = d.candidates || [];

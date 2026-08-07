@@ -503,10 +503,22 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   while a retired machine scores 29-39 (`crane 2 mp3` 38.5, `Yellow Submarine`
   33.3). So the near-miss column decides whether a hand-built crosswalk would
   pay off or whether the floor has simply turned over — do not assume either.
-  NOTE the normalizer ALREADY lowercases and strips a leading digit run
-  (`^\d+\s*`), so `1Batting Cage 1` → `batting cage 1`: a miss on one of those
-  means the name is genuinely absent from `game_state_cache`, not that the
-  prefix defeated it.
+  **MEASURED August 2026, and it was a NAMING problem after all:** the venue run
+  came back 3 of 98 with near-misses at 92-93%, and the near-miss column showed
+  why — the card system reports game names as CamelCase with NO SPACES
+  (`BattingCage1`, `WheelOfFortune`, `GoKartsSpiral1`, `E-ClawCosmic`) while
+  `ReaderDevices` descriptions are spaced prose (`1Batting Cage 1`, `Wheel Of
+  Fortune`). Collapsing whitespace was never going to bridge that. Both
+  normalizers now fold away EVERY non-alphanumeric character, which turns those
+  92-93% near-misses into exact matches (`1Batting Cage 1` → `battingcage1` =
+  `BattingCage1`) while leaving genuinely different machines apart
+  (`1Go Kart Mini Indy` vs `GoKartKiosk` stays a miss). The two copies —
+  `Scheduler::normReaderName` and `explorerNormName` — MUST stay byte-identical
+  or the probe reports a mapping the backfill would not actually make; a unit
+  test asserts they agree.
+  Still expect a large residue of genuine misses: `crane 2 mp3`, `Yellow
+  Submarine`, `tin can alley #1` score 39-50% against the current floor because
+  those machines are gone, and no normalization brings them back.
 - **Per-item cost / price probe (`GET /api/explorer/cost-sources`,** "Is there a
   per-item unit cost or list price?" card on `#/explorer`). `Sales.CostSold` is
   the schema's only cost-of-goods column and it is EMPTY here, so gross margin
@@ -541,7 +553,22 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   `EXPLORER_COST_TIME_BUDGET` (30s) stops the sweep and marks the rest "time
   budget reached"; and the deadline is checked before EVERY query inside a
   column probe, not just between columns, so worst-case overshoot is one
-  12s driver timeout rather than three. When the budget bites, the UI says the
+  12s driver timeout rather than three.
+  **Three further defects the first venue run exposed, all fixed — do not
+  reintroduce:** (1) an inventory key was matched BY NAME only, so
+  `PaymentPlanInventory.InvID` (a `uniqueidentifier`) was joined against integer
+  InvNos and threw `Operand type clash`; the key column must now also pass
+  `explorerIsInvKeyType`. (2) the size guard read `rows !== null && rows > max`,
+  so a VIEW — which has no `sys.partitions` row and therefore null size — slipped
+  through: `SalesForAllInventory` (a view over `Sales`) was full-scanned, timed
+  out, and **killed the connection**. Unknown size is now treated as unscannable.
+  (3) after that timeout, dblib answered `DBPROCESS is dead or not enabled` to
+  every subsequent query, so the sweep emitted a dozen identical failures and
+  STILL printed "No usable unit cost found" — a verdict from a run that had
+  stopped testing anything. `explorerIsFatalDbError` now halts the sweep on a
+  connection-fatal error, and the payload carries `connection_lost` plus an
+  `unfinished` count so the UI downgrades "none found" to "not finished" rather
+  than asserting a negative it never established. When the budget bites, the UI says the
   sweep was incomplete so a "none found" verdict is not mistaken for a definite
   answer. Gate: `data_explorer`; audit-logged; venue server only.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
@@ -631,7 +658,17 @@ before building.
   re-run that button if you suspect the POS config changed. If margin is ever
   wanted, a NEW source is needed, not a different read of `Sales` — run the
   Database Explorer's **cost/price probe** (`GET /api/explorer/cost-sources`,
-  below) to find out whether one exists on this install. Confirmed codes on this install: **`CatNo 108` = Go
+  below) to find out whether one exists on this install.
+  **MEASURED August 2026 by that probe: `Inventory.Price1` IS a usable per-item
+  LIST PRICE** — 102 of the 120 recent top sellers (85%) carry a value, range
+  $0.01-$3,000, joined on `InvNo`. `Price2`/`Price3`/`Price4` are 0% populated.
+  So list-vs-actual and discount-depth analysis IS available even though margin
+  is not. **The cost question is NOT yet closed:** that same run lost its
+  database connection partway (see the probe notes below), so
+  `InvReceiptItems.Cost`/`StandardCost`, `InvReductionItems.Cost` and
+  `InvAuditItems.OriginalAvgCost` — the purchase/receiving costs, the most
+  likely remaining home for a unit cost — were never actually tested. Re-run
+  the probe before concluding anything. Confirmed codes on this install: **`CatNo 108` = Go
   Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
   cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
   aggregated daily dollars spent at the kart readers — the go-kart sales figure
