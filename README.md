@@ -27,7 +27,7 @@ external dependencies.
 | Linux `at` + `atrm` (optional) | Native per-action job queueing; fallback mode works without these |
 | Apache or Nginx | Web server (with PHP-FPM or mod_php) |
 | Cron daemon (recommended) | Daily planning + per-minute watchdog execution |
-| MSSQL PDO driver — `pdo_sqlsrv`, `pdo_dblib`, or ODBC (optional) | Only for the MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue Mix, Database Explorer) and the historical backfills. The venue server needs one; the rest of the app runs without it. See `docs/MSSQL_DRIVER.md`. |
+| MSSQL PDO driver — `pdo_sqlsrv`, `pdo_dblib`, or ODBC (optional) | Only for the MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue Mix, Redemption, Promotional Cards, Item Watch, Database Explorer) and the historical backfills. The venue server needs one; the rest of the app runs without it. See `docs/MSSQL_DRIVER.md`. |
 
 No Composer, no npm, no external PHP packages. Everything uses the PHP standard library.
 
@@ -122,6 +122,30 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   visible). Create/edit/delete needs `promotions_manage`. Batches can be defined
   before the MSSQL connection is set up — their stats fill in automatically.
 
+### Item Watch (`#/items`)
+- Pin the **specific items and deals you care about** and watch how they sell:
+  units, dollars, a 7-to-366-point trend sparkline, and the change vs the
+  previous period — over Day/Week/Month/Year/Custom. Click a card for the full
+  breakdown (revenue, avg price, discounts, gross margin, days sold, best day,
+  the units-by-day trend, and a since-launch total).
+- **A card can be one item or a whole deal.** An entry holds a SET of inventory
+  numbers (`InvNo`), so "Go Kart 3-Ride Deal = 7157, 7158, 7159" is a single
+  card whose figures are the union — with a per-InvNo table on the detail view
+  showing which member is actually moving.
+- A **best sellers** leaderboard for the same period ranks every item by
+  revenue, so you can find what's selling without knowing an inventory number
+  up front — one click turns any row into a watched card.
+- Definitions live locally; every number is computed live from the POS `Sales`
+  table (`QtySold`, `AmtSold`, `Discounts`, `CostSold`) grouped by `InvNo`.
+  This is the only report with a cost source, so it's the only one showing
+  gross margin — and it hides the margin columns entirely if this install
+  leaves `CostSold` at 0, rather than reporting a fake 100%.
+- Day grain only (`ShiftDate` is midnight-stamped), so there is no hour-of-day
+  here. Money is hidden from roles without `view_revenue` (units, trends and
+  days-sold stay visible); the revenue leaderboard needs `view_revenue`
+  outright. Create/edit/delete needs `items_manage`. Items can be pinned before
+  the MSSQL connection is set up — their numbers fill in automatically.
+
 ### Database Explorer (`#/explorer`)
 - A READ-ONLY window into the CenterEdge MSSQL database for finding where metrics
   live: table browser (columns/types, date-column freshness, sample rows), a
@@ -129,7 +153,7 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   CSV export. Every query is single-`SELECT` guarded and audit-logged.
 
 > The MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue
-> Mix, Redemption, Promotional Cards, Database Explorer) all share **one**
+> Mix, Redemption, Promotional Cards, Item Watch, Database Explorer) all share **one**
 > encrypted MSSQL connection, configured on the Go-Kart Labor page. Each report
 > runs admin-editable, read-only queries. See
 > [MSSQL Reporting](#mssql-reporting-centeredge-sql-server) below.
@@ -159,6 +183,7 @@ read APIs); the rest gate features and data.
 | `groups_manage` | Create/edit/delete pause groups |
 | `reader_groups_manage` | Create/edit/delete reader groups (analytics areas) |
 | `promotions_manage` | Create/edit/delete promotional card batches (card-range tracking) |
+| `items_manage` | Create/edit/delete watched items / deals on the Item Watch page |
 | `schedules_manage` | Create/edit/delete schedules |
 | `settings` | System settings: CenterEdge API credentials, timezone |
 | `data_explorer` | Database Explorer + the MSSQL report **Test** buttons (raw POS data, incl. dollar & card figures) — separate from `settings`, admin-only by default |
@@ -597,6 +622,7 @@ All endpoints return JSON. State-changing requests (POST, PUT, PATCH, DELETE) re
 | `/api/analytics/reader-group` | GET | One area: heatmap, trend, per-game breakdown. |
 | `/api/reader-groups` | GET/POST/PUT/DELETE | Reader-group CRUD. Read gate `analytics`; write gate `reader_groups_manage`. |
 | `/api/promotions` | GET/POST/PUT/DELETE | Promotional card-batch CRUD + `/analyze` (per-batch MSSQL analysis), `/settings`, `/test`. Read gate `analytics` (money scrubbed without `view_revenue`); write gate `promotions_manage`; test gate `data_explorer`. |
+| `/api/items` | GET/POST/PUT/DELETE | Item Watch CRUD + `/detail` (one entry: trend, per-InvNo breakdown, since-launch), `/top` (best sellers), `/settings`, `/test`. Read gate `analytics` (money scrubbed without `view_revenue`); `/top` additionally requires `view_revenue`; write gate `items_manage`; test gate `data_explorer`. |
 | `/api/capabilities` | GET | CenterEdge capability flags (drives kiosk controls, card-admin UI). |
 
 ### MSSQL Reports (Labor / Card Loads / Ticket Trends / Revenue Mix)

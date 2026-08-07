@@ -69,6 +69,7 @@
 @import url("pages/revenue.css");
 @import url("pages/redemption.css");
 @import url("pages/promotions.css");
+@import url("pages/items.css");
 @import url("pages/explorer.css");
 
 /* --- Cross-cutting components (must come after pages) ------- */

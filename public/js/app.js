@@ -24,6 +24,7 @@ const Icons = {
     revenue:   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 12V3M12 12l7 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     redemption:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="12.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12.5h18M12 8v12.5" stroke="currentColor" stroke-width="2"/><path d="M12 8C12 8 9.5 3.5 7 5s2 3 5 3zM12 8s2.5-4.5 5-3-2 3-5 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
     promotions:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 13h18" stroke="currentColor" stroke-width="2"/><path d="M12 9V5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 6.5C12 6.5 10.5 3.8 8.8 4.9s1 2.6 3.2 1.6zM12 6.5s1.5-2.7 3.2-1.6-1 2.6-3.2 1.6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+    items:     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 8.5 12 12.8 3.5 8.5 12 4.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3.5 8.5v7L12 19.8l8.5-4.3v-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 12.8v7" stroke="currentColor" stroke-width="2"/></svg>',
     explorer:  '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 5.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 11.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
     logs:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M5 9h14M5 14h10M5 19h14"/></svg>',
     settings:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
@@ -71,7 +72,7 @@ const App = {
         'view_kiosks', 'view_schedules', 'view_overrides',
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'reader_groups_manage',
-        'promotions_manage',
+        'promotions_manage', 'items_manage',
         'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'
     ],
 
@@ -82,8 +83,8 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
-        manager: ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'schedules_manage', 'view_logs'],
+        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
+        manager: ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs'],
         tech:    ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
     },
 
@@ -104,6 +105,7 @@ const App = {
         '#/revenue':     'view_revenue',
         '#/redemption':  'view_revenue',
         '#/promotions':  'analytics',
+        '#/items':       'analytics',
         '#/cards':       'cards',
         '#/groups':      'view_groups',
         '#/kiosks':      'view_kiosks',
@@ -278,6 +280,7 @@ const App = {
             '#/revenue': 'Revenue Mix',
             '#/redemption': 'Redemption Economics',
             '#/promotions': 'Promotional Cards',
+            '#/items': 'Item Watch',
             '#/cards': 'Card Lookup',
             '#/groups': 'Pause Groups',
             '#/kiosks': 'Kiosks',
@@ -519,6 +522,7 @@ const App = {
             { hash: '#/revenue',     icon: Icons.revenue,     label: 'Revenue Mix' },
             { hash: '#/redemption',  icon: Icons.redemption,  label: 'Redemption' },
             { hash: '#/promotions',  icon: Icons.promotions,  label: 'Promo Cards' },
+            { hash: '#/items',       icon: Icons.items,       label: 'Item Watch' },
             { hash: '#/cards',       icon: Icons.cards,       label: 'Card Lookup' },
             { hash: '#/groups',    icon: Icons.groups,    label: 'Pause Groups' },
             { hash: '#/kiosks',    icon: Icons.kiosks,    label: 'Kiosks' },
