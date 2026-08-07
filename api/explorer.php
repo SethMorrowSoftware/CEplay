@@ -55,6 +55,9 @@ function handleExplorer(string $method, array $parts, ?array $input): void {
         case 'history-sources':
             if ($method === 'GET') { explorerHistorySources(); return; }
             break;
+        case 'cost-sources':
+            if ($method === 'GET') { explorerCostSources(); return; }
+            break;
     }
     http_response_code(404);
     echo json_encode(['error' => 'Unknown explorer endpoint']);
@@ -857,6 +860,300 @@ function explorerHistorySources(): void {
         'candidates'  => $results,
         'recommended' => $best,
         'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    ]);
+}
+
+// ---------------------------------------------------------------------------
+// Per-item COST / PRICE source probe
+//
+// `Sales.CostSold` is the schema's only cost-of-goods column and it is empty on
+// this install (measured: 0 of 150 items sold in a 30-day window), so gross
+// margin on Item Watch is dead unless a per-item unit cost lives somewhere
+// else. This finds out, and finds list prices while it's there.
+//
+// Same discipline as the reader-key probe above, whose false negatives are
+// documented in CLAUDE.md: measure coverage rather than sampling one spot,
+// keep the populated-test type-aware, and never report a conjunction that was
+// not actually tested. The decisive measure here is NOT "does the column have
+// values" but "does it have values for the items that actually SELL" — a cost
+// populated on discontinued stock and nothing else buys no margin at all.
+// ---------------------------------------------------------------------------
+
+/** How many recent top sellers the coverage check is measured against. */
+const EXPLORER_COST_SELLER_SAMPLE = 120;
+
+/** How far back to look for "items that actually sell". */
+const EXPLORER_COST_SELLER_DAYS = 90;
+
+/**
+ * Classify a column as a unit COST, a list PRICE, or neither.
+ *
+ * Identifier-ish suffixes are excluded by name: `PriceLevel`, `PriceGroup`,
+ * `CostCenter` and friends are integers that look monetary and are not. Type
+ * alone can't separate them, since some installs store money in int cents.
+ */
+function explorerCostColumnKind(string $name): ?string {
+    $n = strtolower(str_replace(['_', ' '], '', $name));
+    // Reject the lookalikes before matching, or PriceLevel becomes a price.
+    foreach (['level', 'group', 'code', 'type', 'flag', 'center', 'centre', 'class', 'category', 'method'] as $bad) {
+        if (substr($n, -strlen($bad)) === $bad) return null;
+    }
+    if (in_array($n, ['priceno', 'priceid', 'costno', 'costid'], true)) return null;
+    if (strpos($n, 'cost') !== false || strpos($n, 'wholesale') !== false
+        || (strpos($n, 'purchase') !== false && strpos($n, 'price') !== false)) {
+        return 'cost';
+    }
+    if (strpos($n, 'price') !== false || strpos($n, 'retail') !== false || strpos($n, 'msrp') !== false) {
+        return 'price';
+    }
+    return null;
+}
+
+/** Column names that carry the inventory number a Sales row would join on. */
+function explorerIsInvKeyColumn(string $name, string $table): bool {
+    $n = strtolower(str_replace(['_', ' '], '', $name));
+    if (in_array($n, ['invno', 'inventoryno', 'itemno', 'invid', 'itemid', 'inventoryid'], true)) {
+        return true;
+    }
+    // A bare `No`/`ID` is only an inventory key on a table that is about
+    // inventory — anywhere else it would match half the database.
+    $t = strtolower($table);
+    return in_array($n, ['no', 'id'], true)
+        && (strpos($t, 'inventory') !== false || strpos($t, 'item') !== false);
+}
+
+/** Numeric enough to hold money. Ints included — some installs store cents. */
+function explorerIsMoneyType(string $type): bool {
+    return in_array(strtolower($type), [
+        'money', 'smallmoney', 'decimal', 'numeric', 'float', 'real',
+        'int', 'bigint', 'smallint',
+    ], true);
+}
+
+/** "This row carries a real figure" — nulls and zeros are both "not set". */
+function explorerMoneyPopulatedExpr(string $col): string {
+    return "($col IS NOT NULL AND $col <> 0)";
+}
+
+/**
+ * Probe one candidate column: overall population, then — the measure that
+ * actually decides usefulness — how many of the venue's recent top sellers
+ * carry a value, plus samples to eyeball whether the figures are plausible.
+ *
+ * @param string[] $sellers recent top-selling InvNos
+ */
+function explorerProbeCostColumn(
+    MssqlClient $client, string $schema, string $table, string $keyCol, string $col, array $sellers
+): array {
+    $t = explorerIdent($schema) . '.' . explorerIdent($table);
+    $k = explorerIdent($keyCol);
+    $c = explorerIdent($col);
+    $pop = explorerMoneyPopulatedExpr($c);
+
+    $out = ['rows' => null, 'populated' => null, 'populated_pct' => null,
+            'sellers_matched' => null, 'sellers_populated' => null, 'sellers_pct' => null,
+            'min' => null, 'max' => null, 'samples' => [], 'error' => null];
+    try {
+        $r = $client->rows(
+            "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p,"
+            . " MIN(CASE WHEN $pop THEN $c END) AS lo, MAX(CASE WHEN $pop THEN $c END) AS hi"
+            . " FROM $t", 1);
+        if ($r) {
+            $v = array_values($r[0]);
+            $out['rows']      = (int)($r[0]['n'] ?? $v[0] ?? 0);
+            $out['populated'] = (int)($r[0]['p'] ?? $v[1] ?? 0);
+            $out['min']       = isset($r[0]['lo']) ? (float)$r[0]['lo'] : (isset($v[2]) ? (float)$v[2] : null);
+            $out['max']       = isset($r[0]['hi']) ? (float)$r[0]['hi'] : (isset($v[3]) ? (float)$v[3] : null);
+            $out['populated_pct'] = $out['rows'] > 0 ? round($out['populated'] / $out['rows'] * 100, 1) : null;
+        }
+    } catch (Exception $e) {
+        $out['error'] = $e->getMessage();
+        return $out;   // a column we can't read is not worth probing further
+    }
+
+    if ($sellers) {
+        try {
+            $inList = MssqlClient::bindIntList(
+                "SELECT COUNT(*) AS n, SUM(CASE WHEN $pop THEN 1 ELSE 0 END) AS p"
+                . " FROM $t WHERE $k IN (:invnos)", ':invnos', $sellers);
+            $r = $client->rows($inList, 1);
+            if ($r) {
+                $v = array_values($r[0]);
+                $out['sellers_matched']   = (int)($r[0]['n'] ?? $v[0] ?? 0);
+                $out['sellers_populated'] = (int)($r[0]['p'] ?? $v[1] ?? 0);
+                $out['sellers_pct'] = count($sellers) > 0
+                    ? round($out['sellers_populated'] / count($sellers) * 100, 1) : null;
+            }
+            $sampleSql = MssqlClient::bindIntList(
+                "SELECT TOP 8 $k AS inv, $c AS val FROM $t WHERE $k IN (:invnos) AND $pop ORDER BY $k",
+                ':invnos', $sellers);
+            foreach ($client->rows($sampleSql, 8) as $s) {
+                $sv = array_values($s);
+                $out['samples'][] = [
+                    'inv' => (string)($s['inv'] ?? $sv[0] ?? ''),
+                    'val' => (float)($s['val'] ?? $sv[1] ?? 0),
+                ];
+            }
+        } catch (Exception $e) {
+            $out['error'] = 'seller coverage: ' . $e->getMessage();
+        }
+    }
+    return $out;
+}
+
+/**
+ * Answer "is there a per-item unit cost (or list price) anywhere in this
+ * database?" against the live schema instead of guessing.
+ */
+function explorerCostSources(): void {
+    if (!MssqlClient::isConfigured()) {
+        explorerJson(['configured' => false, 'candidates' => []]);
+        return;
+    }
+    explorerAudit('cost_sources', 'per-item cost/price source probe');
+
+    try {
+        $client = new MssqlClient();
+        $client->setTimeout(180);
+    } catch (Exception $e) {
+        explorerJson(['configured' => true, 'error' => $e->getMessage(), 'candidates' => []]);
+        return;
+    }
+
+    // ---- What actually sells? Coverage is measured against these ----
+    $sellers = [];
+    $sellerErr = null;
+    try {
+        $to   = gmdate('Y-m-d');
+        $from = gmdate('Y-m-d', time() - EXPLORER_COST_SELLER_DAYS * 86400);
+        $sql = 'SELECT TOP ' . EXPLORER_COST_SELLER_SAMPLE . ' InvNo AS inv, SUM(AmtSold) AS amt'
+             . ' FROM [CenterEdge].[dbo].[Sales]'
+             . ' WHERE ShiftDate >= ' . explorerLit($from)
+             . ' AND ShiftDate < DATEADD(DAY, 1, ' . explorerLit($to) . ')'
+             . ' AND InvNo IS NOT NULL GROUP BY InvNo ORDER BY SUM(AmtSold) DESC';
+        foreach ($client->rows($sql, EXPLORER_COST_SELLER_SAMPLE) as $r) {
+            $raw = trim((string)($r['inv'] ?? array_values($r)[0] ?? ''));
+            if (preg_match('/^\d{1,18}$/', $raw)) $sellers[] = $raw;
+        }
+    } catch (Exception $e) {
+        $sellerErr = $e->getMessage();
+    }
+
+    // ---- Every table with an inventory key AND a money-ish column ----
+    $candidates = [];
+    try {
+        $byTable = [];
+        foreach ($client->rows(
+            'SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS', 20000) as $c) {
+            $v = array_values($c);
+            $sch  = (string)($c['TABLE_SCHEMA'] ?? $v[0] ?? 'dbo');
+            $tbl  = (string)($c['TABLE_NAME'] ?? $v[1] ?? '');
+            $col  = (string)($c['COLUMN_NAME'] ?? $v[2] ?? '');
+            $type = strtolower((string)($c['DATA_TYPE'] ?? $v[3] ?? ''));
+            if ($tbl === '' || $col === '') continue;
+            $key = $sch . '.' . $tbl;
+            if (!isset($byTable[$key])) {
+                $byTable[$key] = ['schema' => $sch, 'table' => $tbl, 'key_col' => null, 'cols' => []];
+            }
+            if ($byTable[$key]['key_col'] === null && explorerIsInvKeyColumn($col, $tbl)) {
+                $byTable[$key]['key_col'] = $col;
+            }
+            $kind = explorerCostColumnKind($col);
+            if ($kind !== null && explorerIsMoneyType($type)) {
+                $byTable[$key]['cols'][] = ['col' => $col, 'kind' => $kind, 'type' => $type];
+            }
+        }
+        foreach ($byTable as $t) {
+            if ($t['key_col'] === null || !$t['cols']) continue;
+            $candidates[] = $t;
+        }
+    } catch (Exception $e) {
+        explorerJson(['configured' => true, 'error' => 'Schema scan failed: ' . $e->getMessage(), 'candidates' => []]);
+        return;
+    }
+
+    // Prefer the small lookup tables (an Inventory master) over big
+    // transactional ones — a per-item unit cost lives on the former.
+    $sizes = [];
+    try {
+        foreach ($client->rows(
+            'SELECT t.name AS tbl, SUM(p.rows) AS cnt FROM sys.tables t'
+            . ' JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)'
+            . ' GROUP BY t.name', 2000) as $c) {
+            $v = array_values($c);
+            $sizes[strtolower((string)($c['tbl'] ?? $v[0] ?? ''))] = (int)($c['cnt'] ?? $v[1] ?? 0);
+        }
+    } catch (Exception $e) {
+        // sys.* unreadable — ordering falls back to the name heuristic below.
+    }
+    foreach ($candidates as &$c) {
+        $c['rows'] = $sizes[strtolower($c['table'])] ?? null;
+        $n = strtolower($c['table']);
+        // A table literally called Inventory is the obvious first stop; after
+        // that, smaller is more master-data-like.
+        $c['_rank'] = ($n === 'inventory' ? 0 : (strpos($n, 'inventory') !== false ? 1 : (strpos($n, 'item') !== false ? 2 : 3)));
+    }
+    unset($c);
+    usort($candidates, function ($a, $b) {
+        if ($a['_rank'] !== $b['_rank']) return $a['_rank'] <=> $b['_rank'];
+        return ($a['rows'] ?? PHP_INT_MAX) <=> ($b['rows'] ?? PHP_INT_MAX);
+    });
+
+    // ---- Probe the most promising tables ----
+    $probeTables = 8;
+    $probeColsPerTable = 6;
+    $results = [];
+    foreach ($candidates as $i => $c) {
+        unset($c['_rank']);
+        $entry = $c + ['probed' => false];
+        if ($i < $probeTables) {
+            $entry['probed'] = true;
+            $cols = [];
+            foreach (array_slice($c['cols'], 0, $probeColsPerTable) as $cc) {
+                $cols[] = $cc + explorerProbeCostColumn(
+                    $client, $c['schema'], $c['table'], $c['key_col'], $cc['col'], $sellers);
+            }
+            $entry['cols'] = $cols;
+            if (count($c['cols']) > $probeColsPerTable) {
+                $entry['cols_not_probed'] = count($c['cols']) - $probeColsPerTable;
+            }
+        }
+        $results[] = $entry;
+    }
+
+    // ---- Verdict, separately for cost and for price ----
+    // Ranked by coverage of items that SELL, which is the only measure that
+    // decides whether margin can actually be computed.
+    $best = ['cost' => null, 'price' => null];
+    foreach ($results as $r) {
+        if (empty($r['probed'])) continue;
+        foreach ($r['cols'] as $c) {
+            if (!empty($c['error']) || empty($c['sellers_populated'])) continue;
+            $cand = [
+                'schema' => $r['schema'], 'table' => $r['table'], 'key_col' => $r['key_col'],
+                'column' => $c['col'], 'type' => $c['type'],
+                'sellers_populated' => (int)$c['sellers_populated'],
+                'sellers_total' => count($sellers),
+                'sellers_pct' => $c['sellers_pct'],
+                'populated_pct' => $c['populated_pct'],
+                'min' => $c['min'], 'max' => $c['max'], 'samples' => $c['samples'],
+            ];
+            $kind = $c['kind'];
+            if ($best[$kind] === null || $cand['sellers_populated'] > $best[$kind]['sellers_populated']) {
+                $best[$kind] = $cand;
+            }
+        }
+    }
+
+    explorerJson([
+        'configured'    => true,
+        'driver'        => $client->driver(),
+        'sellers_found' => count($sellers),
+        'sellers_days'  => EXPLORER_COST_SELLER_DAYS,
+        'sellers_error' => $sellerErr,
+        'candidates'    => $results,
+        'recommended'   => $best,
+        'generated_at'  => gmdate('Y-m-d\TH:i:s\Z'),
     ]);
 }
 

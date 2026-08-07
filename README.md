@@ -170,6 +170,12 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   live: table browser (columns/types, date-column freshness, sample rows), a
   "find a metric" grouped-totals builder, and a guarded free-form `SELECT` with
   CSV export. Every query is single-`SELECT` guarded and audit-logged.
+- Two purpose-built probes answer questions the reports depend on: **how far
+  back per-game history can reach** (which years still carry a reader key, and
+  whether those keys resolve to today's games), and **whether a per-item unit
+  cost or list price exists anywhere** — the latter measured against the items
+  that actually sell, not just overall row counts, since a cost populated only
+  on discontinued stock buys no margin.
 
 > The MSSQL reporting pages (Go-Kart Labor, Card Loads, Ticket Trends, Revenue
 > Mix, Redemption, Promotional Cards, Item Watch, Database Explorer) all share **one**
