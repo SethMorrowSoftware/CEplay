@@ -496,6 +496,31 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   normalized string equality can't match `1lazer tag` to a current "Laser Tag",
   so unmatched readers want a hand-built crosswalk, not a conclusion that the
   history is gone.
+- **Per-item cost / price probe (`GET /api/explorer/cost-sources`,** "Is there a
+  per-item unit cost or list price?" card on `#/explorer`). `Sales.CostSold` is
+  the schema's only cost-of-goods column and it is EMPTY here, so gross margin
+  needs a unit cost from somewhere else — this answers whether one exists rather
+  than guessing. Scans INFORMATION_SCHEMA for every table carrying BOTH an
+  inventory-key column (`explorerIsInvKeyColumn` — a bare `No`/`ID` only counts
+  on an inventory-ish table, or half the database matches) AND a money-ish
+  column classified as cost or price (`explorerCostColumnKind`). Reports cost
+  and price SEPARATELY, since they answer different questions (margin vs
+  list-vs-actual).
+  **The decisive measure is coverage of items that actually SELL, not overall
+  population** — a cost populated on 6,000 discontinued SKUs and none of this
+  month's sellers buys no margin at all, and would read as a healthy 75% on a
+  whole-table count. The probe pulls the recent top sellers from `Sales`
+  (`EXPLORER_COST_SELLER_SAMPLE`/`_DAYS`) and reports both figures side by side
+  so the gap between them is visible. Verdicts are per-kind and honest either
+  way: "usable" at ≥80% seller coverage, "partial" below it (with the note that
+  uncovered items must show as unknown, never as 100% margin), "none found"
+  when nothing is populated for any seller. With no seller list readable it
+  says so instead of printing 0% — which would read as "no cost data exists".
+  Lookalike columns are excluded BY NAME (`PriceLevel`, `PriceGroup`,
+  `CostCenter`, `PriceCode`…): they are integers that look monetary, and type
+  alone can't separate them since some installs store money in int cents — so
+  int types are deliberately still accepted. Gate: `data_explorer`;
+  audit-logged; venue server only.
 - Reader Groups (`reader_groups`/`reader_group_games`, CRUD at
   `/api/reader-groups`, page at `#/readers`) are analytics-only groupings of
   games/readers — they never pause anything, and a game may be in many groups.
@@ -581,8 +606,9 @@ before building.
   margin columns hide themselves rather than printing a fake 100% — and its
   Test button now reports the coverage ratio outright. Do not re-derive this;
   re-run that button if you suspect the POS config changed. If margin is ever
-  wanted, a NEW source is needed (an `Inventory` unit-cost column would be the
-  first place to look, unconfirmed), not a different read of `Sales`. Confirmed codes on this install: **`CatNo 108` = Go
+  wanted, a NEW source is needed, not a different read of `Sales` — run the
+  Database Explorer's **cost/price probe** (`GET /api/explorer/cost-sources`,
+  below) to find out whether one exists on this install. Confirmed codes on this install: **`CatNo 108` = Go
   Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
   cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
   aggregated daily dollars spent at the kart readers — the go-kart sales figure

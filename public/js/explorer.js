@@ -198,6 +198,7 @@
 
         // ---- How far back can per-game history reach? ----
         box.appendChild(buildHistoryCard());
+        box.appendChild(buildCostCard());
 
         // ---- Metric hunter ----
         box.appendChild(buildHunterCard());
@@ -419,6 +420,168 @@
     // pre-cutover plays, and whether those keys still resolve to today's games
     // — the two facts that decide if Embed-era history is recoverable.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Per-item cost / price source probe
+    //
+    // Sales.CostSold is empty on this install, so gross margin needs a unit
+    // cost from somewhere else — if one exists at all. Same honesty rule as the
+    // history probe: the verdict is whatever the measurement says, and the
+    // measure that counts is coverage of items that actually SELL.
+    // ------------------------------------------------------------------
+    function buildCostCard() {
+        var status = App.el('span', { className: 'text-sm text-secondary', 'aria-live': 'polite' });
+        var results = App.el('div');
+        var runBtn = App.el('button', {
+            className: 'btn btn-primary', textContent: 'Find cost / price columns',
+            onClick: function() { runCostProbe(runBtn, status, results); }
+        });
+        return App.el('div', { className: 'card', id: 'explorer-cost-card', style: { marginTop: '1rem' } }, [
+            App.el('div', { className: 'card-header' }, [
+                App.el('div', {}, [
+                    App.el('h3', { textContent: 'Is there a per-item unit cost or list price?' }),
+                    App.el('div', { className: 'text-muted text-sm', textContent:
+                        'Sales.CostSold is empty here, so Item Watch can’t show margin. This scans every table '
+                        + 'with an inventory key for a cost or price column and measures how many of the items '
+                        + 'that actually sell carry a value. Read-only.' })
+                ])
+            ]),
+            App.el('div', { className: 'card-body' }, [
+                App.el('div', { className: 'flex gap-sm', style: { alignItems: 'center' } }, [runBtn, status]),
+                results
+            ])
+        ]);
+    }
+
+    function costMoney(v) {
+        if (v === null || v === undefined) return '—';
+        return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    /** One verdict line per kind, saying plainly whether it is usable. */
+    function costVerdict(kind, rec, sellersFound) {
+        var noun = kind === 'cost' ? 'unit cost' : 'list price';
+        if (!rec) {
+            return App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
+                App.el('strong', { textContent: 'No usable ' + noun + ' found. ' }),
+                App.el('span', { textContent:
+                    'No ' + kind + '-like column in the tables probed carries a value for any of the '
+                    + sellersFound + ' items that sold recently. See the table below — a column that is '
+                    + 'populated overall but empty for current sellers is stale master data, not a source.' })
+            ]);
+        }
+        var pct = rec.sellers_pct != null ? rec.sellers_pct : 0;
+        var strong = pct >= 80;
+        return App.el('div', { className: strong ? 'alert-success' : 'alert-warning', style: { marginTop: '0.8rem' } }, [
+            App.el('strong', { textContent:
+                (strong ? 'Usable ' : 'Partial ') + noun + ': ' + rec.table + '.' + rec.column + '. ' }),
+            App.el('span', { textContent:
+                rec.sellers_populated + ' of ' + rec.sellers_total + ' recent sellers (' + pct + '%) carry a value, '
+                + 'joined on ' + rec.key_col + '. Range ' + costMoney(rec.min) + ' – ' + costMoney(rec.max) + '. '
+                + (strong
+                    ? 'Enough coverage to compute ' + (kind === 'cost' ? 'margin' : 'list-vs-actual') + ' for most items.'
+                    : 'Thin coverage — items without a value would have to be shown as unknown rather than as '
+                      + (kind === 'cost' ? '100% margin' : 'zero discount') + '.') })
+        ]);
+    }
+
+    async function runCostProbe(btn, status, results) {
+        btn.disabled = true;
+        status.textContent = 'Scanning the schema…';
+        results.innerHTML = '';
+        var d;
+        try {
+            d = await API.get('explorer/cost-sources');
+        } catch (err) {
+            status.textContent = '';
+            results.appendChild(App.el('p', { className: 'text-secondary',
+                textContent: '⚠ ' + (err && err.message ? err.message : 'probe failed') }));
+            btn.disabled = false;
+            return;
+        }
+        btn.disabled = false;
+        status.textContent = '';
+
+        if (d.configured === false) {
+            results.appendChild(App.el('p', { className: 'text-secondary',
+                textContent: 'MSSQL is not configured — set the connection up on the Go-Kart Labor page first.' }));
+            return;
+        }
+        if (d.error) {
+            results.appendChild(App.el('p', { className: 'text-secondary', textContent: '⚠ ' + d.error }));
+            return;
+        }
+
+        // Coverage is meaningless without a seller list — say so instead of
+        // reporting 0% and letting it read as "no cost data exists".
+        if (!d.sellers_found) {
+            results.appendChild(App.el('div', { className: 'alert-warning', style: { marginTop: '0.8rem' } }, [
+                App.el('strong', { textContent: 'Could not read recent sellers. ' }),
+                App.el('span', { textContent: (d.sellers_error || 'No items sold in the last '
+                    + d.sellers_days + ' days.') + ' Coverage figures below are not meaningful without them.' })
+            ]));
+        } else {
+            results.appendChild(App.el('p', { className: 'text-muted text-sm', style: { marginTop: '0.8rem' },
+                textContent: 'Measured against the ' + d.sellers_found + ' top-selling items of the last '
+                    + d.sellers_days + ' days.' }));
+            var rec = d.recommended || {};
+            results.appendChild(costVerdict('cost', rec.cost, d.sellers_found));
+            results.appendChild(costVerdict('price', rec.price, d.sellers_found));
+        }
+
+        var cands = d.candidates || [];
+        if (!cands.length) {
+            results.appendChild(App.el('p', { className: 'text-muted text-sm', style: { marginTop: '0.8rem' },
+                textContent: 'No table in this database has both an inventory-number column and a cost or price column.' }));
+            return;
+        }
+
+        var rows = [];
+        cands.forEach(function(c) {
+            if (!c.probed) {
+                rows.push([c.schema + '.' + c.table, '(not probed)', '', '', '', '', '']);
+                return;
+            }
+            (c.cols || []).forEach(function(col) {
+                if (col.error) {
+                    rows.push([c.schema + '.' + c.table, col.col, col.kind, col.type, '⚠ ' + col.error, '', '']);
+                    return;
+                }
+                var samples = (col.samples || []).slice(0, 3)
+                    .map(function(s) { return '#' + s.inv + ' ' + costMoney(s.val); }).join(', ');
+                rows.push([
+                    c.schema + '.' + c.table,
+                    col.col,
+                    col.kind,
+                    col.type,
+                    col.populated == null ? '—'
+                        : fmtCount(col.populated) + ' / ' + fmtCount(col.rows)
+                          + (col.populated_pct != null ? ' (' + col.populated_pct + '%)' : ''),
+                    col.sellers_populated == null ? '—'
+                        : col.sellers_populated + (col.sellers_pct != null ? ' (' + col.sellers_pct + '%)' : ''),
+                    samples || '—'
+                ]);
+            });
+        });
+
+        var head = ['Table', 'Column', 'Kind', 'Type', 'Rows populated', 'Sellers covered', 'Samples'];
+        var table = App.el('table', { className: 'data-table', style: { marginTop: '0.8rem' } }, [
+            App.el('thead', {}, [App.el('tr', {}, head.map(function(h) {
+                return App.el('th', { scope: 'col', textContent: h });
+            }))]),
+            App.el('tbody', {}, rows.map(function(r) {
+                return App.el('tr', {}, r.map(function(cell) {
+                    return App.el('td', { textContent: String(cell) });
+                }));
+            }))
+        ]);
+        results.appendChild(App.el('div', { className: 'table-scroll-x' }, [table]));
+        results.appendChild(App.el('p', { className: 'text-xs text-muted', style: { marginTop: '0.5rem' },
+            textContent: '"Sellers covered" is the count of recent top sellers with a value in that column — '
+                + 'the figure that decides whether margin can be computed. "Rows populated" counts the whole '
+                + 'table, including discontinued stock, so a high figure there with a low one here means the '
+                + 'data is stale.' }));
+    }
+
     function buildHistoryCard() {
         var status = App.el('span', { className: 'text-sm text-secondary' });
         var results = App.el('div', {});
