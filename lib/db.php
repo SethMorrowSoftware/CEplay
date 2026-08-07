@@ -87,7 +87,7 @@ class DB {
              '["*"]'],
             ['manager', 'Manager',
              'Runs the floor and the automation: full analytics with reader CC payments, card lookup, and group/schedule management. No system settings or user management.',
-             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","promotions_manage","schedules_manage","view_logs"]'],
+             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","promotions_manage","items_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
              'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No payment figures, card lookup, or group/schedule editing.',
              '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","manual_control","overrides_manage","settings","users"]'],
@@ -218,6 +218,39 @@ class DB {
             }
         } catch (Exception $e) {
             error_log('promotions_manage migration skipped: ' . $e->getMessage());
+        }
+
+        // One-time migration: watched items / deals (the Item Watch page) get
+        // their own catalog key ('items_manage'). Grant it to every role that
+        // already holds promotions_manage (or the wildcard) — the two are the
+        // same kind of job, so introducing the key changes nobody's effective
+        // access. Flagged so it runs exactly once.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_items_manage_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms)) {
+                        continue;
+                    }
+                    if (in_array('*', $perms, true) || in_array('items_manage', $perms, true)) {
+                        continue;
+                    }
+                    if (in_array('promotions_manage', $perms, true)) {
+                        $perms[] = 'items_manage';
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_items_manage_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('items_manage migration skipped: ' . $e->getMessage());
         }
 
         // One-time migration: page-visibility keys (view_dashboard,
@@ -963,6 +996,26 @@ class DB {
             card_to TEXT NOT NULL,
             giveaway_date TEXT NOT NULL DEFAULT \'\',
             initial_value REAL NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT \'\',
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
+            updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))
+        )');
+
+        // Watched items / deals (the Item Watch page): operator-pinned POS
+        // inventory items, each entry a SET of InvNo values (one item, or every
+        // InvNo that makes up a deal). Analytics only — they never pause
+        // anything. This table holds ONLY what the operator knows (name, the
+        // inventory numbers, an optional grouping tag, the deal's run dates,
+        // notes); every sales number (units, dollars, discounts, cost, margin,
+        // trend) is computed LIVE from the CenterEdge POS `Sales` table by
+        // InvNo, so nothing is duplicated here.
+        $db->exec('CREATE TABLE IF NOT EXISTS watch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            inv_nos TEXT NOT NULL,
+            tag TEXT NOT NULL DEFAULT \'\',
+            start_date TEXT NOT NULL DEFAULT \'\',
+            end_date TEXT NOT NULL DEFAULT \'\',
             notes TEXT NOT NULL DEFAULT \'\',
             created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),
             updated_at TEXT NOT NULL DEFAULT (datetime(\'now\'))

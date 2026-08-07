@@ -158,6 +158,43 @@ class MssqlClient
         return str_replace([':cardfrom', ':cardto'], [(string)$from, (string)$to], $sql);
     }
 
+    /**
+     * Substitute a placeholder with a comma-separated list of validated
+     * integer literals — for an `IN (:invnos)` filter over a set the operator
+     * picked (the Item Watch page's inventory numbers). Same inlining
+     * rationale as bindDate/bindRange/bindCardRange: the strict digit check
+     * makes it injection-proof, and an empty list is rejected rather than
+     * silently producing `IN ()` (a syntax error) or, worse, an unfiltered scan.
+     *
+     * @param string   $placeholder e.g. ':invnos' (leading colon optional)
+     * @param string[] $values      whole numbers, de-duplicated in place
+     */
+    public static function bindIntList(string $sql, string $placeholder, array $values): string
+    {
+        $name = ltrim($placeholder, ':');
+        if (!preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $name)) {
+            throw new RuntimeException('Invalid placeholder name: ' . $placeholder);
+        }
+        if (strpos($sql, ':' . $name) === false) {
+            throw new RuntimeException('Query must contain the :' . $name . ' placeholder.');
+        }
+        $clean = [];
+        foreach ($values as $v) {
+            $s = trim((string)$v);
+            if (!preg_match('/^\d{1,18}$/', $s)) {
+                throw new RuntimeException('List values must be whole numbers (up to 18 digits).');
+            }
+            // Normalize leading zeros without an int cast, so the check above
+            // stays the only size constraint (0075 and 75 are one value).
+            $s = ltrim($s, '0');
+            $clean[$s === '' ? '0' : $s] = true;
+        }
+        if (!$clean) {
+            throw new RuntimeException('The :' . $name . ' list cannot be empty.');
+        }
+        return str_replace(':' . $name, implode(',', array_keys($clean)), $sql);
+    }
+
     public function connect(): void
     {
         if ($this->pdo !== null) {

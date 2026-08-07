@@ -1,0 +1,313 @@
+/* ============================================
+   Item Watch page
+   ============================================
+   A managed watchlist of POS inventory items / deals rendered as a card grid
+   (each with a bar sparkline and a change-vs-previous pill), plus a summary
+   strip, a click-through detail view, and a best-sellers leaderboard.
+
+   Reuses the shared primitives rather than restating them: the period picker
+   (.perf-*), the bar rails and admin query editor from Go-Kart Labor
+   (.labor-hour-*, .labor-bar-track, .labor-sql, .labor-diagnostics,
+   .labor-admin-details), and .data-table / .table-scroll-x / .form-*. This file
+   adds only the Item Watch accent, the card/grid layout, the sparkline and the
+   delta pill. Theme-aware via design tokens.
+   ============================================ */
+
+:root {
+    --items: #1fb6c1;               /* Teal — distinct from the other reports */
+    --items-rgb: 31, 182, 193;
+}
+:root[data-theme="light"] {
+    --items: #0d8f9a;
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --items: #0d8f9a; }
+}
+
+/* Config-not-ready / warning banner. */
+.items-note-card {
+    border: 1px solid rgba(var(--items-rgb), 0.35);
+    background: rgba(var(--items-rgb), 0.08);
+    color: var(--text-secondary);
+    border-radius: var(--radius-lg);
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+.items-note-bad {
+    border-color: var(--warning);
+    background: var(--warning-subtle);
+    color: var(--text-primary);
+}
+
+/* Live-refresh toggle in the page header. */
+.items-live-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+/* ---- Empty state ---- */
+.items-empty { text-align: center; padding: 2.5rem 1rem 2rem; }
+.items-empty-icon { font-size: 2.6rem; line-height: 1; margin-bottom: 0.6rem; }
+.items-empty-title { font-size: 1.15rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.35rem; }
+.items-empty-sub { color: var(--text-secondary); font-size: 0.9rem; max-width: 42rem; margin: 0 auto 1rem; line-height: 1.5; }
+
+/* ---- Summary strip ---- */
+.items-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+.items-summary-tile {
+    background: linear-gradient(180deg, rgba(var(--items-rgb), 0.10), rgba(var(--items-rgb), 0.02));
+    border: 1px solid rgba(var(--items-rgb), 0.22);
+    border-radius: var(--radius-md);
+    padding: 0.7rem 0.9rem;
+}
+.items-summary-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+.items-summary-label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.1rem; }
+
+/* ---- Card grid ---- */
+.items-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+}
+.items-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    cursor: pointer;
+    transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+.items-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(var(--items-rgb), 0.5);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.items-card:hover .items-card-open { color: var(--items); }
+.items-card-selected {
+    border-color: var(--items);
+    box-shadow: 0 0 0 1px var(--items) inset;
+}
+
+.items-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+.items-card-titlewrap { min-width: 0; }
+.items-card-name { font-weight: 700; font-size: 1.02rem; color: var(--text-primary); line-height: 1.25; }
+.items-card-sub { margin-top: 0.3rem; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; font-size: 0.78rem; }
+.items-card-actions { display: flex; gap: 0.15rem; flex: 0 0 auto; opacity: 0.65; transition: opacity 0.12s ease; }
+.items-card:hover .items-card-actions { opacity: 1; }
+
+.items-inv-chip,
+.items-tag-chip,
+.items-watching-chip {
+    display: inline-block;
+    font-size: 0.72rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+}
+.items-inv-chip {
+    font-variant-numeric: tabular-nums;
+    background: rgba(var(--items-rgb), 0.14);
+    color: var(--items);
+}
+.items-tag-chip {
+    background: var(--bg-elevated, var(--bg-card));
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.items-watching-chip {
+    margin-left: 0.4rem;
+    background: rgba(var(--items-rgb), 0.14);
+    color: var(--items);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.62rem;
+}
+
+/* ---- Card figures ---- */
+.items-card-body { display: flex; align-items: flex-end; justify-content: space-between; gap: 0.9rem; }
+.items-card-figures { min-width: 0; }
+.items-card-bignum {
+    font-size: 1.85rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.05;
+}
+.items-card-metasub { margin-top: 0.05rem; }
+.items-card-money { color: var(--items); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 0.35rem; }
+
+/* Change vs the previous period. */
+.items-delta {
+    display: inline-block;
+    margin-top: 0.4rem;
+    font-size: 0.76rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+}
+.items-delta-up   { background: var(--success-subtle); color: var(--success); }
+.items-delta-down { background: var(--danger-subtle);  color: var(--danger); }
+.items-delta-flat { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+
+/* ---- Bar sparkline ---- */
+.items-spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 46px;
+    flex: 1 1 40%;
+    min-width: 70px;
+}
+.items-spark-bar {
+    flex: 1 1 0;
+    min-width: 2px;
+    border-radius: 1px 1px 0 0;
+    background: linear-gradient(180deg, var(--items) 0%, rgba(var(--items-rgb), 0.45) 100%);
+}
+.items-spark-empty { background: rgba(var(--items-rgb), 0.14); }
+
+/* ---- Stat chips ---- */
+.items-card-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    gap: 0.4rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.75rem;
+}
+.items-chip { text-align: center; min-width: 0; }
+.items-chip-val {
+    font-weight: 600; font-size: 0.9rem; color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.items-chip-label { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); margin-top: 0.1rem; }
+
+/* margin-top:auto pins the foot to the bottom, so "View →" lines up across a
+   row of cards whose titles/chips wrap to different heights. */
+.items-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-top: auto; }
+.items-card-open { font-weight: 600; color: var(--text-secondary); transition: color 0.12s ease; }
+
+/* ---- Detail ---- */
+.items-detail-card { border-top: 3px solid var(--items); margin-bottom: 1.5rem; }
+.items-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+
+.items-hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding: 0.5rem 0 1.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.items-hero-meta { min-width: 0; }
+.items-hero-big { font-size: 2.2rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.05; }
+.items-hero-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.35rem; }
+.items-hero-money { color: var(--items); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 0.4rem; }
+.items-hero-spark { flex: 0 1 44%; min-width: 140px; }
+.items-hero-spark .items-spark { height: 72px; }
+
+.items-tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.items-tile {
+    background: var(--bg-elevated, var(--bg-card));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 0.85rem;
+}
+.items-tile-value {
+    font-size: 1.3rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    margin: 0.15rem 0;
+    color: var(--text-primary);
+}
+
+/* Since-launch block — set apart from the period figures above it, because it
+   deliberately ignores the period picker. */
+.items-lifetime {
+    background: rgba(var(--items-rgb), 0.06);
+    border-left: 3px solid var(--items);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 1rem;
+}
+.items-lifetime-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    margin: 0.15rem 0;
+}
+
+.items-notes {
+    background: rgba(var(--items-rgb), 0.06);
+    border-left: 3px solid var(--items);
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+    white-space: pre-wrap;
+}
+
+/* Teal fill for the trend + leaderboard bars, riding the shared
+   .labor-hour-track / .labor-bar-track rails (the Revenue Mix pattern). */
+.items-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--items) 0%, color-mix(in srgb, var(--items) 70%, var(--accent)) 100%);
+    transition: width 0.3s ease;
+}
+.items-amount { color: var(--items); font-weight: 600; font-variant-numeric: tabular-nums; }
+.items-table td { font-variant-numeric: tabular-nums; }
+
+/* Trend rows need more label room than Labor's hour labels — and must give it
+   back on phones, or the fixed-width label + value squeeze the bar to a sliver
+   (same fix as the Revenue Mix trend). */
+.items-trend-list .labor-hour-label { min-width: 7.5rem; }
+@media (max-width: 480px) {
+    .items-trend-list .labor-hour-label { min-width: 4.5rem; white-space: normal; }
+    .items-trend-list .labor-hour-val { min-width: 3.5rem; }
+}
+
+/* ---- Editor ---- */
+.items-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+}
+
+@media (max-width: 640px) {
+    .items-form-row { grid-template-columns: 1fr; }
+    .items-card-body { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+    .items-spark { width: 100%; flex: 0 0 auto; }
+    .items-hero { flex-direction: column; align-items: flex-start; gap: 1rem; }
+    .items-hero-spark { width: 100%; flex: 0 0 auto; }
+}

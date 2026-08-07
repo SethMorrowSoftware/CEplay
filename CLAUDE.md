@@ -28,9 +28,9 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, logs, users, roles, capabilities)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, logs, users, roles, capabilities)
 lib/          — 9 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting)
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
 data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
 docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
@@ -350,6 +350,59 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   card numbers matched, to confirm the range hit real cards). Pink `--promo`
   theme. Batches can be defined even before MSSQL is configured (stats fill in
   later). Venue server only for the live numbers (no sandbox driver).
+- Item Watch (`#/items`, `/api/items/*`, `api/items.php`) is the "how is this
+  item / this deal selling?" page: an operator-pinned WATCHLIST of POS inventory
+  items rendered as cards (units, dollars, a bar sparkline, and the change vs
+  the previous period), a click-through detail view, and a BEST SELLERS
+  leaderboard for the same window. Modeled on Promotional Cards — definitions in
+  SQLite (`watch_items`: name, `inv_nos`, tag, start/end date, notes), every
+  number computed LIVE from MSSQL. Browsable by Day/Week/Month/Year/Custom via
+  the shared `perfResolveWindow` model.
+  **One entry = a SET of `InvNo` values**, not just one: a deal made of several
+  inventory numbers (e.g. a 3-ride kart pass + its variants) becomes ONE card
+  whose figures are the union, with a per-InvNo breakdown on the detail view
+  showing which member is actually moving. Source: MSSQL `Sales` grouped by
+  `InvNo` — `SUM(QtySold)` units, `SUM(AmtSold)` dollars, `SUM(Discounts)`,
+  `SUM(CostSold)` (this is the ONLY report with a cost source, so it is the only
+  one showing gross margin; `has_cost` is computed per response and the margin
+  columns hide entirely when the venue leaves `CostSold` at 0 rather than
+  printing a fake 100%).
+  Grain is DAY, never hour — `Sales.ShiftDate` is a business day stamped at
+  midnight, so there is no hour-of-day panel here (same honesty as Revenue Mix /
+  Ticket Trends). THREE admin-editable single-SELECT queries: `items_range_sql`
+  (per day + InvNo, placeholders `:from`/`:to`/`:invnos` — drives the cards and
+  the trend), `items_totals_sql` (per-InvNo totals for the same placeholders —
+  used for the prior-period comparison and the since-launch figures, so a
+  multi-year lookback costs one row per item instead of one per item per day),
+  and `items_top_sql` (the leaderboard, `:from`/`:to` only). `:invnos` is
+  inlined as a validated comma-separated integer list by
+  `MssqlClient::bindIntList` (digits-only → injection-proof, same rationale as
+  bindDate/bindRange/bindCardRange); an EMPTY list throws rather than producing
+  `IN ()` or an unfiltered scan.
+  **ACTUALS ONLY** — every figure is a real total for the selected window. The
+  prior-period fields are null (not 0) when the previous period has no rows for
+  those items at all, so a newly-added item says "no prior" instead of showing a
+  fake −100%. Setting a start date adds a "since it launched" block (clamped to
+  ~5 years back, and it says so when clamped) that deliberately ignores the
+  period picker.
+  Caps, all reported rather than silent: 50 InvNos per entry (validation), 120
+  InvNos per page load across the whole watchlist (entries past it are listed
+  WITHOUT numbers and the payload carries `stats_skipped`), and 60,000 rows on
+  the day-grain query (`truncated` flag → the UI says the totals are incomplete
+  and to narrow the period). Item NAMES come from a best-effort
+  `Inventory.Description` lookup, falling back to INFORMATION_SCHEMA discovery
+  (same approach as the Revenue Mix category lookup); a miss just shows
+  "Item 7157". View gate: `analytics` (money scrubbed for roles without
+  `view_revenue` — techs see units, unit trends and days-sold, never dollars or
+  margin); the best-sellers leaderboard is RANKED by dollars end to end so it
+  requires `view_revenue` outright rather than being scrubbed. Manage gate:
+  `items_manage` (its own catalog key, granted once to roles holding
+  `promotions_manage` by `migration_items_manage_v1`); config gate: `settings`;
+  Test gate: `data_explorer` (the Test button dumps the window's top InvNos with
+  names — the fastest way to find an item's number — and reconciles the
+  day-grain query against the totals query, which must agree). Teal `--items`
+  theme. Items can be pinned before MSSQL is configured (numbers fill in later).
+  Venue server only for the live numbers (no sandbox driver).
 - Database Explorer (`#/explorer`, `/api/explorer/*`) is a READ-ONLY window
   into the CenterEdge MSSQL database (shares the Labor page's connection)
   for finding where metrics live: table browser (columns/types, date-column
@@ -477,7 +530,14 @@ before building.
   day grain only — no real hour-of-day (that's why Revenue Mix / the go-kart
   cash figure have no heatmap). Columns in use: `AmtSold` (dollars), `QtySold`,
   `Discounts`, `CostSold`, `NumberTickets`, `CatNo` (category/area),
-  `SubCatNo`, `DivNo`. Confirmed codes on this install: **`CatNo 108` = Go
+  `SubCatNo`, `DivNo`, **`InvNo`** (the inventory item — CONFIRMED: the venue
+  already tracks a kart deal in Grafana with `SELECT SUM(QtySold) FROM Sales
+  WHERE InvNo = 7157`, and the Item Watch page groups this table by it).
+  `CostSold` makes `Sales` the ONLY confirmed source of cost of goods, so
+  per-item gross margin is available here and nowhere else — but confirm it is
+  actually populated before promising margin, since a venue can leave it 0
+  (Item Watch hides its margin columns when the response carries no cost rather
+  than reporting a fake 100%). Confirmed codes on this install: **`CatNo 108` = Go
   Karts** (rides post at `AmtSold` 0 — paid at the reader; walk-up cash posts as
   cash), **`CatNo 106` = Beverages**, **`DivNo 808` = "Go Kart Readers"** (the
   aggregated daily dollars spent at the kart readers — the go-kart sales figure
@@ -634,9 +694,9 @@ before building.
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 19 keys incl.
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 20 keys incl.
   view_revenue, manual_control, reader_groups_manage, promotions_manage,
-  data_explorer). A
+  items_manage, data_explorer). A
   read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.
