@@ -60,6 +60,47 @@ function revenueRangeSql(): string {
 }
 
 /**
+ * The prior window this period is measured against, cut to the SAME STRETCH
+ * when the current period is still in progress.
+ *
+ * Without this, a year-to-date view is compared against a FULL prior year —
+ * eight months measured against twelve, which reads as a collapse every August.
+ * So whenever today clipped the window short, clip the prior side at the
+ * matching calendar point: for a Year view the same month/day a year back
+ * (Feb 29 → Feb 28, via analyticsYoyPriorDate — the convention the dashboard's
+ * year-over-year card uses), otherwise the same number of ELAPSED days, never
+ * spilling past the prior period's own end.
+ *
+ * A completed period (any past offset) is untouched — full against full.
+ *
+ * @param array  $win perfResolveWindow() output
+ * @param string $to  the window's end AFTER clamping to today
+ * @return array{from:string,to:string,aligned:bool,days:int}
+ */
+function revenuePriorWindow(array $win, string $to): array {
+    $from    = (string)($win['prev_from'] ?? '');
+    $priorTo = (string)($win['prev_to'] ?? '');
+    $aligned = false;
+    if ($from !== '' && $priorTo !== '' && $to < (string)$win['to']) {
+        // In progress: today cut the window short of its calendar end.
+        if (($win['range'] ?? '') === 'year') {
+            $cut = analyticsYoyPriorDate($to);
+        } else {
+            $elapsed = revenueDateSpan((string)$win['from'], $to);
+            $cut = revenueDateAdd($from, max(0, $elapsed - 1));
+        }
+        if ($cut < $from) $cut = $from;
+        if ($cut < $priorTo) { $priorTo = $cut; $aligned = true; }
+    }
+    return [
+        'from'    => $from,
+        'to'      => $priorTo,
+        'aligned' => $aligned,
+        'days'    => ($from === '' || $priorTo === '') ? 0 : revenueDateSpan($from, $priorTo),
+    ];
+}
+
+/**
  * Normalize the range query's rows into (day, cat, amount, discounts, qty),
  * tolerant of column naming (named keys any case, else positional).
  *
@@ -238,8 +279,16 @@ function revenueData(): void {
     $cur = DateTime::createFromFormat('!Y-m-d', $from, $tz);
     for ($i = 0; $i < $span; $i++) { $dates[] = $cur->format('Y-m-d'); $cur->modify('+1 day'); }
 
+    // Compare like with like: an in-progress period is measured against the
+    // same stretch of the previous one, not against its full span.
+    $priorWin = revenuePriorWindow($win, $to);
+
     $meta = perfRangeMeta($win, $tzName);
-    $meta['to'] = $to;
+    $meta['to']            = $to;
+    $meta['prev_from']     = $priorWin['from'];
+    $meta['prev_to']       = $priorWin['to'];
+    $meta['prev_aligned']  = $priorWin['aligned'];
+    $meta['compare_label'] = revenueCompareLabel($win['range'], $priorWin['aligned']);
     $base = ['window' => $meta, 'configured' => MssqlClient::isConfigured(), 'generated_at' => gmdate('Y-m-d\TH:i:s\Z')];
 
     if (!MssqlClient::isConfigured()) {
@@ -254,8 +303,8 @@ function revenueData(): void {
         // comfortably under the cap; 40000 leaves generous headroom.
         $buckets = revenueBucketsFromRows($client->rows(MssqlClient::bindRange($sql, $from, $to), 40000));
         $prior = 0.0;
-        if (!empty($win['prev_from']) && !empty($win['prev_to'])) {
-            foreach (revenueBucketsFromRows($client->rows(MssqlClient::bindRange($sql, $win['prev_from'], $win['prev_to']), 40000)) as $b) {
+        if ($priorWin['from'] !== '' && $priorWin['to'] !== '' && $priorWin['days'] > 0) {
+            foreach (revenueBucketsFromRows($client->rows(MssqlClient::bindRange($sql, $priorWin['from'], $priorWin['to']), 40000)) as $b) {
                 $prior += $b['amount'];
             }
         }
@@ -265,7 +314,19 @@ function revenueData(): void {
         return;
     }
 
-    echo json_encode($base + revenueCompose($dates, $buckets, $catNames, $prior));
+    echo json_encode($base + revenueCompose($dates, $buckets, $catNames, $prior, $priorWin,
+        revenueCompareLabel($win['range'], $priorWin['aligned'])));
+}
+
+/**
+ * How the comparison should read on screen. On a Year view the previous period
+ * IS last year, so say so — and say when it was cut to the same stretch, since
+ * "vs last year" over eight months means something different than over twelve.
+ */
+function revenueCompareLabel(string $range, bool $aligned): string {
+    if ($range === 'year') return $aligned ? 'vs same stretch last year' : 'vs last year';
+    if ($aligned)          return 'vs same stretch, previous period';
+    return 'vs previous period';
 }
 
 /**
@@ -275,9 +336,12 @@ function revenueData(): void {
  * @param string[] $dates every ISO date in the window, ascending
  * @param array $buckets revenueBucketsFromRows() output
  * @param array<string,string> $catNames CatNo => name
+ * @param array|null $priorWindow revenuePriorWindow() output — the exact span
+ *        $priorRevenue was measured over, echoed so the UI can state it
  * @return array{days:array, categories:array, summary:array}
  */
-function revenueCompose(array $dates, array $buckets, array $catNames, float $priorRevenue): array {
+function revenueCompose(array $dates, array $buckets, array $catNames, float $priorRevenue,
+                        ?array $priorWindow = null, string $compareLabel = 'vs previous period'): array {
     $numDays = max(1, count($dates));
     $dayIndex = [];
     foreach ($dates as $d) $dayIndex[$d] = ['amount' => 0.0];
@@ -331,9 +395,24 @@ function revenueCompose(array $dates, array $buckets, array $catNames, float $pr
         'top_cat_share' => $top['share'] ?? null,
         'prior_revenue' => round($priorRevenue, 2),
         'delta_pct'     => $priorRevenue > 0 ? round(($tot - $priorRevenue) / $priorRevenue, 4) : null,
+        // The exact span the prior figure covers, so the card can name it
+        // instead of leaving "previous period" to the reader's imagination.
+        'prior_from'    => $priorWindow['from'] ?? null,
+        'prior_to'      => $priorWindow['to'] ?? null,
+        'prior_days'    => $priorWindow['days'] ?? null,
+        'prior_aligned' => (bool)($priorWindow['aligned'] ?? false),
+        'compare_label' => $compareLabel,
     ];
 
     return ['days' => $days, 'categories' => $categories, 'summary' => $summary];
+}
+
+/** ISO date $n days after $date. */
+function revenueDateAdd(string $date, int $n): string {
+    $d = DateTime::createFromFormat('!Y-m-d', $date, new DateTimeZone('UTC'));
+    if (!$d) return $date;
+    if ($n !== 0) $d->modify(($n > 0 ? '+' : '') . $n . ' days');
+    return $d->format('Y-m-d');
 }
 
 /** Inclusive day count between two ISO dates (0 when to < from). */

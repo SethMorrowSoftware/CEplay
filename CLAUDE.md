@@ -266,7 +266,23 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   a revenue-by-day trend + a per-category breakdown (revenue, mix share,
   discount rate, units) + prior-period delta. It frames every other money
   report — attractions vs food vs groups vs card fees, and the mix shift over
-  time. Grain is DAY, not hour: `Sales.ShiftDate` is a business day at midnight
+  time.
+  **The prior-period comparison is CUT TO THE SAME STRETCH when the current
+  period is still running** (`revenuePriorWindow`) — the current year is measured
+  against last year TO THE SAME DATE, the way the dashboard's year-over-year card
+  works, instead of eight months against a full twelve (which read as a collapse
+  every August). Year views align on the same month/day via
+  `analyticsYoyPriorDate` (Feb 29 → Feb 28); week/month/custom align on ELAPSED
+  DAY COUNT, clamped so a 30-day-elapsed March can never spill past a 28-day
+  February. A COMPLETED period (any past offset) is untouched — full against
+  full, and `prior_aligned` stays false. The summary echoes the exact span
+  compared (`prior_from`/`prior_to`/`prior_days`) plus a `compare_label`
+  ("vs same stretch last year" / "vs last year" / "vs previous period"), and the
+  UI prints both sides ("through Aug 14" on the revenue card, the prior dates on
+  the delta card) so the comparison is never left implicit. NOTE the current side
+  still includes TODAY, a partial day, exactly as every other page here treats
+  the running period — do not "fix" that by silently shifting the headline total
+  off the window the user picked. Grain is DAY, not hour: `Sales.ShiftDate` is a business day at midnight
   (no real clock time), so there is no hour-of-day/heatmap here (same honesty as
   Ticket Trends). Source: MSSQL `Sales` — `SUM(AmtSold)` (dollars),
   `SUM(Discounts)`, `SUM(QtySold)` grouped by `CatNo` (all confirmed columns —
