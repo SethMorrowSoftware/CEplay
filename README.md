@@ -109,6 +109,12 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   vs card fees) over Day/Week/Month/Year/Custom, with the mix shift over time,
   discount rate per category, and prior-period delta. Source: MSSQL `Sales`
   grouped by category. Day grain only (ShiftDate is midnight-stamped).
+- An **in-progress period is compared like with like**: the current year is
+  measured against the prior year *to the same date* (year to date vs year to
+  date, the way the dashboard's year-over-year card works), not against a full
+  twelve months — and the same holds for the running week/month/custom range.
+  The card names both spans ("through Aug 14" / "Jan 1 – Aug 14, 2025") so it is
+  clear what is being compared. Completed periods are still full against full.
 
 ### Promotional Cards (`#/promotions`)
 - Track **blocks of giveaway cards** by card-number range (e.g. "K104 on-air

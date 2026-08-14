@@ -53,6 +53,13 @@
     function catLabel(c) {
         return (c.name && c.name !== '') ? c.name : ('Category ' + c.cat);
     }
+    // "Jan 1 – Aug 14, 2025" — plain ISO strings, no timezone round-trip.
+    function rangeLabel(from, to) {
+        if (!from || !to) return '';
+        if (from === to) return App.formatPlainDate(from);
+        var sameYear = from.slice(0, 4) === to.slice(0, 4);
+        return App.formatPlainDate(from, !sameYear) + ' – ' + App.formatPlainDate(to);
+    }
 
     // ------------------------------------------------------------------
     async function renderRevenue(container) {
@@ -221,13 +228,22 @@
 
         // ---- Insight cards ----
         var cards = [];
-        cards.push(insightCard('💰', 'insight-accent', 'Revenue this period',
-            fmtMoney(s.revenue),
-            (s.per_day != null ? fmtMoney(s.per_day) + '/day' : '') + (s.num_cats ? ' · ' + fmtInt(s.num_cats) + ' categories' : '')));
+        var win = data.window || {};
+        var revSub = (s.per_day != null ? fmtMoney(s.per_day) + '/day' : '')
+            + (s.num_cats ? ' · ' + fmtInt(s.num_cats) + ' categories' : '');
+        // The period is still running — say where the total stops, so it reads
+        // as year to date rather than as a whole year that came up short.
+        if (win.prev_aligned && win.to) revSub += ' · through ' + App.formatPlainDate(win.to);
+        cards.push(insightCard('💰', 'insight-accent', 'Revenue this period', fmtMoney(s.revenue), revSub));
         if (s.delta_pct != null) {
             var up = s.delta_pct >= 0;
+            // An in-progress period is compared against the SAME STRETCH of the
+            // previous one (year to date vs last year to the same date), so name
+            // the span the prior figure actually covers.
+            var sub = 'was ' + fmtMoney(s.prior_revenue);
+            if (s.prior_from && s.prior_to) sub += ' · ' + rangeLabel(s.prior_from, s.prior_to);
             cards.push(insightCard(up ? '📈' : '📉', up ? 'insight-good' : 'insight-warn',
-                'vs previous period', fmtPct(s.delta_pct), 'was ' + fmtMoney(s.prior_revenue)));
+                s.compare_label || 'vs previous period', fmtPct(s.delta_pct), sub));
         }
         if (s.top_cat_name || s.top_cat != null) {
             cards.push(insightCard('🏆', 'insight-quiet', 'Top category',
