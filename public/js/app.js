@@ -10,6 +10,7 @@
 const Icons = {
     dashboard: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z"/></svg>',
     games:     '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="3"/><path d="M6 12h4M8 10v4"/><circle cx="16" cy="10.5" r="0.9"/><circle cx="18" cy="13.5" r="0.9"/></svg>',
+    tags:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 13.3 13.3 20.6a2 2 0 0 1-2.9 0L3 13.2V3h10.2l7.4 7.4a2 2 0 0 1 0 2.9z"/><circle cx="7.6" cy="7.6" r="1.1"/></svg>',
     cards:     '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>',
     groups:    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>',
     kiosks:    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="14" rx="2"/><path d="M9 21h6M12 17v4"/><circle cx="12" cy="10" r="0.9"/></svg>',
@@ -68,7 +69,7 @@ const App = {
      * user. The server re-checks every API call regardless.
      */
     PERMISSION_AREAS: [
-        'view_dashboard', 'view_games', 'view_groups',
+        'view_dashboard', 'view_games', 'view_tags', 'view_groups',
         'view_kiosks', 'view_schedules', 'view_overrides',
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'reader_groups_manage',
@@ -83,9 +84,9 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
-        manager: ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs'],
-        tech:    ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
+        admin:   ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
+        manager: ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs'],
+        tech:    ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
     },
 
     /**
@@ -97,6 +98,7 @@ const App = {
     SECTION_AREAS: {
         '#/dashboard':   'view_dashboard',
         '#/games':       'view_games',
+        '#/tags':        'view_tags',
         '#/performance': 'analytics',
         '#/readers':     'analytics',
         '#/labor':       'view_revenue',
@@ -173,6 +175,15 @@ const App = {
         this.currentUser = window.APP_CONFIG.user;
         this.appTimezone = window.APP_CONFIG.timezone || 'UTC';
         this.initTheme();
+
+        // PWA: register the service worker (installability + offline shell).
+        // Non-fatal on failure or on browsers without support — the app is
+        // fully functional as a plain web page.
+        if ('serviceWorker' in navigator) {
+            const swBase = window.APP_CONFIG.basePath || '';
+            navigator.serviceWorker.register(swBase + '/sw.js', { scope: swBase + '/' })
+                .catch(() => {});
+        }
 
         window.addEventListener('hashchange', () => this.route());
 
@@ -272,6 +283,7 @@ const App = {
             '#/no-access': 'No access',
             '#/dashboard': 'Dashboard',
             '#/games': 'Games',
+            '#/tags': 'Tag Board',
             '#/performance': 'Performance',
             '#/readers': 'Reader Groups',
             '#/labor': 'Go-Kart Labor',
@@ -514,6 +526,7 @@ const App = {
         const allNavItems = [
             { hash: '#/dashboard',   icon: Icons.dashboard,   label: 'Dashboard' },
             { hash: '#/games',       icon: Icons.games,       label: 'Games' },
+            { hash: '#/tags',        icon: Icons.tags,        label: 'Tag Board' },
             { hash: '#/performance', icon: Icons.performance, label: 'Performance' },
             { hash: '#/readers',     icon: Icons.readers,     label: 'Reader Groups' },
             { hash: '#/labor',       icon: Icons.labor,       label: 'Go-Kart Labor' },
@@ -595,6 +608,18 @@ const App = {
                 try {
                     await API.post('auth/logout');
                 } catch(e) {}
+                // The service worker keeps the last authenticated shell (it
+                // embeds the user's name, role, and permission list) as the
+                // offline fallback. A deliberate sign-out on a shared device
+                // must not leave that behind — drop the PWA caches.
+                if (window.caches && caches.keys) {
+                    try {
+                        const keys = await caches.keys();
+                        await Promise.all(keys
+                            .filter(k => k.indexOf('ceplay') === 0)
+                            .map(k => caches.delete(k)));
+                    } catch (e) {}
+                }
                 this.currentUser = null;
                 window.location.hash = '#/login';
             }

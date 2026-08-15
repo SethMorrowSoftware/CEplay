@@ -30,7 +30,8 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ```
 api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, logs, users, roles, capabilities)
 lib/          — 9 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting)
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
+public/       — Also: manifest.webmanifest + sw.js + icons/ (the PWA layer; index.php serves sw.js/manifest at the app ROOT so the worker scope covers the whole app)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
 data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
 docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
@@ -846,6 +847,38 @@ before building.
 - Note: DELETE method uses `API.del()` (not `API.delete()` — `delete` is a JS reserved word)
 - DOM built with `App.el(tag, props, children)` helper
 
+### Tag Board & PWA
+- Tag Board (`#/tags`, `public/js/tags.js`, `public/css/pages/tags.css`) is the
+  phone-first page for floor staff to tag games OUT of service / back IN
+  ("tagged out" = operationStatus `outOfService`, which the scheduler skips
+  until cleared). Top cards list what's tagged out / paused; tappable summary
+  chips + a chip bar filter the searchable all-games list; every row carries
+  one obvious 44px+ action button behind an App.confirm step. Auto-refreshes
+  (~25s, visibility-aware) so phones on the floor converge. Reuses the Games
+  page backend EXACTLY: `GET /api/games` (list) + `PATCH /api/games` (status);
+  no new endpoints.
+- Visibility key `view_tags` (in `Auth::PAGE_PERMISSIONS`, grouped under
+  "Pages" in the role editor; also in settings.js `pagePermissionKeys` and
+  app.js PERMISSION_AREAS/SECTION_AREAS/LEGACY_ACCESS — keep all in sync).
+  One-time migration `migration_view_tags_v1` granted it to roles holding
+  `view_games`. The games GET gate (`requireAnyAccess`) includes `view_tags`
+  so a tag-board-only role can read the list; tag actions still require
+  `manual_control` (the PATCH gate, unchanged).
+- Manual game-status PATCHes are now audit-logged: source `game-status`,
+  actions `game_tagged_out` / `game_enabled` / `game_paused`, with game
+  name + actor + upstream error on failure (both logs.php filter allowlists
+  include them).
+- PWA: `public/manifest.webmanifest` (start_url `./#/tags` — installing is a
+  Tag Board gesture) + `public/sw.js` + generated PNGs in `public/icons/`.
+  index.php serves `/sw.js` and `/manifest.webmanifest` at the app ROOT
+  (worker scope must cover the app; `/public/sw.js` would scope to /public/)
+  with `Cache-Control: no-cache`; app.js registers the worker on boot. The
+  service worker is deliberately conservative: it NEVER intercepts `/api/`
+  (live state/auth/CSRF untouched), navigations are network-first with the
+  last good shell as offline fallback only, and `/public/` assets are
+  cache-first (safe — asset URLs carry `?v=mtime`), evicting stale versions
+  of the same path. Do not add API caching to it.
+
 ### Scheduling Engine
 - Schedule windows = active (unpaused) hours. Outside windows = paused.
 - Priority: manual override > schedule override > recurring schedule
@@ -869,16 +902,16 @@ before building.
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 20 keys incl.
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 21 keys incl.
   view_revenue, manual_control, reader_groups_manage, promotions_manage,
-  items_manage, data_explorer). A
+  items_manage, view_tags, data_explorer). A
   read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.
   Mutation buttons are also hidden client-side for roles lacking the
   relevant permission (server re-checks regardless).
 - Every sidebar section is hideable per role (and per user via the
-  grant/deny override editor): the six operational pages have view_* keys
+  grant/deny override editor): the seven operational pages have view_* keys
   (`Auth::PAGE_PERMISSIONS`, grouped as "Pages" in the role editor); the
   reporting pages use their existing keys (analytics, cards, view_logs,
   settings). Hiding removes the nav item, bounces the route

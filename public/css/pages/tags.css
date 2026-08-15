@@ -1,0 +1,176 @@
+/* ============================================
+   Tag Board — phone-first tag in / tag out
+   ============================================
+   Designed thumb-first: 44px+ touch targets, stacked rows instead of a
+   table, sticky search, and status filters as tappable chips. Desktop
+   simply gets the two attention cards side by side. */
+
+.tags-header .tags-refresh-btn { display: inline-flex; align-items: center; gap: 0.4rem; }
+.tags-header .tags-refresh-btn svg { width: 1rem; height: 1rem; }
+
+/* --- Summary stat chips (tap to filter the directory) ------------------- */
+.tags-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+}
+.tags-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+    min-height: 64px;
+    padding: 0.65rem 0.4rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xs);
+    font-family: inherit;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.tags-stat:hover { border-color: var(--border-hover); }
+.tags-stat.active { border-color: var(--border-focus); background: var(--accent-subtle); }
+.tags-stat-value { font-size: 1.45rem; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tags-stat-label { font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.tags-stat-success .tags-stat-value { color: var(--success); }
+.tags-stat-warning .tags-stat-value { color: var(--warning); }
+.tags-stat-danger  .tags-stat-value { color: var(--danger); }
+
+/* --- Attention cards (tagged out / paused) ------------------------------ */
+.tags-attn-grid { display: grid; grid-template-columns: 1fr; gap: 0.9rem; margin-bottom: 1rem; }
+.tags-attn-card { margin-bottom: 0; }
+.tags-attn-out    { border-left: 3px solid var(--danger); }
+.tags-attn-paused { border-left: 3px solid var(--warning); }
+.tags-attn-empty { margin: 0; }
+
+/* --- Directory toolbar: sticky search + filter chips -------------------- */
+.tags-dir-card { margin-bottom: 1rem; }
+/* Full-bleed inside the card (negative margins swallow the card's 1.35rem
+   side padding) so when the toolbar pins, rows don't scroll past visibly in
+   the gutters beside it. */
+.tags-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    background: var(--bg-card);
+    padding: 0.35rem 1.35rem 0.65rem;
+    margin: 0 -1.35rem 0.35rem;
+    border-bottom: 1px solid var(--border-subtle);
+    transition: padding-left var(--transition-fast), box-shadow var(--transition-fast);
+}
+.tags-toolbar.is-stuck { box-shadow: var(--shadow-sm); }
+/* The stuck-state sentinel is layout-only. */
+.tags-toolbar-sentinel { height: 1px; margin-top: -1px; }
+/* 16px font stops iOS Safari from zooming into the field on focus. */
+.tags-search-input {
+    width: 100%;
+    min-height: 46px;
+    font-size: 1rem;
+}
+.tags-chipbar {
+    display: flex;
+    gap: 0.45rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+}
+.tags-chipbar::-webkit-scrollbar { display: none; }
+.tags-chip {
+    flex-shrink: 0;
+    min-height: 38px;
+    padding: 0.4rem 0.95rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+.tags-chip:hover { border-color: var(--border-hover); color: var(--text-primary); }
+.tags-chip.active {
+    background: var(--accent-subtle);
+    border-color: var(--border-focus);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* --- Game rows ---------------------------------------------------------- */
+.tags-rows { list-style: none; margin: 0; padding: 0; }
+.tags-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.75rem;
+    min-height: 58px;
+    padding: 0.55rem 0.15rem;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.tags-row:last-child { border-bottom: none; }
+.tags-row-info {
+    flex: 1 1 12rem;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem 0.7rem;
+    flex-wrap: wrap;
+}
+.tags-row-name { font-weight: 500; overflow-wrap: anywhere; }
+.tags-row-status { flex-shrink: 0; }
+.tags-row-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.tags-action-btn {
+    min-height: 44px;
+    min-width: 84px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+/* A tagged-out row's name dims slightly so scanning the full list makes
+   the dead machines obvious even before reading the badges. */
+.tags-row-outOfService .tags-row-name { color: var(--text-secondary); }
+
+/* Queued-retry note: the last change hasn't stuck upstream yet. */
+.tags-row-retry {
+    flex-basis: 100%;
+    font-size: 0.74rem;
+    color: var(--warning);
+}
+
+/* --- Wider screens ------------------------------------------------------ */
+@media (min-width: 760px) {
+    .tags-attn-grid { grid-template-columns: 1fr 1fr; }
+    .tags-toolbar { flex-direction: row; align-items: center; }
+    .tags-search-input { flex: 1 1 16rem; width: auto; }
+    .tags-summary { max-width: 30rem; }
+}
+
+/* Above 900px polish.css pins .page-header sticky at the viewport top
+   (z-index 35); a toolbar stuck at top:0 would pin BEHIND it, occluded.
+   The sticky search is a phone affordance — turn it off where the sticky
+   header exists. */
+@media (min-width: 901px) {
+    .tags-toolbar { position: static; }
+}
+
+/* On phones the fixed hamburger button (top 0.75rem, left 0.75rem, 40px,
+   z-index 200) floats over a toolbar pinned at top:0 — shift the pinned
+   toolbar's content right so the search box starts clear of it. */
+@media (max-width: 900px) {
+    .tags-toolbar.is-stuck { padding-left: 3.3rem; }
+}

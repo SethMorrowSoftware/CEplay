@@ -26,7 +26,7 @@
     /** Full permission catalog { key: 'description' }, injected by GET /api/users. */
     var permissionCatalog = {};
     /** Keys that gate page visibility (grouped as "Pages" in the role editor). */
-    var pagePermissionKeys = ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides'];
+    var pagePermissionKeys = ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides'];
 
     function catalogEntry(slug) {
         return roleCatalog.filter(function(r) { return r.slug === slug; })[0] || null;

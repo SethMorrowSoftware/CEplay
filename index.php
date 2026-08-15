@@ -423,6 +423,27 @@ function handleHealthCheck(): void {
 }
 
 // ---------------------------------------------------
+// PWA: service worker + manifest, served at the app root
+// ---------------------------------------------------
+// The worker must live at the ROOT path so its scope covers the whole app
+// (a /public/sw.js URL would be scoped to /public/). Both are readfile'd
+// from public/ through this router, which also works under `php -S`.
+if ($path === 'sw.js' && is_file(__DIR__ . '/public/sw.js')) {
+    header('Content-Type: application/javascript; charset=utf-8');
+    // Always revalidate so a deployed worker update is picked up promptly.
+    header('Cache-Control: no-cache');
+    header('Service-Worker-Allowed: ' . ($basePath !== '' ? $basePath . '/' : '/'));
+    readfile(__DIR__ . '/public/sw.js');
+    exit;
+}
+if ($path === 'manifest.webmanifest' && is_file(__DIR__ . '/public/manifest.webmanifest')) {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    header('Cache-Control: no-cache');
+    readfile(__DIR__ . '/public/manifest.webmanifest');
+    exit;
+}
+
+// ---------------------------------------------------
 // Static file serving (CSS, JS)
 // ---------------------------------------------------
 if (strpos($path, 'public/') === 0) {
@@ -440,6 +461,8 @@ if (strpos($path, 'public/') === 0) {
             'ico'  => 'image/x-icon',
             'woff' => 'font/woff',
             'woff2'=> 'font/woff2',
+            'json' => 'application/json',
+            'webmanifest' => 'application/manifest+json',
         ];
         header('Content-Type: ' . ($mimeTypes[$ext] ?? 'application/octet-stream'));
         header('Cache-Control: public, max-age=3600');
@@ -488,6 +511,15 @@ $appTimezoneJson = json_encode($appTimezone);
     <meta name="description" content="Castle Fun Center Management System - Game scheduling and automation">
     <title>Castle Fun Center - Management System</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b8def' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 21V9l3 2V7l3 2V6l3 2V5l3 2V8l3-1v4l3-2v12'/%3E%3Cpath d='M3 21h18M10 21v-5h4v5'/%3E%3C/svg%3E">
+    <!-- PWA: installable on phones (floor staff use the Tag Board this way). -->
+    <link rel="manifest" href="<?= htmlspecialchars($basePath) ?>/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="<?= assetUrl($basePath, '/public/icons/apple-touch-icon.png') ?>">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <!-- Opaque bar: the layout has no safe-area-inset-top handling, so the
+         content must start BELOW the iOS status bar, not under it. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Tag Board">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken) ?>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -523,6 +555,7 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= assetUrl($basePath, '/public/js/login.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/dashboard.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/games.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/tags.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/cards.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/groups.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/kiosks.js') ?>"></script>

@@ -40,6 +40,27 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
 - Manual pause/unpause buttons on the dashboard with optimistic UI updates.
 - Watchdog cron + per-API-call safety nets enforce the desired state continuously.
 
+### Tag Board (`#/tags`)
+- Phone-first page for arcade floor staff: tag a broken game **out of service**
+  ("tag out") and back in ("tag in") in two taps, with a confirm step so a
+  pocket tap can't take a machine down.
+- Top cards surface everything currently **tagged out** and **paused**;
+  tappable summary chips (Running / Paused / Tagged out) filter the searchable
+  all-games list below. Auto-refreshes every ~25s while visible so two
+  employees see each other's tags.
+- Same backend as the Games page (`GET /api/games` + `PATCH /api/games`);
+  every manual status change is audit-logged (source `game-status`) with the
+  actor, so the Action Log shows who tagged what.
+- Own visibility key (`view_tags`) — build a floor-staff role with just
+  `view_tags` + `manual_control` to hand out ONLY this page.
+- Installable as a **PWA** (manifest + service worker + icons): staff add it
+  to their phone's home screen and it launches full-screen like an app. The
+  service worker never caches `/api/` traffic — live state stays live.
+  NOTE: browsers only run service workers on a secure context, so the
+  install prompt / offline shell require serving the app over **HTTPS**
+  (or `localhost`). Over plain HTTP the page still works and can still be
+  added to the home screen — it just opens as a normal browser tab.
+
 ### Kiosks (`#/kiosks`)
 - Standalone page listing every kiosk reported by the CenterEdge `/kiosks` endpoint.
 - Per-kiosk Pause / Unpause / Out-of-service controls plus any RPC actions the
@@ -202,6 +223,7 @@ read APIs); the rest gate features and data.
 |------------|--------|
 | `view_dashboard` | See the Dashboard page |
 | `view_games` | See the Games page |
+| `view_tags` | See the Tag Board page (phone tag in/out) |
 | `view_groups` | See the Pause Groups page |
 | `view_kiosks` | See the Kiosks page |
 | `view_schedules` | See the Schedules page |
@@ -852,7 +874,7 @@ Start a local server:
 php -S localhost:8000
 ```
 
-Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing: `#/dashboard`, `#/games`, `#/performance`, `#/cards`, `#/groups`, `#/kiosks`, `#/schedules`, `#/overrides`, `#/analytics`, `#/readers`, `#/labor`, `#/cardloads`, `#/tickets`, `#/revenue`, `#/explorer`, `#/logs`, `#/settings`. (Each page's visibility follows the role's permissions — hidden sections are removed from the nav and their routes bounce.)
+Run the installer, configure CenterEdge API credentials through the Settings page, and trigger a game sync. The application uses hash-based routing: `#/dashboard`, `#/games`, `#/tags`, `#/performance`, `#/cards`, `#/groups`, `#/kiosks`, `#/schedules`, `#/overrides`, `#/analytics`, `#/readers`, `#/labor`, `#/cardloads`, `#/tickets`, `#/revenue`, `#/explorer`, `#/logs`, `#/settings`. (Each page's visibility follows the role's permissions — hidden sections are removed from the nav and their routes bounce.)
 
 The frontend is a SPA with dark and light themes (toggled via a button in the navigation bar, persisted to localStorage) using the Inter font family. All JavaScript modules are loaded as plain `<script>` tags (no bundler). The `api.js` module handles all HTTP communication and automatically injects the CSRF token header.
 
