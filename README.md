@@ -48,6 +48,11 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
   tappable summary chips (Running / Paused / Tagged out) filter the searchable
   all-games list below. Auto-refreshes every ~25s while visible so two
   employees see each other's tags.
+- The Paused card carries an **Unpause all** button: one tap unpauses every
+  paused game while tagged-out games stay tagged out. Games in an active
+  pause group are unpaused via the group's manual override (like the
+  dashboard button), so the scheduler doesn't quietly re-pause them a minute
+  later — they stay running until the group's next scheduled change.
 - Same backend as the Games page (`GET /api/games` + `PATCH /api/games`);
   every manual status change is audit-logged (source `game-status`) with the
   actor, so the Action Log shows who tagged what.

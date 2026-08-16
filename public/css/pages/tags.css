@@ -46,6 +46,8 @@
 .tags-attn-out    { border-left: 3px solid var(--danger); }
 .tags-attn-paused { border-left: 3px solid var(--warning); }
 .tags-attn-empty { margin: 0; }
+.tags-attn-head { display: flex; align-items: center; gap: 0.65rem; }
+.tags-bulk-btn { min-height: 40px; font-weight: 600; }
 
 /* --- Directory toolbar: sticky search + filter chips -------------------- */
 .tags-dir-card { margin-bottom: 1rem; }

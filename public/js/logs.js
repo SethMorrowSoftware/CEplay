@@ -129,7 +129,7 @@
             onChange: () => { filters.action = actionSelect.value || undefined; currentPage = 1; debouncedLoadLogs(); }
         });
         actionSelect.appendChild(App.el('option', { value: '', textContent: 'All Actions' }));
-        ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'game_tagged_out', 'game_enabled', 'game_paused'].forEach(a => {
+        ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'game_tagged_out', 'game_enabled', 'game_paused', 'unpause_all'].forEach(a => {
             const opt = App.el('option', { value: a, textContent: a });
             if (filters.action === a) opt.selected = true;
             actionSelect.appendChild(opt);
