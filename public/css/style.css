@@ -71,6 +71,7 @@
 @import url("pages/promotions.css");
 @import url("pages/items.css");
 @import url("pages/explorer.css");
+@import url("pages/tags.css");
 
 /* --- Cross-cutting components (must come after pages) ------- */
 @import url("components/clickable.css");

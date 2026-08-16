@@ -39,6 +39,7 @@ class Auth {
     public const PERMISSIONS = [
         'view_dashboard'   => 'See the Dashboard page (group status, live floor feed)',
         'view_games'       => 'See the Games page (directory, status, play feed)',
+        'view_tags'        => 'See the Tag Board page (phone-friendly tag games in/out of service)',
         'view_groups'      => 'See the Pause Groups page',
         'view_kiosks'      => 'See the Kiosks page',
         'view_schedules'   => 'See the Schedules page',
@@ -67,7 +68,7 @@ class Auth {
      * editor groups these under "Pages".
      */
     public const PAGE_PERMISSIONS = [
-        'view_dashboard', 'view_games', 'view_groups',
+        'view_dashboard', 'view_games', 'view_tags', 'view_groups',
         'view_kiosks', 'view_schedules', 'view_overrides',
     ];
 
@@ -79,9 +80,9 @@ class Auth {
     private const FALLBACK_ROLES = [
         'admin'   => ['name' => 'Administrator', 'is_system' => 1, 'permissions' => ['*']],
         'manager' => ['name' => 'Manager', 'is_system' => 1,
-                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs']],
+                      'permissions' => ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs']],
         'tech'    => ['name' => 'Technician', 'is_system' => 1,
-                      'permissions' => ['view_dashboard', 'view_games', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
+                      'permissions' => ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']],
     ];
 
     /** @var array<string,array>|null Per-request cache of the roles table. */

@@ -35,12 +35,12 @@ function payoutInClause(array $ids, int $startIdx): array {
 function handleGames(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
-    // Game reads serve several sections: the Games page itself, the
-    // Dashboard feed, the Pause Groups / Reader Groups member pickers, and
-    // the analytics pages' name lookups. Visible via any of those routes;
-    // hidden only when a role has none of them.
+    // Game reads serve several sections: the Games page itself, the Tag
+    // Board, the Dashboard feed, the Pause Groups / Reader Groups member
+    // pickers, and the analytics pages' name lookups. Visible via any of
+    // those routes; hidden only when a role has none of them.
     if ($method === 'GET') {
-        Auth::requireAnyAccess(['view_games', 'view_dashboard', 'view_groups',
+        Auth::requireAnyAccess(['view_games', 'view_tags', 'view_dashboard', 'view_groups',
                                 'groups_manage', 'reader_groups_manage', 'analytics']);
     }
 
@@ -203,6 +203,18 @@ function handleGames(string $method, array $parts, ?array $input): void {
 
         $result = $client->patchGames($changes);
 
+        // Game names for the audit entries below — one lookup for the batch
+        // so the Action Log reads "Skee Ball 3", not a bare CenterEdge id.
+        $gameNames = [];
+        list($nameIn, $nameParams) = payoutInClause(array_map('strval', array_keys($changes)), 0);
+        foreach (DB::query(
+            'SELECT game_id, game_name FROM game_state_cache WHERE game_id IN ' . $nameIn,
+            $nameParams
+        ) as $nr) {
+            $gameNames[(string)$nr['game_id']] = (string)$nr['game_name'];
+        }
+        $actorId = Auth::check()['id'] ?? null;
+
         // Update cache only for games that actually succeeded, and reconcile
         // the retry queue: clear retries on success, queue/refresh on failure.
         // Older code wrote optimistically for every requested change, which
@@ -210,7 +222,9 @@ function handleGames(string $method, array $parts, ?array $input): void {
         $errors = $result['errors'] ?? [];
         foreach ($changes as $gameId => $status) {
             $gid = (string)$gameId;
-            if (!isset($errors[$gameId]) && !isset($errors[$gid])) {
+            $ok = !isset($errors[$gameId]) && !isset($errors[$gid]);
+            $errorText = null;
+            if ($ok) {
                 DB::execute(
                     'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
                     [$status, $gid]
@@ -220,6 +234,31 @@ function handleGames(string $method, array $parts, ?array $input): void {
                 $err = $errors[$gameId] ?? $errors[$gid];
                 $errorText = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
                 Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errorText);
+            }
+            // Audit every manual status change — floor staff tag games in and
+            // out from their phones through this endpoint, so the Action Log
+            // must show who changed what (and what the upstream API rejected).
+            // Direct INSERT rather than DB::auditLog: the log UI's Details
+            // cell renders the top-level game_name / error_message columns,
+            // which the generic wrapper never populates.
+            try {
+                DB::execute(
+                    'INSERT INTO action_log (source, action, game_id, game_name, success, error_message, details)
+                     VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6)',
+                    [
+                        'game-status',
+                        $status === 'enabled' ? 'game_enabled'
+                            : ($status === 'paused' ? 'game_paused' : 'game_tagged_out'),
+                        $gid,
+                        $gameNames[$gid] ?? ('Game ' . $gid),
+                        $ok ? 1 : 0,
+                        $errorText,
+                        json_encode(['actor_user_id' => $actorId, 'status' => $status]),
+                    ]
+                );
+            } catch (Exception $e) {
+                // Auditing must never break the status change itself.
+                error_log('game-status audit log failed: ' . $e->getMessage());
             }
         }
 

@@ -87,10 +87,10 @@ class DB {
              '["*"]'],
             ['manager', 'Manager',
              'Runs the floor and the automation: full analytics with reader CC payments, card lookup, and group/schedule management. No system settings or user management.',
-             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","promotions_manage","items_manage","schedules_manage","view_logs"]'],
+             '["view_dashboard","view_games","view_tags","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","manual_control","overrides_manage","groups_manage","reader_groups_manage","promotions_manage","items_manage","schedules_manage","view_logs"]'],
             ['tech', 'Technician',
              'Keeps machines running: pause/unpause, kiosk actions, overrides, and system settings. No payment figures, card lookup, or group/schedule editing.',
-             '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","manual_control","overrides_manage","settings","users"]'],
+             '["view_dashboard","view_games","view_tags","view_groups","view_kiosks","view_schedules","view_overrides","analytics","manual_control","overrides_manage","settings","users"]'],
         ];
         foreach ($seedRoles as $r) {
             try {
@@ -286,6 +286,51 @@ class DB {
             }
         } catch (Exception $e) {
             error_log('view keys migration skipped: ' . $e->getMessage());
+        }
+
+        // One-time migration: the Tag Board page gets its own visibility key
+        // ('view_tags'). Grant it to every role that already holds view_games —
+        // the board is a phone-sized view of the same game list and actions —
+        // so introducing the key changes nobody's effective access. Admins can
+        // then untick view_games for a floor-staff role to hand out ONLY the
+        // Tag Board. Flagged so it runs once and never overrides later edits.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_view_tags_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms)) {
+                        continue;
+                    }
+                    if (in_array('*', $perms, true) || in_array('view_tags', $perms, true)) {
+                        continue;
+                    }
+                    if (in_array('view_games', $perms, true)) {
+                        $perms[] = 'view_tags';
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                // Mirror the per-user grant/deny overrides too, in BOTH
+                // directions: a user explicitly DENIED the Games page must
+                // not regain the game list through the new key their role
+                // just gained, and a user individually GRANTED view_games
+                // (role without it) keeps seeing the same game data. Either
+                // way the upgrade changes nobody's effective access.
+                self::execute(
+                    "INSERT OR IGNORE INTO user_permission_overrides (user_id, permission_key, effect)
+                     SELECT user_id, 'view_tags', effect FROM user_permission_overrides
+                     WHERE permission_key = 'view_games'"
+                );
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_view_tags_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('view_tags migration skipped: ' . $e->getMessage());
         }
 
         // One-time: stamp the Go-Kart Labor queries with the venue's
@@ -530,7 +575,7 @@ class DB {
                     'INSERT OR IGNORE INTO roles (slug, name, description, permissions, is_system) VALUES (:p0, :p1, :p2, :p3, 0)',
                     ['viewer', 'Viewer',
                      'Sees everything, changes nothing: full analytics and reporting, card lookup, and the action log — no floor controls, no group/schedule editing, no settings.',
-                     '["view_dashboard","view_games","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","view_logs"]']
+                     '["view_dashboard","view_games","view_tags","view_groups","view_kiosks","view_schedules","view_overrides","analytics","view_revenue","cards","view_logs"]']
                 );
                 self::execute(
                     "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('seed_viewer_role_v1', :p0, 0)",
