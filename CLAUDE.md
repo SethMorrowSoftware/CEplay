@@ -853,7 +853,13 @@ before building.
   ("tagged out" = operationStatus `outOfService`, which the scheduler skips
   until cleared). Top cards list what's tagged out / paused; tappable summary
   chips + a chip bar filter the searchable all-games list; every row carries
-  one obvious 44px+ action button behind an App.confirm step. Auto-refreshes
+  one obvious 44px+ action button behind an App.confirm step, AND the whole
+  row is tappable — it opens a bottom ACTION SHEET (game name + full-width
+  buttons; choosing there skips the extra confirm, the sheet itself being the
+  deliberate step). Accounts without `manual_control` get an explicit
+  view-only banner instead of a silently button-less board. The SPA shell is
+  served `Cache-Control: no-cache` so phones revalidate the HTML and pick up
+  deploys immediately (assets stay cached via ?v=mtime). Auto-refreshes
   (~25s, visibility-aware) so phones on the floor converge. Reuses the Games
   page backend: `GET /api/games` (list) + `PATCH /api/games` (status), plus
   ONE purpose-built endpoint, `POST /api/games/unpause-all` (the Paused

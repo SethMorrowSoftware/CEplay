@@ -51,14 +51,29 @@
         bulkBusy = false;
         renderedSig = null;
 
+        var canOperate = App.canAccess('manual_control');
         container.appendChild(App.el('div', { className: 'page-header tags-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Tag Board' }),
-                App.el('p', { className: 'page-subtitle', textContent:
-                    'Tag a game out when it goes down, back in when it’s fixed. Updates on this board are live for everyone.' })
+                App.el('p', { className: 'page-subtitle', textContent: canOperate
+                    ? 'Tap a game to tag it out when it goes down — and back in when it’s fixed. Updates are live for everyone.'
+                    : 'Live view of what’s running, paused, and tagged out of service.' })
             ]),
             App.el('div', { className: 'flex gap-sm' }, [buildRefreshButton()])
         ]));
+
+        // Without the operate permission the board renders no buttons at all —
+        // say so loudly instead of looking broken on a floor phone.
+        if (!canOperate) {
+            container.appendChild(App.el('div', { className: 'card tags-viewonly' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'tags-viewonly-text', textContent:
+                        'View-only: this account can see the board but can’t tag games. '
+                        + 'An administrator can turn on “Operate the floor” (manual_control) '
+                        + 'for this role in Settings → Roles to enable the tag buttons.' })
+                ])
+            ]));
+        }
 
         // At-a-glance counts. Tapping a chip applies that status filter to
         // the directory below — the fastest "show me what's down" gesture.
@@ -143,7 +158,104 @@
         return function cleanup() {
             stopPolling();
             if (stuckObserver) stuckObserver.disconnect();
+            closeSheet();
         };
+    }
+
+    // ------------------------------------------------------------------
+    // Bottom action sheet — the phone-first way to act on a game. Tapping
+    // anywhere on a row opens it: the game's name up top, then full-width
+    // buttons sized for thumbs. Choosing an action here IS the deliberate
+    // step (two intentional taps, with the game named in between), so the
+    // sheet skips the extra confirm dialog the small inline buttons use.
+    // ------------------------------------------------------------------
+
+    var sheetEl = null;
+    var sheetPrevFocus = null;
+
+    function sheetKeyHandler(e) {
+        if (e.key === 'Escape') closeSheet();
+    }
+
+    function closeSheet() {
+        if (!sheetEl) return;
+        var el = sheetEl;
+        sheetEl = null;
+        document.removeEventListener('keydown', sheetKeyHandler);
+        el.remove();
+        if (sheetPrevFocus && document.body.contains(sheetPrevFocus)) {
+            try { sheetPrevFocus.focus(); } catch (e) {}
+        }
+        sheetPrevFocus = null;
+    }
+
+    function openActionSheet(g) {
+        if (!App.canAccess('manual_control') || busyIds[g.game_id]) return;
+        closeSheet();
+        var status = g.operation_status || 'enabled';
+        var name = g.game_name || ('Game ' + g.game_id);
+        sheetPrevFocus = document.activeElement;
+
+        var act = function(target) {
+            closeSheet();
+            performStatusChange(g, target);
+        };
+
+        var buttons = [];
+        if (status === 'outOfService') {
+            buttons.push(App.el('button', {
+                className: 'btn btn-success tags-sheet-btn',
+                textContent: 'Tag back in',
+                onClick: function() { act('enabled'); }
+            }));
+        } else {
+            if (status === 'paused') {
+                buttons.push(App.el('button', {
+                    className: 'btn btn-secondary tags-sheet-btn',
+                    textContent: 'Unpause',
+                    onClick: function() { act('enabled'); }
+                }));
+            }
+            buttons.push(App.el('button', {
+                className: 'btn btn-danger tags-sheet-btn',
+                textContent: 'Tag out of service',
+                onClick: function() { act('outOfService'); }
+            }));
+        }
+
+        var note = status === 'outOfService'
+            ? 'Tagging it back in puts it in service right away.'
+            : 'A tagged-out game is skipped by automation until someone tags it back in.';
+
+        var sheet = App.el('div', {
+            className: 'tags-sheet',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': 'Actions for ' + name
+        }, [
+            App.el('div', { className: 'tags-sheet-grab', 'aria-hidden': 'true' }),
+            App.el('div', { className: 'tags-sheet-head' }, [
+                App.el('div', { className: 'tags-sheet-name', textContent: name }),
+                tagsBadge(status)
+            ])
+        ].concat(buttons).concat([
+            App.el('p', { className: 'tags-sheet-note', textContent: note }),
+            App.el('button', {
+                className: 'btn btn-ghost tags-sheet-btn tags-sheet-cancel',
+                textContent: 'Cancel',
+                onClick: function() { closeSheet(); }
+            })
+        ]));
+
+        var overlay = App.el('div', { className: 'tags-sheet-overlay' }, [sheet]);
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closeSheet();
+        });
+        document.addEventListener('keydown', sheetKeyHandler);
+        document.body.appendChild(overlay);
+        sheetEl = overlay;
+        var first = sheet.querySelector('button');
+        if (first) first.focus();
     }
 
     function buildRefreshButton() {
@@ -475,6 +587,13 @@
         var row = App.el('li', { className: 'tags-row tags-row-' + status }, [info]);
         if (App.canAccess('manual_control')) {
             row.appendChild(App.el('div', { className: 'tags-row-actions' }, buildActions(g)));
+            // The whole row is a target too — tapping anywhere on it opens
+            // the bottom action sheet (nested button taps are ignored by
+            // makeCardClickable, so the inline buttons keep working).
+            App.makeCardClickable(row, function() { openActionSheet(g); }, {
+                role: 'button',
+                title: 'Actions for ' + name
+            });
         }
         return row;
     }
@@ -543,7 +662,13 @@
         }
         var confirmed = await App.confirm(confirmOpts);
         if (!confirmed) return;
+        await performStatusChange(g, target);
+    }
 
+    /** The actual status change: PATCH, toasts, optimistic flip, reload. */
+    async function performStatusChange(g, target) {
+        var name = g.game_name || ('Game ' + g.game_id);
+        var current = g.operation_status || 'enabled';
         busyIds[g.game_id] = true;
         renderAll();
 
