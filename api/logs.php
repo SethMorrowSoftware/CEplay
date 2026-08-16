@@ -59,7 +59,7 @@ function handleLogs(string $method, array $parts, ?array $input): void {
     }
 
     // Action filter
-    if (!empty($_GET['action']) && in_array($_GET['action'], ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'user_created', 'user_updated', 'settings_updated', 'group_deleted', 'override_created', 'override_deleted', 'game_tagged_out', 'game_enabled', 'game_paused'], true)) {
+    if (!empty($_GET['action']) && in_array($_GET['action'], ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'user_created', 'user_updated', 'settings_updated', 'group_deleted', 'override_created', 'override_deleted', 'game_tagged_out', 'game_enabled', 'game_paused', 'unpause_all'], true)) {
         $conditions[] = "l.action = :p$idx";
         $params[$idx] = $_GET['action'];
         $idx++;

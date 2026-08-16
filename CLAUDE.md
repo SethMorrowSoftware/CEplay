@@ -853,10 +853,24 @@ before building.
   ("tagged out" = operationStatus `outOfService`, which the scheduler skips
   until cleared). Top cards list what's tagged out / paused; tappable summary
   chips + a chip bar filter the searchable all-games list; every row carries
-  one obvious 44px+ action button behind an App.confirm step. Auto-refreshes
+  one obvious 44px+ action button behind an App.confirm step, AND the whole
+  row is tappable — it opens a bottom ACTION SHEET (game name + full-width
+  buttons; choosing there skips the extra confirm, the sheet itself being the
+  deliberate step). Accounts without `manual_control` get an explicit
+  view-only banner instead of a silently button-less board. The SPA shell is
+  served `Cache-Control: no-cache` so phones revalidate the HTML and pick up
+  deploys immediately (assets stay cached via ?v=mtime). Auto-refreshes
   (~25s, visibility-aware) so phones on the floor converge. Reuses the Games
-  page backend EXACTLY: `GET /api/games` (list) + `PATCH /api/games` (status);
-  no new endpoints.
+  page backend: `GET /api/games` (list) + `PATCH /api/games` (status), plus
+  ONE purpose-built endpoint, `POST /api/games/unpause-all` (the Paused
+  card's "Unpause all" button; gate `manual_control`). Unpause-all must NOT
+  be a bare per-game patch: enforcement re-pauses schedule-paused games
+  within ~a minute, so for every ACTIVE pause group containing a paused game
+  it runs the dashboard's `Scheduler::executeImmediate(group,'unpause',
+  'manual')` (sets the manual override that holds until the group's next
+  scheduled transition, and skips outOfService members — tagged-out stays
+  tagged out), then direct-patches paused games in no active group, all
+  under one scheduler lock. Summary audit row: action `unpause_all`.
 - Visibility key `view_tags` (in `Auth::PAGE_PERMISSIONS`, grouped under
   "Pages" in the role editor; also in settings.js `pagePermissionKeys` and
   app.js PERMISSION_AREAS/SECTION_AREAS/LEGACY_ACCESS — keep all in sync).

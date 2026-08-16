@@ -32,6 +32,145 @@ function payoutInClause(array $ids, int $startIdx): array {
     return ['(' . implode(',', $ph) . ')', array_values($ids)];
 }
 
+/**
+ * POST /api/games/unpause-all — unpause every currently-paused game, leaving
+ * tagged-out (outOfService) games untouched.
+ *
+ * A bare per-game PATCH to 'enabled' is NOT enough here: state enforcement
+ * (watchdog + the per-request safety net) re-pauses any game whose ACTIVE
+ * pause group's schedule currently wants it paused, usually within a minute.
+ * So paused games inside an active group are unpaused the way the dashboard
+ * does it — Scheduler::executeImmediate(group, 'unpause', 'manual'), which
+ * patches the group, skips outOfService members, and records the manual
+ * override enforcement respects until the group's next scheduled transition.
+ * Paused games in NO active group get a direct patch (enforcement never
+ * touches them).
+ */
+function gamesUnpauseAll(): void {
+    $client = new CenterEdgeClient();
+    if (!$client->isConfigured()) {
+        http_response_code(400);
+        echo json_encode(['error' => 'CenterEdge API is not configured.']);
+        return;
+    }
+
+    // Everything currently paused, per the state cache the board renders.
+    $paused = [];
+    foreach (DB::query(
+        "SELECT game_id, game_name FROM game_state_cache WHERE operation_status = 'paused'"
+    ) as $r) {
+        $paused[(string)$r['game_id']] = (string)$r['game_name'];
+    }
+    $actorId = Auth::check()['id'] ?? null;
+
+    if (empty($paused)) {
+        echo json_encode(['unpaused' => 0, 'groups_overridden' => 0, 'errors' => []]);
+        return;
+    }
+
+    // One lock for the whole sweep (re-entrant, so executeImmediate's own
+    // acquire succeeds instantly) — the watchdog can't interleave and re-pause
+    // half the floor mid-operation.
+    if (!Scheduler::acquireLock(10)) {
+        throw new RuntimeException(
+            'The scheduler is busy applying another change. Please try again in a few seconds.'
+        );
+    }
+    $unpausedIds = [];
+    $errors = [];
+    $groupsOverridden = 0;
+    try {
+        // Group pass: EVERY active group containing a paused game gets the
+        // manual unpause — including groups sharing a game, or the second
+        // group would re-pause it within a minute.
+        $handledByGroup = [];
+        foreach (DB::query('SELECT id, name FROM pause_groups WHERE is_active = 1') as $g) {
+            $gid = (int)$g['id'];
+            $members = array_map('strval', Scheduler::resolveGroupGames($gid));
+            $pausedMembers = array_values(array_intersect($members, array_keys($paused)));
+            if (empty($pausedMembers)) {
+                continue;
+            }
+            try {
+                $result = Scheduler::executeImmediate($gid, 'unpause', 'manual');
+                $groupsOverridden++;
+                foreach (($result['changed'] ?? []) as $c) {
+                    if (isset($c['game_id'])) {
+                        $unpausedIds[(string)$c['game_id']] = true;
+                    }
+                }
+                foreach (($result['errors'] ?? []) as $e) {
+                    $eid = (string)($e['game_id'] ?? '');
+                    if ($eid !== '' && isset($paused[$eid])) {
+                        $errors[$eid] = (string)($e['error'] ?? 'unknown error');
+                    }
+                }
+            } catch (Exception $e) {
+                foreach ($pausedMembers as $pm) {
+                    $errors[$pm] = $e->getMessage();
+                }
+            }
+            foreach ($pausedMembers as $pm) {
+                $handledByGroup[$pm] = true;
+            }
+        }
+
+        // Direct pass: paused games in no active group (or no group at all).
+        $direct = array_diff_key($paused, $handledByGroup);
+        if (!empty($direct)) {
+            $changes = array_fill_keys(array_keys($direct), 'enabled');
+            $result = $client->patchGames($changes);
+            $patchErrors = $result['errors'] ?? [];
+            foreach ($changes as $gameId => $status) {
+                $gid = (string)$gameId;
+                if (!isset($patchErrors[$gameId]) && !isset($patchErrors[$gid])) {
+                    DB::execute(
+                        'UPDATE game_state_cache SET operation_status = :p0, last_synced_at = datetime(\'now\') WHERE game_id = :p1',
+                        [$status, $gid]
+                    );
+                    Scheduler::clearRetry('game', $gid);
+                    $unpausedIds[$gid] = true;
+                } else {
+                    $err = $patchErrors[$gameId] ?? $patchErrors[$gid];
+                    $errors[$gid] = is_array($err) ? ($err['message'] ?? json_encode($err)) : (string)$err;
+                    Scheduler::queueRetry('game', $gid, $status, 'manual', null, $errors[$gid]);
+                }
+            }
+        }
+    } finally {
+        Scheduler::releaseLock();
+    }
+
+    // One summary audit row for the sweep (the per-game changes are already
+    // logged by executeStateChange / the retry queue with source 'manual').
+    try {
+        DB::execute(
+            'INSERT INTO action_log (source, action, success, details)
+             VALUES (:p0, :p1, :p2, :p3)',
+            [
+                'game-status',
+                'unpause_all',
+                empty($errors) ? 1 : 0,
+                json_encode([
+                    'actor_user_id'     => $actorId,
+                    'paused_found'      => count($paused),
+                    'unpaused'          => count($unpausedIds),
+                    'groups_overridden' => $groupsOverridden,
+                    'failed'            => count($errors),
+                ]),
+            ]
+        );
+    } catch (Exception $e) {
+        error_log('unpause_all audit log failed: ' . $e->getMessage());
+    }
+
+    echo json_encode([
+        'unpaused'          => count($unpausedIds),
+        'groups_overridden' => $groupsOverridden,
+        'errors'            => $errors,
+    ]);
+}
+
 function handleGames(string $method, array $parts, ?array $input): void {
     Auth::requireAuth();
 
@@ -85,8 +224,9 @@ function handleGames(string $method, array $parts, ?array $input): void {
 
     // GET /api/games/{id}  and  POST /api/games/{id}/action
     // We treat any /api/games/<value> where value is not a reserved word as a
-    // single-game lookup. Reserved: 'categories', 'sync', 'transactions'.
-    $reservedActions = ['categories', 'sync', 'transactions', ''];
+    // single-game lookup. Reserved: 'categories', 'sync', 'transactions',
+    // 'unpause-all'.
+    $reservedActions = ['categories', 'sync', 'transactions', 'unpause-all', ''];
     if ($action !== '' && !in_array($action, $reservedActions, true)) {
         $gameId = $action;
         if ($method === 'GET' && $sub === '') {
@@ -159,6 +299,13 @@ function handleGames(string $method, array $parts, ?array $input): void {
         }
         $categories = $client->getCategoriesCached();
         echo json_encode(['categories' => $categories]);
+        return;
+    }
+
+    if ($method === 'POST' && $action === 'unpause-all' && $sub === '') {
+        // One-tap "turn the floor back on" for the Tag Board.
+        Auth::requireAccess('manual_control');
+        gamesUnpauseAll();
         return;
     }
 

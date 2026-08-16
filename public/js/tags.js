@@ -23,6 +23,8 @@
     var loadFailed = null;
     /** game_ids with a PATCH in flight — their buttons render disabled. */
     var busyIds = {};
+    /** True while the bulk unpause-all request is in flight. */
+    var bulkBusy = false;
     /**
      * Monotonic fetch sequence. Every loadGames() claims the next number and
      * only the NEWEST response may land — otherwise a slow poll GET that was
@@ -46,16 +48,32 @@
         loadedOnce = false;
         loadFailed = null;
         busyIds = {};
+        bulkBusy = false;
         renderedSig = null;
 
+        var canOperate = App.canAccess('manual_control');
         container.appendChild(App.el('div', { className: 'page-header tags-header' }, [
             App.el('div', {}, [
                 App.el('h1', { className: 'page-title', textContent: 'Tag Board' }),
-                App.el('p', { className: 'page-subtitle', textContent:
-                    'Tag a game out when it goes down, back in when it’s fixed. Updates on this board are live for everyone.' })
+                App.el('p', { className: 'page-subtitle', textContent: canOperate
+                    ? 'Tap a game to tag it out when it goes down — and back in when it’s fixed. Updates are live for everyone.'
+                    : 'Live view of what’s running, paused, and tagged out of service.' })
             ]),
             App.el('div', { className: 'flex gap-sm' }, [buildRefreshButton()])
         ]));
+
+        // Without the operate permission the board renders no buttons at all —
+        // say so loudly instead of looking broken on a floor phone.
+        if (!canOperate) {
+            container.appendChild(App.el('div', { className: 'card tags-viewonly' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'tags-viewonly-text', textContent:
+                        'View-only: this account can see the board but can’t tag games. '
+                        + 'An administrator can turn on “Operate the floor” (manual_control) '
+                        + 'for this role in Settings → Roles to enable the tag buttons.' })
+                ])
+            ]));
+        }
 
         // At-a-glance counts. Tapping a chip applies that status filter to
         // the directory below — the fastest "show me what's down" gesture.
@@ -74,7 +92,10 @@
             App.el('div', { className: 'card tags-attn-card tags-attn-paused' }, [
                 App.el('div', { className: 'card-header flex-between' }, [
                     App.el('div', { className: 'card-title', textContent: 'Paused' }),
-                    App.el('span', { className: 'text-xs text-muted', id: 'tags-paused-count' })
+                    App.el('div', { className: 'tags-attn-head' }, [
+                        App.el('span', { className: 'text-xs text-muted', id: 'tags-paused-count' }),
+                        App.el('span', { id: 'tags-paused-actions' })
+                    ])
                 ]),
                 App.el('div', { className: 'card-body tags-attn-body', id: 'tags-paused-body' }, [App.loading()])
             ])
@@ -137,7 +158,104 @@
         return function cleanup() {
             stopPolling();
             if (stuckObserver) stuckObserver.disconnect();
+            closeSheet();
         };
+    }
+
+    // ------------------------------------------------------------------
+    // Bottom action sheet — the phone-first way to act on a game. Tapping
+    // anywhere on a row opens it: the game's name up top, then full-width
+    // buttons sized for thumbs. Choosing an action here IS the deliberate
+    // step (two intentional taps, with the game named in between), so the
+    // sheet skips the extra confirm dialog the small inline buttons use.
+    // ------------------------------------------------------------------
+
+    var sheetEl = null;
+    var sheetPrevFocus = null;
+
+    function sheetKeyHandler(e) {
+        if (e.key === 'Escape') closeSheet();
+    }
+
+    function closeSheet() {
+        if (!sheetEl) return;
+        var el = sheetEl;
+        sheetEl = null;
+        document.removeEventListener('keydown', sheetKeyHandler);
+        el.remove();
+        if (sheetPrevFocus && document.body.contains(sheetPrevFocus)) {
+            try { sheetPrevFocus.focus(); } catch (e) {}
+        }
+        sheetPrevFocus = null;
+    }
+
+    function openActionSheet(g) {
+        if (!App.canAccess('manual_control') || busyIds[g.game_id]) return;
+        closeSheet();
+        var status = g.operation_status || 'enabled';
+        var name = g.game_name || ('Game ' + g.game_id);
+        sheetPrevFocus = document.activeElement;
+
+        var act = function(target) {
+            closeSheet();
+            performStatusChange(g, target);
+        };
+
+        var buttons = [];
+        if (status === 'outOfService') {
+            buttons.push(App.el('button', {
+                className: 'btn btn-success tags-sheet-btn',
+                textContent: 'Tag back in',
+                onClick: function() { act('enabled'); }
+            }));
+        } else {
+            if (status === 'paused') {
+                buttons.push(App.el('button', {
+                    className: 'btn btn-secondary tags-sheet-btn',
+                    textContent: 'Unpause',
+                    onClick: function() { act('enabled'); }
+                }));
+            }
+            buttons.push(App.el('button', {
+                className: 'btn btn-danger tags-sheet-btn',
+                textContent: 'Tag out of service',
+                onClick: function() { act('outOfService'); }
+            }));
+        }
+
+        var note = status === 'outOfService'
+            ? 'Tagging it back in puts it in service right away.'
+            : 'A tagged-out game is skipped by automation until someone tags it back in.';
+
+        var sheet = App.el('div', {
+            className: 'tags-sheet',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': 'Actions for ' + name
+        }, [
+            App.el('div', { className: 'tags-sheet-grab', 'aria-hidden': 'true' }),
+            App.el('div', { className: 'tags-sheet-head' }, [
+                App.el('div', { className: 'tags-sheet-name', textContent: name }),
+                tagsBadge(status)
+            ])
+        ].concat(buttons).concat([
+            App.el('p', { className: 'tags-sheet-note', textContent: note }),
+            App.el('button', {
+                className: 'btn btn-ghost tags-sheet-btn tags-sheet-cancel',
+                textContent: 'Cancel',
+                onClick: function() { closeSheet(); }
+            })
+        ]));
+
+        var overlay = App.el('div', { className: 'tags-sheet-overlay' }, [sheet]);
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closeSheet();
+        });
+        document.addEventListener('keydown', sheetKeyHandler);
+        document.body.appendChild(overlay);
+        sheetEl = overlay;
+        var first = sheet.querySelector('button');
+        if (first) first.focus();
     }
 
     function buildRefreshButton() {
@@ -291,6 +409,9 @@
                 ? (games.length + ' game' + (games.length === 1 ? '' : 's'))
                 : '';
         }
+        if (status === 'paused') {
+            renderUnpauseAllButton(games.length);
+        }
         body.innerHTML = '';
 
         if (!loadedOnce) {
@@ -312,6 +433,68 @@
         var list = App.el('ul', { className: 'tags-rows' });
         games.forEach(function(g) { list.appendChild(buildGameRow(g, { hideBadge: true })); });
         body.appendChild(list);
+    }
+
+    /**
+     * The "Unpause all" button in the Paused card header. Server-side it
+     * uses the dashboard's group-level manual unpause for games in active
+     * pause groups (so enforcement doesn't quietly re-pause them a minute
+     * later) and a direct patch for the rest; tagged-out games are skipped
+     * at every layer.
+     */
+    function renderUnpauseAllButton(pausedCount) {
+        var host = document.getElementById('tags-paused-actions');
+        if (!host) return;
+        host.innerHTML = '';
+        if (!App.canAccess('manual_control')) return;
+        if (!loadedOnce || nothingKnown() || (pausedCount === 0 && !bulkBusy)) return;
+        host.appendChild(App.el('button', {
+            className: 'btn btn-success btn-sm tags-bulk-btn',
+            type: 'button',
+            textContent: bulkBusy ? 'Unpausing…' : 'Unpause all',
+            'aria-label': 'Unpause all ' + pausedCount + ' paused games',
+            disabled: bulkBusy,
+            onClick: function() { unpauseAll(pausedCount); }
+        }));
+    }
+
+    async function unpauseAll(pausedCount) {
+        var confirmed = await App.confirm({
+            title: 'Unpause all',
+            message: 'Unpause all ' + pausedCount + ' paused game' + (pausedCount === 1 ? '' : 's') + '? '
+                + 'Tagged-out games stay tagged out. Games in a pause group stay unpaused until the '
+                + 'group’s next scheduled change.',
+            confirmLabel: 'Unpause all',
+            danger: false
+        });
+        if (!confirmed) return;
+
+        bulkBusy = true;
+        renderAll();
+        var gen = App.navGeneration();
+        try {
+            var result = await API.post('games/unpause-all');
+            if (App.navGeneration() !== gen) return;
+            var failed = Object.keys((result && result.errors) || {}).length;
+            var okCount = (result && result.unpaused) || 0;
+            if (failed > 0) {
+                App.toast(okCount + ' unpaused, ' + failed + ' failed — those games will retry automatically.',
+                    okCount > 0 ? 'warning' : 'error');
+            } else if (okCount > 0) {
+                App.toast(okCount + ' game' + (okCount === 1 ? '' : 's') + ' unpaused.', 'success');
+            } else {
+                App.toast('Nothing was paused.', 'info');
+            }
+        } catch (e) {
+            if (App.navGeneration() !== gen) return;
+            App.toast('Unpause all failed: ' + e.message, 'error');
+        } finally {
+            if (App.navGeneration() === gen) {
+                bulkBusy = false;
+                renderAll();
+                loadGames();
+            }
+        }
     }
 
     function renderList() {
@@ -404,6 +587,13 @@
         var row = App.el('li', { className: 'tags-row tags-row-' + status }, [info]);
         if (App.canAccess('manual_control')) {
             row.appendChild(App.el('div', { className: 'tags-row-actions' }, buildActions(g)));
+            // The whole row is a target too — tapping anywhere on it opens
+            // the bottom action sheet (nested button taps are ignored by
+            // makeCardClickable, so the inline buttons keep working).
+            App.makeCardClickable(row, function() { openActionSheet(g); }, {
+                role: 'button',
+                title: 'Actions for ' + name
+            });
         }
         return row;
     }
@@ -472,7 +662,13 @@
         }
         var confirmed = await App.confirm(confirmOpts);
         if (!confirmed) return;
+        await performStatusChange(g, target);
+    }
 
+    /** The actual status change: PATCH, toasts, optimistic flip, reload. */
+    async function performStatusChange(g, target) {
+        var name = g.game_name || ('Game ' + g.game_id);
+        var current = g.operation_status || 'enabled';
         busyIds[g.game_id] = true;
         renderAll();
 

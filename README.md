@@ -44,10 +44,20 @@ No Composer, no npm, no external PHP packages. Everything uses the PHP standard 
 - Phone-first page for arcade floor staff: tag a broken game **out of service**
   ("tag out") and back in ("tag in") in two taps, with a confirm step so a
   pocket tap can't take a machine down.
+- **Tap any game row** to open a bottom action sheet — the game's name with
+  giant thumb-sized buttons (Tag out / Tag in / Unpause). Two deliberate taps
+  total; the small inline buttons still work too. Accounts whose role lacks
+  `manual_control` see a clear view-only banner explaining how to enable the
+  tag buttons (Settings → Roles → "Operate the floor").
 - Top cards surface everything currently **tagged out** and **paused**;
   tappable summary chips (Running / Paused / Tagged out) filter the searchable
   all-games list below. Auto-refreshes every ~25s while visible so two
   employees see each other's tags.
+- The Paused card carries an **Unpause all** button: one tap unpauses every
+  paused game while tagged-out games stay tagged out. Games in an active
+  pause group are unpaused via the group's manual override (like the
+  dashboard button), so the scheduler doesn't quietly re-pause them a minute
+  later — they stay running until the group's next scheduled change.
 - Same backend as the Games page (`GET /api/games` + `PATCH /api/games`);
   every manual status change is audit-logged (source `game-status`) with the
   actor, so the Action Log shows who tagged what.

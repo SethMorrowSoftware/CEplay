@@ -474,6 +474,12 @@ if (strpos($path, 'public/') === 0) {
 // ---------------------------------------------------
 // SPA Shell — serves for all other routes
 // ---------------------------------------------------
+// Always revalidate the shell. Without this, phone browsers heuristically
+// cache the HTML and keep rendering a pre-deploy shell (old script list,
+// old ?v= asset URLs) long after an update — the classic "the update
+// doesn't show on my phone" failure. Assets stay cacheable; they're
+// version-keyed by ?v=mtime.
+header('Cache-Control: no-cache');
 $csrfToken = CSRF::getToken();
 if (!$csrfToken) {
     $csrfToken = CSRF::generate();
