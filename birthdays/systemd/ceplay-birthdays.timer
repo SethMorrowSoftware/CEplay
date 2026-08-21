@@ -1,0 +1,19 @@
+# Fires the birthday bot once a day.
+#
+# Persistent=true means a box that was powered off at 09:00 runs the job as
+# soon as it boots, so nobody's birthday is missed by an overnight outage. The
+# bot's state file makes that safe — it will not post twice for the same day.
+#
+# OnCalendar is in the SYSTEM timezone. Check it with `timedatectl`, and change
+# the time below to whenever the message should land (09:00 local by default).
+
+[Unit]
+Description=CEplay birthday Slack bot — 09:00 daily
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

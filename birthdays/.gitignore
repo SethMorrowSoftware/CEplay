@@ -1,0 +1,8 @@
+# Local config — holds the Slack bot token
+config.php
+
+# Local state / logs if the bot is run from this directory
+state.json
+birthday_state.json
+*.log
+*.tmp
