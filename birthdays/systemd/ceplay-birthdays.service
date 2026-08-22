@@ -1,0 +1,35 @@
+# Birthday Slack bot — one-shot, fired by ceplay-birthdays.timer.
+#
+# Mirrors how pause-groups-daily.service runs cron.php, with one difference:
+# the birthday bot needs the MSSQL driver, so it runs the pdo_dblib OVERLAY
+# image (the same one setup-fcos.sh builds and the FPM service uses), not the
+# stock PHP image.
+#
+# Install:
+#   sudo install -m 0644 birthdays/systemd/ceplay-birthdays.service \
+#       /etc/systemd/system/ceplay-birthdays.service
+#   sudo install -m 0644 birthdays/systemd/ceplay-birthdays.timer \
+#       /etc/systemd/system/ceplay-birthdays.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ceplay-birthdays.timer
+#
+# Paths below are the defaults from setup-fcos.sh. If your install lives
+# somewhere else, change INSTALL_DIR (/var/persist/pause-groups) throughout and
+# check the image name with: podman images | grep mssql
+
+[Unit]
+Description=CEplay birthday Slack bot
+After=pause-groups-fpm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman run --rm \
+    --network host \
+    --env-file /var/persist/pause-groups/.env \
+    -v /var/persist/pause-groups:/var/persist/pause-groups:z \
+    -w /var/persist/pause-groups \
+    -u 33:33 \
+    localhost/pause-groups-fpm-mssql:latest \
+    php birthdays/birthday_bot.php
+StandardOutput=append:/var/persist/pause-groups/data/birthdays.log
+StandardError=append:/var/persist/pause-groups/data/birthdays.log
