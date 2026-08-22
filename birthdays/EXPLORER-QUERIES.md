@@ -24,13 +24,23 @@ Confirmed August 2026 by running steps 1–2 below:
 
 | | |
 |---|---|
-| Staff roster table | **`dbo.Employees`** |
+| Staff roster table | **`dbo.Employees`** (one row per person) |
 | Birthday column | **`DateOfBirth`** (`datetime`) |
-| Status lookup table | **`dbo.EmployeeStatus`** (a real table — the codes are *in* the database) |
+| Employment filter | **`EmpStatus = 1`** — `dbo.EmployeeStatus` spells it out: **1 = Active, 2 = Suspended, 3 = Terminated** |
+| Leaving date | `DateOfTerminate` (`datetime`) — a redundant second check |
+| Identity columns | `EmpNo` (int), `FirstName`, `LastName` (`nvarchar(30)`) |
+| Email | `WorkEMailAddress`, `EMailAddress` — only needed for @-mentions |
 | Does **not** exist | `TimeClock_Employees` — the time-clock module is punches and scheduling only |
 
-Steps 1 and 2 are recorded for when you want to re-derive this (a POS upgrade,
-another venue). If you just want the bot working, **start at step 3**.
+**That is the whole answer** — the finished query is in step 9. Steps 1–8 are
+recorded so you can re-derive it after a POS upgrade or at another venue, and
+because two of them (7 and 8) are checks worth running on your own data before
+switching the bot on.
+
+> ⚠️ `dbo.Employees` also carries `SSN`, `PasswordHash`, `PinHash`,
+> `FingerprintTemplate` and `Picture`. Never `SELECT *` from it — read the
+> column list (step 3) and select only what you need. The bot's query touches
+> four columns.
 
 ---
 
@@ -81,14 +91,15 @@ WHERE TABLE_NAME IN ('Employees', 'EmployeeStatus')
 ORDER BY TABLE_NAME, ORDINAL_POSITION
 ```
 
-Metadata only — no personal data leaves the database. Look for: the employee
-number, first/last name, `DateOfBirth`, and whatever links to `EmployeeStatus`
-(a `StatusNo`/`Stus`/`EmpStatus` column), plus any hire/termination dates.
+Metadata only — no personal data leaves the database. `Employees` has 54
+columns; the ones that matter here are `EmpNo`, `LastName`, `FirstName`,
+`DateOfBirth`, `DateOfHire`, `DateOfTerminate`, `EmpStatus`, and the two email
+columns. `EmployeeStatus` has just two: `EmpStatus` and `Description`.
 
 > Deliberately **not** `SELECT TOP 5 * FROM Employees`. That would show every
-> column at once, but an HR table can carry SSNs, addresses and pay rates, and
-> the Explorer renders whatever it's given. Read the column list first, then
-> select only the columns you need.
+> column at once — and on this install that includes `SSN`, `PasswordHash`,
+> `PinHash` and `FingerprintTemplate`. Read the column list first, then select
+> only the columns you need.
 
 ## 4. What do the status codes mean?
 
@@ -99,34 +110,52 @@ lookup table is good news — the labels are written down:
 SELECT TOP 50 * FROM CenterEdge.dbo.EmployeeStatus
 ```
 
-A lookup table holds codes and their names, no personal data. You should get a
-handful of rows along the lines of Active / Terminated / Leave of Absence.
+A lookup table holds codes and their names, no personal data. On this install
+it returns exactly three rows:
+
+| EmpStatus | Description |
+|---|---|
+| 1 | Active |
+| 2 | Suspended |
+| 3 | Terminated |
+
+So **`EmpStatus = 1` is the employment filter**, decoded from the database
+rather than inferred from row counts. `discover.php` now finds and reads this
+lookup automatically for whatever status column it detects.
 
 ## 5. How many people sit on each status?
 
-Substitute the real status column name from step 3 for `StatusNo`:
+Step 4 already settled what the codes *mean*; this shows how many people sit on
+each, which is the sanity check — does the Active count look like the size of
+your actual team?
 
 ```sql
-SELECT StatusNo AS value, COUNT(*) AS people,
+SELECT EmpStatus AS value, COUNT(*) AS people,
        MIN(LastName) AS example_a, MAX(LastName) AS example_b
 FROM CenterEdge.dbo.Employees
-GROUP BY StatusNo
+GROUP BY EmpStatus
 ORDER BY COUNT(*) DESC
 ```
 
-Check an example name against somebody you know is on this week's schedule
-before trusting the mapping. A twenty-year-old database normally has far more
-leavers than current staff, so **the biggest bucket is not automatically the
-active one** — cross-check the count against the label from step 4.
+Note that **the biggest bucket is not automatically the active one** — a
+twenty-year-old database has far more leavers than current staff. That's why
+step 4 comes first: the label decides, not the count.
 
-If there's a termination-date column as well as (or instead of) a status code:
+Do `EmpStatus` and `DateOfTerminate` agree? If any Active row carries a leaving
+date, the two contradict each other and you need to decide which wins:
 
 ```sql
-SELECT COUNT(*) AS rows_total,
-       SUM(CASE WHEN TermDate IS NULL THEN 1 ELSE 0 END) AS still_here,
-       SUM(CASE WHEN TermDate IS NOT NULL THEN 1 ELSE 0 END) AS gone
+SELECT COUNT(*) AS active_rows,
+       SUM(CASE WHEN DateOfTerminate IS NULL THEN 1 ELSE 0 END) AS active_no_term_date,
+       SUM(CASE WHEN DateOfTerminate IS NOT NULL THEN 1 ELSE 0 END) AS active_but_termed
 FROM CenterEdge.dbo.Employees
+WHERE EmpStatus = 1
 ```
+
+If `active_but_termed` is 0 they agree, and the query in step 9 can safely use
+both. If it isn't, drop `AND DateOfTerminate IS NULL` from that query — a stale
+leaving date on a current employee would otherwise silently cost them their
+birthday message every year.
 
 ## 6. Sanity-check "active" against who actually works here
 
@@ -139,10 +168,11 @@ FROM CenterEdge.dbo.TimeClock_Weekly
 WHERE ClockInDate >= DATEADD(DAY, -90, GETDATE())
 ```
 
-If your "active" count from step 5 is wildly higher than this, the status field
-is stale and the bot will greet people who left. That's what the
-`EmployeesScheduledOrWorked` view may be for — worth a look at its columns in
-step 3 if the numbers disagree.
+If the Active count from step 5 is wildly higher than this, the status field is
+stale and the bot will greet people who left — no query can detect that for you,
+because as far as the database is concerned those records say "Active". The
+`EmployeesScheduledOrWorked` view may be a better definition if the two numbers
+disagree badly; check its columns in step 3.
 
 ## 7. Are the birthdays real, or mostly placeholders?
 
@@ -179,7 +209,7 @@ A spike in one month means you're looking at a hire date, not a birthday.
 SELECT COUNT(*) AS active_staff,
        SUM(CASE WHEN DateOfBirth IS NOT NULL AND YEAR(DateOfBirth) >= 1901 THEN 1 ELSE 0 END) AS with_birthday
 FROM CenterEdge.dbo.Employees
-WHERE StatusNo = 1
+WHERE EmpStatus = 1
 ```
 
 If only a handful of current staff have a birthday on file, the bot works but
@@ -197,22 +227,27 @@ SELECT EmpNo AS emp_no,
        LastName AS last_name,
        CONVERT(VARCHAR(10), DateOfBirth, 120) AS birth_date
 FROM CenterEdge.dbo.Employees
-WHERE StatusNo = 1
+WHERE EmpStatus = 1
+  AND DateOfTerminate IS NULL
   AND DateOfBirth IS NOT NULL
   AND YEAR(DateOfBirth) >= 1901
 ```
 
-Column names other than `DateOfBirth` still need confirming against step 3, and
-`StatusNo = 1` against steps 4–5.
+This is what ships in `config.example.php`. Drop the `DateOfTerminate` line if
+step 5 showed the two conditions disagreeing.
 
-To spot-check it, add today's date filter — this is exactly who the bot would
-greet if it ran right now:
+For @-mentions, add `COALESCE(WorkEMailAddress, EMailAddress) AS email,` to the
+select list and set `mention_by_email` — otherwise leave email out of it.
+
+To spot-check, add today's date filter — this is exactly who the bot would greet
+if it ran right now:
 
 ```sql
 SELECT EmpNo AS emp_no, FirstName AS first_name, LastName AS last_name,
        CONVERT(VARCHAR(10), DateOfBirth, 120) AS birth_date
 FROM CenterEdge.dbo.Employees
-WHERE StatusNo = 1
+WHERE EmpStatus = 1
+  AND DateOfTerminate IS NULL
   AND DateOfBirth IS NOT NULL AND YEAR(DateOfBirth) >= 1901
   AND MONTH(DateOfBirth) = MONTH(GETDATE())
   AND DAY(DateOfBirth) = DAY(GETDATE())

@@ -131,6 +131,31 @@ t('roster beats the punch table', $roster > $punch, true);
 t('a prefixed roster table also wins', $plain > $cust, true);
 t('guest tables score negative', $party < 0 && $cust < 0, true);
 
+echo "\nlookup-table label columns\n";
+t('Description',          d_isDescriptionCol('Description'), true);
+t('Descr',                d_isDescriptionCol('Descr'), true);
+t('StatusName',           d_isDescriptionCol('StatusName'), true);
+t('Name',                 d_isDescriptionCol('Name'), true);
+t('EmpStatus is not',     d_isDescriptionCol('EmpStatus'), false);
+t('DateOfBirth is not',   d_isDescriptionCol('DateOfBirth'), false);
+
+echo "\n\"currently employed\" label ranking\n";
+t('Active wins outright',   d_activeLabelRank('Active'), 100);
+t('Current',                d_activeLabelRank('Current'), 100);
+t('Employed',               d_activeLabelRank('Employed'), 100);
+// "Inactive" CONTAINS "active" — the exclusion has to be tested first, or the
+// probe would recommend the exact code that means somebody has left.
+t('Inactive scores zero',   d_activeLabelRank('Inactive'), 0);
+t('Terminated scores zero', d_activeLabelRank('Terminated'), 0);
+t('Suspended scores zero',  d_activeLabelRank('Suspended'), 0);
+t('Retired scores zero',    d_activeLabelRank('Retired'), 0);
+t('Leave of Absence zero',  d_activeLabelRank('Active - Leave of Absence'), 0);
+t('empty label scores zero', d_activeLabelRank(''), 0);
+t('Active Employee ranks',  d_activeLabelRank('Active Employee') > 0, true);
+// This venue's real lookup: 1 Active, 2 Suspended, 3 Terminated.
+t('Active beats Suspended', d_activeLabelRank('Active') > d_activeLabelRank('Suspended'), true);
+t('Active beats Terminated', d_activeLabelRank('Active') > d_activeLabelRank('Terminated'), true);
+
 echo "\nSQL helpers\n";
 t('identifier bracketing', d_ident('BirthDate'), '[BirthDate]');
 t('bracket injection stripped', d_ident('Bad]Name'), '[BadName]');

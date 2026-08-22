@@ -112,6 +112,34 @@ function d_isTermDateCol(string $name): bool
     return false;
 }
 
+/** A human-readable label column on a lookup table. */
+function d_isDescriptionCol(string $name): bool
+{
+    $n = d_norm($name);
+    return in_array($n, ['description', 'descr', 'desc', 'name', 'statusname',
+                         'statusdescription', 'title', 'label', 'text'], true);
+}
+
+/**
+ * Does this description read as "currently employed"?
+ *
+ * Returned as a rank so the best label wins: a bare "Active" beats "Active -
+ * Leave of Absence", and anything terminated/suspended scores nothing.
+ */
+function d_activeLabelRank(string $desc): int
+{
+    $n = d_norm($desc);
+    if ($n === '') { return 0; }
+    foreach (['terminated', 'termed', 'suspended', 'inactive', 'separated', 'quit',
+              'fired', 'retired', 'leave', 'loa', 'deleted', 'archived'] as $bad) {
+        if (strpos($n, $bad) !== false) { return 0; }
+    }
+    if ($n === 'active' || $n === 'current' || $n === 'employed') { return 100; }
+    if (strpos($n, 'active') === 0 || strpos($n, 'current') === 0) { return 80; }
+    if (strpos($n, 'active') !== false || strpos($n, 'employed') !== false) { return 60; }
+    return 0;
+}
+
 function d_isEmpNoCol(string $name): bool
 {
     $n = d_norm($name);
@@ -406,8 +434,41 @@ d_sub('What the status column(s) actually contain');
 if (!$chosen['status']) {
     echo "   No status-like column on this table.\n";
 }
+
+/** Status column -> the code that means "currently employed", once resolved. */
+$activeCode = null;
+$activeCodeCol = null;
+$activeCodeWhy = '';
+
 foreach ($chosen['status'] as $stCol) {
     echo "\n   " . $stCol . ":\n";
+
+    // A code column is far more useful decoded. CenterEdge stores the labels in
+    // a sibling lookup table carrying the SAME column name plus a description
+    // (Employees.EmpStatus -> EmployeeStatus(EmpStatus, Description)), so look
+    // for that shape rather than making the operator infer meaning from counts.
+    $labels = [];
+    $lookupName = '';
+    $lookups = d_rows($client, "SELECT c.TABLE_SCHEMA AS sch, c.TABLE_NAME AS tbl, c2.COLUMN_NAME AS descr
+FROM INFORMATION_SCHEMA.COLUMNS c
+INNER JOIN INFORMATION_SCHEMA.COLUMNS c2
+  ON c2.TABLE_SCHEMA = c.TABLE_SCHEMA AND c2.TABLE_NAME = c.TABLE_NAME
+WHERE c.COLUMN_NAME = " . d_lit($stCol) . "
+  AND c.TABLE_NAME <> " . d_lit($chosen['table']) . "
+  AND c2.DATA_TYPE IN ('char', 'nchar', 'varchar', 'nvarchar')
+ORDER BY c.TABLE_NAME", 200);
+    foreach ($lookups as $lk) {
+        if (!d_isDescriptionCol((string)$lk['descr'])) { continue; }
+        $L = d_ident((string)$lk['sch']) . '.' . d_ident((string)$lk['tbl']);
+        $got = d_rows($client, "SELECT TOP 50 " . d_ident($stCol) . " AS code, "
+            . d_ident((string)$lk['descr']) . " AS label FROM {$L}", 50);
+        if ($got) {
+            foreach ($got as $g) { $labels[(string)$g['code']] = trim((string)$g['label']); }
+            $lookupName = (string)$lk['tbl'];
+            break;
+        }
+    }
+
     $exSel = $exampleCol
         ? ", MIN(" . d_ident($exampleCol) . ") AS example_a, MAX(" . d_ident($exampleCol) . ") AS example_b"
         : '';
@@ -415,9 +476,45 @@ foreach ($chosen['status'] as $stCol) {
 FROM {$T}
 GROUP BY " . d_ident($stCol) . "
 ORDER BY COUNT(*) DESC", 20);
+
+    if ($labels) {
+        echo "   (labels from " . $lookupName . ")\n";
+        foreach ($rows as &$r) {
+            $r = array_merge(
+                ['value' => $r['value'], 'means' => $labels[(string)$r['value']] ?? '?'],
+                array_diff_key($r, ['value' => 1])
+            );
+        }
+        unset($r);
+    }
     d_table($rows);
-    echo "   -> The value with the most people is usually 'still employed'. Confirm by\n"
-       . "      checking one of the example names against someone you know is current.\n";
+
+    if ($labels) {
+        // Pick the code whose LABEL says employed — the counts are irrelevant
+        // once the database itself tells you what each code means.
+        $best = 0;
+        foreach ($labels as $code => $label) {
+            $rank = d_activeLabelRank($label);
+            if ($rank > $best) {
+                $best = $rank;
+                $activeCode = $code;
+                $activeCodeCol = $stCol;
+                $activeCodeWhy = $label;
+            }
+        }
+        if ($activeCode !== null) {
+            echo "   -> " . $stCol . " = " . $activeCode . " means '" . $activeCodeWhy
+               . "'. That is the employment filter.\n";
+        } else {
+            echo "   -> None of these labels reads as 'currently employed'. Pick the right\n"
+               . "      code by hand.\n";
+        }
+    } else {
+        echo "   -> No lookup table decodes " . $stCol . ", so the meaning of each value is\n"
+           . "      not written down anywhere. The value with the most people is USUALLY\n"
+           . "      current staff, but a long-lived database has more leavers than staff —\n"
+           . "      check an example name against someone you know is on this week's rota.\n";
+    }
 }
 
 foreach ($chosen['term'] as $tCol) {
@@ -506,12 +603,45 @@ echo "   (all rows, ignoring employment status — the status filter is yours to
 
 d_hdr('4. Suggested roster_sql for birthdays/config.php');
 
-$statusCol = $chosen['status'][0] ?? null;
+$statusCol = $activeCodeCol ?? ($chosen['status'][0] ?? null);
 $where = ["{$B} IS NOT NULL", "YEAR({$B}) >= 1901"];
-if ($statusCol !== null) {
-    $where[] = d_ident($statusCol) . " = 1  /* CHECK THIS against section 3 */";
+$filterKnown = false;
+
+if ($activeCode !== null && $activeCodeCol !== null) {
+    $where[] = d_ident($activeCodeCol) . ' = ' . (int)$activeCode
+        . "  /* '" . $activeCodeWhy . "' */";
+    $filterKnown = true;
+} elseif ($statusCol !== null) {
+    $where[] = d_ident($statusCol) . " = 1  /* UNVERIFIED — check section 3 */";
 } elseif ($chosen['term']) {
     $where[] = d_ident($chosen['term'][0]) . " IS NULL  /* still employed */";
+    $filterKnown = true;
+} else {
+    // Nothing here says who still works at this venue. Emit the marker the bot
+    // refuses to run on, rather than a query that quietly greets every person
+    // who ever worked here.
+    $where[] = "TODO_CONFIRM_EMPLOYMENT_FILTER  /* no status or termination column found */";
+}
+
+// Belt-and-braces: if there's ALSO a termination date, only add it when the two
+// actually agree. Measured, not assumed — a stale term date on an active record
+// would otherwise silently drop that person from every birthday.
+if ($filterKnown && $activeCode !== null && $chosen['term']) {
+    $tCol = $chosen['term'][0];
+    $agree = d_rows($client, "SELECT COUNT(*) AS active_rows,
+       SUM(CASE WHEN " . d_ident($tCol) . " IS NOT NULL THEN 1 ELSE 0 END) AS active_with_term_date
+FROM {$T}
+WHERE " . d_ident($activeCodeCol) . ' = ' . (int)$activeCode, 1);
+    $withTerm = isset($agree[0]) ? (int)$agree[0]['active_with_term_date'] : -1;
+    if ($withTerm === 0) {
+        $where[] = d_ident($tCol) . " IS NULL  /* agrees with the status flag */";
+        echo "\n   " . $tCol . " agrees with " . $activeCodeCol . " (no active row carries a\n"
+           . "   termination date), so both conditions are included — harmless either way.\n";
+    } elseif ($withTerm > 0) {
+        echo "\n   NOTE: " . $withTerm . " row(s) are marked '" . $activeCodeWhy . "' but DO carry a\n"
+           . "   " . $tCol . ". The two disagree, so only the status flag is used below.\n"
+           . "   If those people have really left, add: AND " . $tCol . " IS NULL\n";
+    }
 }
 
 $selectList = [];
@@ -528,14 +658,18 @@ echo "    'roster_sql' => <<<SQL\n";
 foreach (explode("\n", $sql) as $line) { echo $line . "\n"; }
 echo "SQL,\n";
 
-echo "\nBefore trusting it, confirm two things from section 3:\n";
-if ($statusCol !== null) {
-    echo "  1. That " . $statusCol . " = 1 really means 'still employed' at this venue —\n"
-       . "     the value distribution above shows which value most people have, but only\n"
-       . "     you can say which one is current staff.\n";
+echo "\nBefore trusting it:\n";
+if ($activeCode !== null) {
+    echo "  1. The employment filter is decoded from the database's own lookup table\n"
+       . "     (" . $activeCodeCol . " = " . $activeCode . " = '" . $activeCodeWhy . "'), so it is not a guess.\n"
+       . "     Still worth one sanity check: does the count of matching staff look like\n"
+       . "     the size of your actual team?\n";
+} elseif ($statusCol !== null) {
+    echo "  1. That " . $statusCol . " = 1 really means 'still employed' — NOTHING decoded it,\n"
+       . "     so that value is a guess. Fix it before running the bot.\n";
 } else {
-    echo "  1. How this table marks someone as no longer employed — no status column was\n"
-       . "     detected, so the query above has NO employment filter yet. Add one.\n";
+    echo "  1. The query has NO employment filter — replace TODO_CONFIRM_EMPLOYMENT_FILTER\n"
+       . "     with a real condition. The bot refuses to run until you do.\n";
 }
 echo "  2. That the most-repeated dates are real birthdays and not placeholders.\n";
 echo "\nThen: php birthdays/birthday_bot.php --list      (preview the next 60 days)\n";

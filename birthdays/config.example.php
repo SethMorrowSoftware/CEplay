@@ -59,30 +59,43 @@ return [
     //
     // The "still employed" filter belongs in this query's WHERE clause.
     //
-    // CONFIRMED on this venue's database (August 2026): the staff roster is
-    // `dbo.Employees` and the birthday column is `DateOfBirth` (datetime).
-    // Every other birthday column in the schema belongs to the GUEST side —
-    // Customers, ChildCustomers, GroupChildren, the waiver tables — so don't
-    // be tempted by them.
+    // VERIFIED against this venue's database (August 2026), so the query below
+    // is not a guess:
+    //   - the staff roster is `dbo.Employees` (NOT TimeClock_Employees, which
+    //     does not exist here — the time-clock module is punches + scheduling);
+    //   - the birthday column is `DateOfBirth` (datetime);
+    //   - `EmpStatus` is an int keyed to the `dbo.EmployeeStatus` lookup table,
+    //     which spells the codes out: 1 = Active, 2 = Suspended, 3 = Terminated.
+    //     So `EmpStatus = 1` IS "still employed", straight from the database.
+    //   - `DateOfTerminate` is the leaving date; it is included as a second,
+    //     redundant condition. Run discover.php to confirm the two agree on
+    //     your data — it measures that and tells you if they don't.
     //
-    // NOT yet confirmed: which column marks somebody as current staff. This
-    // database has a separate `EmployeeStatus` lookup table, so run
-    // discover.php (or the queries in EXPLORER-QUERIES.md) to see the codes
-    // and their labels, then replace the marker line below.
+    // Every OTHER birthday column in this schema belongs to the guest side of
+    // the house (Customers, ChildCustomers, GroupChildren, the waiver tables,
+    // TicketDetails). Don't point the bot at any of them.
     //
-    // The bot REFUSES TO RUN while TODO_CONFIRM_EMPLOYMENT_FILTER is still in
-    // this query — a birthday message to somebody who left last year is worse
-    // than no message, so this cannot be skipped by accident.
+    // Note what else lives on this table: SSN, PasswordHash, PinHash,
+    // FingerprintTemplate, Picture. Select the four columns below and nothing
+    // more — there is no reason for the rest to leave the database.
     'roster_sql' => <<<SQL
 SELECT EmpNo AS emp_no,
        FirstName AS first_name,
        LastName AS last_name,
        CONVERT(VARCHAR(10), DateOfBirth, 120) AS birth_date
 FROM CenterEdge.dbo.Employees
-WHERE DateOfBirth IS NOT NULL
+WHERE EmpStatus = 1
+  AND DateOfTerminate IS NULL
+  AND DateOfBirth IS NOT NULL
   AND YEAR(DateOfBirth) >= 1901
-  AND TODO_CONFIRM_EMPLOYMENT_FILTER  /* replace: e.g. StatusNo = 1, or TermDate IS NULL */
 SQL,
+
+    // Want real @-mentions? Set mention_by_email below AND add an email column
+    // to the query above. This table has two, so prefer the work address and
+    // fall back to the personal one:
+    //     COALESCE(WorkEMailAddress, EMailAddress) AS email,
+    // Leave it out while mention_by_email is false — no point moving staff
+    // email addresses around for a feature that isn't switched on.
 
     // Safety cap on how many roster rows to read (a roster is hundreds, not
     // thousands — a much bigger number means the query is pointed at the

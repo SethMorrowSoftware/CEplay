@@ -56,35 +56,42 @@ for the Database Explorer (`#/explorer`, needs the `data_explorer` permission).
 
 ### What this venue's database says
 
-Confirmed August 2026 via the Explorer:
+Confirmed August 2026 via the Explorer — the roster query is settled, not a guess:
 
 | | |
 |---|---|
-| Staff roster | **`dbo.Employees`** |
-| Birthday column | **`DateOfBirth`** (`datetime`) |
-| Status codes | **`dbo.EmployeeStatus`** — a real lookup table, so the labels are in the database |
+| Staff roster | **`dbo.Employees`** (one row per person) |
+| Birthday | **`DateOfBirth`** (`datetime`) |
+| Still employed | **`EmpStatus = 1`** — `dbo.EmployeeStatus` spells the codes out: 1 = Active, 2 = Suspended, 3 = Terminated |
+| Leaving date | `DateOfTerminate`, used as a redundant second check |
 | Does not exist | `TimeClock_Employees` — the time-clock module is punches and scheduling only |
+
+`config.example.php` ships exactly that query, so on this venue there is nothing
+left to work out — go to step 2. Run `discover.php` anyway if you want the
+data-quality checks, or after a POS upgrade.
 
 Every other birthday column in the schema is the guest side — `Customers`,
 `ChildCustomers`, `GroupChildren`, the waiver tables, `TicketDetails`. Don't
 point the bot at any of them.
 
-`config.example.php` already carries the confirmed table and column. It leaves a
-`TODO_CONFIRM_EMPLOYMENT_FILTER` marker where the "still employed" condition
-goes, and **the bot refuses to run until you replace it** — a greeting sent to
-somebody who left last year is worse than sending nothing, so that one can't be
-skipped by accident.
+> ⚠️ `dbo.Employees` also holds `SSN`, `PasswordHash`, `PinHash`,
+> `FingerprintTemplate` and `Picture`. The bot's query selects four columns and
+> nothing else, and `discover.php` masks birth years unless you ask for them.
+> Don't `SELECT *` from this table while poking around.
 
-**Two things to confirm before trusting the generated query**, because nothing
-else can check them for you:
+**Two checks still worth running on your own data** (`discover.php` does both):
 
-- **Which status value means "still employed".** The probe prints example names
-  per value — check one against somebody you know is on this week's schedule. A
-  twenty-year-old database has far more leavers than current staff, so the
-  biggest bucket is not automatically the active one.
-- **That the repeated dates are placeholders, not birthdays.** Anything with a
-  double-digit count is a default the system stamped in, and belongs in
-  `ignore_birth_dates`.
+- **Does the Active count look like your actual team?** If the status field has
+  gone stale, records say "Active" for people who left and no query can tell.
+  Compare it against who has actually clocked into `TimeClock_Weekly` recently.
+- **Do `EmpStatus` and `DateOfTerminate` agree?** If any Active row carries a
+  leaving date the two contradict each other; `discover.php` measures this and
+  only includes both conditions when they agree, because a stale leaving date on
+  a current employee would silently cost them their birthday every year.
+
+One thing only you can confirm: that the most-repeated birth dates are
+placeholders rather than real birthdays. Anything with a double-digit count is a
+default the POS stamped in — add it to `ignore_birth_dates`.
 
 ## 2. Create the Slack bot
 
@@ -239,7 +246,7 @@ tests run anywhere:
 
 ```bash
 php birthdays/tests/test_birthday_lib.php        # 91 assertions — matching, messages, state
-php birthdays/tests/test_discover_helpers.php    # 45 assertions — column/table classification
+php birthdays/tests/test_discover_helpers.php    # 67 assertions — column/table/status-label classification
 ```
 
 The second one evaluates the helper block straight out of `discover.php`
