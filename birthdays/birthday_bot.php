@@ -55,6 +55,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --test-gifs            Check every configured GIF URL resolves; exit.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
+  --config=PATH          Use a specific config file.
   --help                 Show this.
 
 TXT;
@@ -65,7 +66,7 @@ TXT;
  * exactly the failure this bot must not have.
  */
 const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
-                    'roster-file', 'help'];
+                    'roster-file', 'config', 'help'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -95,14 +96,49 @@ $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags[
 // Config
 // ---------------------------------------------------------------------------
 
-$configPath = __DIR__ . '/config.php';
-if (!is_file($configPath)) {
+/**
+ * Where the config lives, in order of preference.
+ *
+ * data/ comes FIRST and is the recommended home on the venue server, because
+ * update.sh syncs the repo over the install directory with `rsync --delete`.
+ * The config is gitignored, so it isn't in the repo — meaning a copy sitting at
+ * birthdays/config.php gets DELETED by the next deploy, taking the Slack token
+ * and the roster query with it. data/ is excluded from that sync (it holds the
+ * database), so a config there survives every update.
+ *
+ * birthdays/config.php still works for installs that don't deploy this way.
+ */
+$configCandidates = [];
+if (!empty($flags['config']) && is_string($flags['config'])) {
+    $configCandidates[] = $flags['config'];
+} else {
+    $env = getenv('BIRTHDAY_CONFIG');
+    if (is_string($env) && $env !== '') {
+        $configCandidates[] = $env;
+    }
+    $configCandidates[] = $root . '/data/birthday_config.php';
+    $configCandidates[] = __DIR__ . '/config.php';
+}
+
+$configPath = '';
+foreach ($configCandidates as $cand) {
+    if (is_file($cand)) { $configPath = $cand; break; }
+}
+
+if ($configPath === '') {
+    if (!empty($flags['config'])) {
+        fwrite(STDERR, "--config: no such file: " . $flags['config'] . "\n");
+        exit(1);
+    }
     fwrite(STDERR,
-        "No birthdays/config.php yet.\n\n"
-        . "  cp birthdays/config.example.php birthdays/config.php\n"
-        . "  chmod 600 birthdays/config.php\n\n"
-        . "Then fill in the Slack token, the channel ID and roster_sql.\n"
-        . "Run `php birthdays/discover.php` first to find the roster table.\n");
+        "No config file yet. Looked in:\n"
+        . "  " . $root . "/data/birthday_config.php   (recommended — survives update.sh)\n"
+        . "  " . __DIR__ . "/config.php\n\n"
+        . "  cp birthdays/config.example.php data/birthday_config.php\n"
+        . "  chmod 600 data/birthday_config.php\n\n"
+        . "Then fill in the Slack token and the channel ID. The roster query is\n"
+        . "already filled in for this venue; run `php birthdays/discover.php` if you\n"
+        . "need to re-derive it.\n");
     exit(1);
 }
 $cfg = require $configPath;
