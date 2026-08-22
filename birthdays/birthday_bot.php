@@ -55,6 +55,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --demo[=N]             Post ONE full sample announcement (GIF and all); exit.
                          N = how many people share that one birthday (max 6).
                          Run it repeatedly for different quips and GIFs.
+                         Add --dry-run to print it instead of posting.
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
@@ -266,9 +267,13 @@ if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
 
 if ($doDemo) {
     try {
-        $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
-        [$channel, $note] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
-        if ($note !== '') { bdayLog($note); }
+        $slack = null;
+        $channel = trim((string)($cfg['slack_channel'] ?? ''));
+        if (!$dryRun) {
+            $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
+            [$channel, $note] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
+            if ($note !== '') { bdayLog($note); }
+        }
 
         // --demo=3 previews a shared birthday, which uses a different pool
         // and different name-joining ("A, B and C") than the single case.
@@ -325,6 +330,21 @@ if ($doDemo) {
             'text' => ':wrench: _Preview — this is what the daily post looks like. '
                 . ($howMany > 1 ? 'These names are placeholders' : '"Robin Sample" is a placeholder')
                 . ', not a real birthday._']]];
+
+        // --demo --dry-run prints it instead of posting, so the wording can be
+        // checked without putting anything in the channel.
+        if ($dryRun) {
+            echo "\n--- DRY RUN — nothing was posted ---\n";
+            echo "\nchannel: " . $channel . "  |  " . $howMany . " celebrant(s)\n";
+            echo "-----------------------------------------------------------------\n";
+            echo $text . "\n";
+            if ($gif !== null) { echo "\n[GIF · " . $gif['source'] . "]\n" . $gif['url'] . "\n"; }
+            foreach (array_slice($blocks, -2) as $b) {
+                if (($b['type'] ?? '') === 'context') { echo "\n" . $b['elements'][0]['text'] . "\n"; }
+            }
+            echo "-----------------------------------------------------------------\n\n";
+            exit(0);
+        }
 
         $ts = $slack->postMessage($channel, $text, [
             'blocks'     => $blocks,
