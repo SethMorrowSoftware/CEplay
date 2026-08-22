@@ -306,7 +306,15 @@ probes as copy/paste SQL for the Database Explorer.
 
 ## Configuration
 
-In `data/birthday_config.php`; see `config.example.php` for the annotated form.
+**The easiest way is the Birthdays page in CEplay** (`#/birthdays`) — every
+setting below has a field there, plus upcoming birthdays, a health check, a
+wording preview and a "post a sample" button. Saving there writes to the app
+database and takes effect on the next morning's post.
+
+Settings resolve in three layers, each overriding the one before: built-in
+defaults, then `data/birthday_config.php` if it exists, then whatever the page
+saved. So a file-only install keeps working untouched, and anything edited on
+the page wins. `config.example.php` is the annotated form of the file layer.
 
 | Key | Default | What it does |
 |---|---|---|

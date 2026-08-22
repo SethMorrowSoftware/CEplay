@@ -295,6 +295,11 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/items.php';
                 handleItems($method, $parts, $input);
                 break;
+            case 'birthdays':
+                require_once __DIR__ . '/api/birthdays.php';
+                handleBirthdays($method, $parts, $input);
+                break;
+
             case 'explorer':
                 require_once __DIR__ . '/api/explorer.php';
                 handleExplorer($method, $parts, $input);
@@ -583,5 +588,6 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= assetUrl($basePath, '/public/js/promotions.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/items.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/explorer.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/birthdays.js') ?>"></script>
 </body>
 </html>

@@ -58,6 +58,8 @@ class Auth {
         'data_explorer'    => 'Database Explorer + MSSQL report Test buttons (raw POS data, incl. dollar & card figures)',
         'users'            => 'Manage user accounts (admin accounts always excluded)',
         'view_logs'        => 'View the Action Log / audit trail (card numbers, logins, IP addresses)',
+        'view_birthdays'   => 'See the Birthdays page (upcoming staff birthdays, bot settings)',
+        'birthdays_manage' => 'Change birthday bot settings and post test messages to Slack',
     ];
 
     /**
@@ -69,7 +71,7 @@ class Auth {
      */
     public const PAGE_PERMISSIONS = [
         'view_dashboard', 'view_games', 'view_tags', 'view_groups',
-        'view_kiosks', 'view_schedules', 'view_overrides',
+        'view_kiosks', 'view_schedules', 'view_overrides', 'view_birthdays',
     ];
 
     /**

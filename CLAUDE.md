@@ -28,12 +28,13 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, logs, users, roles, capabilities)
-lib/          — 9 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting)
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, logs, settings)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, logs, users, roles, capabilities)
+lib/          — 10 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, logs, settings)
 public/       — Also: manifest.webmanifest + sw.js + icons/ (the PWA layer; index.php serves sw.js/manifest at the app ROOT so the worker scope covers the whole app)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
 data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
+birthdays/    — Staff birthday Slack bot: CLI runner + installer + systemd timer (runs from a timer, configured from the Birthdays page)
 docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
 ```
 
@@ -847,6 +848,50 @@ before building.
 - Note: DELETE method uses `API.del()` (not `API.delete()` — `delete` is a JS reserved word)
 - DOM built with `App.el(tag, props, children)` helper
 
+### Staff Birthdays
+- **The bot** lives in `birthdays/` and runs from a systemd timer, NOT from the
+  app: `birthday_bot.php` reads the employee roster out of the CenterEdge MSSQL
+  database and posts a greeting to Slack for anyone whose birthday is today and
+  whose `EmpStatus` still says they work here. Read-only against the POS (the
+  same single-SELECT guard the reports use) and it never writes back.
+  `install.sh` is a one-command installer; `run.sh` wraps the podman/pdo_dblib
+  invocation every CLI command needs; `discover.php` re-derives the roster
+  query. 244 assertions in `birthdays/tests/` run with no database or network.
+- **Roster facts (verified August 2026):** the staff table is `dbo.Employees`
+  (NOT `TimeClock_Employees`, which does not exist here), the birthday column is
+  `DateOfBirth`, and `EmpStatus = 1` means employed — `dbo.EmployeeStatus`
+  spells the codes out (1 Active, 2 Suspended, 3 Terminated). Every OTHER
+  birthday column in the schema is the guest side (`Customers`,
+  `ChildCustomers`, `GroupChildren`, the waiver tables, `TicketDetails`).
+  `dbo.Employees` also carries `SSN`, `PasswordHash`, `PinHash` and
+  `FingerprintTemplate` — the bot selects four columns and nothing else, and
+  nothing here should ever `SELECT *` from it.
+- **The page** (`#/birthdays`, `api/birthdays.php`, `public/js/birthdays.js`)
+  shows upcoming birthdays and today's message, and edits every setting.
+  Settings resolve through `lib/birthday_config.php` in three layers — built-in
+  defaults, then `data/birthday_config.php` if it exists, then `api_config` rows
+  keyed `birthday_*`. So a file-only install keeps working and the page's saved
+  values win, and the page never has to generate PHP. **`DB::getConfig` already
+  decrypts** — do not decrypt a `birthday_*` secret a second time, which throws
+  and reads a good token back as "not set". A secret that genuinely can't be
+  decrypted degrades to a warning rather than a fatal, so `--check` still runs.
+- **Messages are COMPOSED**, not picked from whole templates: a greeting line
+  and a flavour line are drawn from separate pools with independent seeds, so 65
+  written lines make 714 messages. Every flavour line must stand alone after any
+  greeting (a test enforces capitalisation + terminal punctuation). The pick is
+  deterministic from date + celebrants, which is what makes `--dry-run` show
+  exactly what will post. **No age, no birth year, no milestones** — about a
+  fifth of this roster are minors; a test asserts no pool line contains a
+  year-like number.
+- **A `--date` other than today is a REHEARSAL:** it always posts and is
+  deliberately NOT recorded. Recording it would mark the real morning "already
+  done" and silently skip that person's actual greeting.
+- Gates: `view_birthdays` (page, in `PAGE_PERMISSIONS`) and `birthdays_manage`
+  (edit settings, post test messages). `migration_birthdays_v1` grants both to
+  roles holding `settings`. Keep the key in sync across `Auth::PAGE_PERMISSIONS`,
+  settings.js `pagePermissionKeys`, and app.js `PERMISSION_AREAS` /
+  `SECTION_AREAS` / `LEGACY_ACCESS`.
+
 ### Tag Board & PWA
 - Tag Board (`#/tags`, `public/js/tags.js`, `public/css/pages/tags.css`) is the
   phone-first page for floor staff to tag games OUT of service / back IN
@@ -916,9 +961,9 @@ before building.
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 21 keys incl.
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 23 keys incl.
   view_revenue, manual_control, reader_groups_manage, promotions_manage,
-  items_manage, view_tags, data_explorer). A
+  items_manage, view_tags, data_explorer, view_birthdays, birthdays_manage). A
   read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.

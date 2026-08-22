@@ -1,0 +1,224 @@
+/* ============================================
+   Birthdays — upcoming staff birthdays + bot settings
+   ============================================
+   Two jobs on one page: a glanceable list of who is celebrating, and a long
+   settings form underneath. The list gets the visual weight; the form stays
+   deliberately plain so it reads as configuration rather than content.
+
+   Page hue is a warm candle amber — distinct from the pink Promo Cards and
+   the violet Redemption report, and it reads as "cake" without shouting. */
+
+:root {
+    --birthday: #e0913a;            /* Candle amber */
+    --birthday-rgb: 224, 145, 58;
+}
+:root[data-theme="light"] {
+    --birthday: #b3661a;
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --birthday: #b3661a; }
+}
+
+/* --- Health checks: one line per dependency ---------------------------- */
+.bd-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
+}
+.bd-check {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+.bd-check-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
+    background: var(--text-muted);
+    flex: 0 0 auto;
+    align-self: center;
+}
+.bd-check-label { color: var(--text-primary); font-weight: 600; }
+.bd-check-detail { color: var(--text-secondary); }
+.bd-check-ok   .bd-check-dot { background: var(--success); }
+.bd-check-warn .bd-check-dot { background: var(--warning); }
+.bd-check-fail .bd-check-dot { background: var(--danger); }
+.bd-check-fail { border-color: rgba(var(--birthday-rgb), 0.4); }
+.bd-check-idle .bd-check-dot,
+.bd-check-off  .bd-check-dot { background: var(--text-muted); }
+.bd-check-loading { padding: 0.35rem 0; }
+
+/* --- Today's message, rendered the way Slack will show it -------------- */
+.bd-today {
+    border: 1px solid rgba(var(--birthday-rgb), 0.35);
+    background: rgba(var(--birthday-rgb), 0.07);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 1rem;
+}
+.bd-today-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--birthday);
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+}
+.bd-message {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
+.bd-message:last-child { margin-bottom: 0; }
+.bd-message-line {
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+/* --- The upcoming list ------------------------------------------------- */
+.bd-list { display: flex; flex-direction: column; }
+.bd-row {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border-subtle, var(--border));
+}
+.bd-row:last-child { border-bottom: none; }
+.bd-row-today .bd-names { color: var(--birthday); font-weight: 700; }
+
+/* Fixed-width date block so the names all start on the same line. */
+.bd-date {
+    flex: 0 0 2.6rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.05;
+}
+.bd-date-day {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.bd-date-mon {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+.bd-row-main { min-width: 0; }
+.bd-names {
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+/* --- Settings form ----------------------------------------------------- */
+.bd-field { margin-bottom: 1.1rem; }
+.bd-field:last-child { margin-bottom: 0; }
+.bd-help {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+}
+.bd-textarea {
+    width: 100%;
+    resize: vertical;
+    line-height: 1.5;
+    min-height: 5rem;
+}
+.bd-mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+}
+.bd-narrow { max-width: 12rem; }
+
+.bd-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.bd-toggle input { margin-top: 0.15rem; flex: 0 0 auto; }
+
+/* Inline actions ("load the built-in lines", "clear it") — a button that
+   reads as a link, so it can't be mistaken for a form control. */
+.bd-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.bd-link:hover { color: var(--birthday); }
+.bd-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.bd-link-danger { color: var(--danger); }
+.bd-link-danger:hover { color: var(--danger); }
+
+.bd-save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.85rem 0 0.25rem;
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(to top, var(--bg-primary, var(--bg-card)) 65%, transparent);
+}
+
+/* --- GIF check --------------------------------------------------------- */
+.bd-preview-controls { align-items: center; margin-bottom: 0.75rem; }
+.bd-gif-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0.6rem 0;
+    max-height: 18rem;
+    overflow-y: auto;
+}
+.bd-gif {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    font-size: 0.78rem;
+}
+.bd-gif-state {
+    flex: 0 0 2.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+}
+.bd-gif-ok   .bd-gif-state { color: var(--success); }
+.bd-gif-dead .bd-gif-state { color: var(--danger); }
+.bd-gif-url {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (max-width: 640px) {
+    .bd-save-bar { flex-direction: column; align-items: stretch; }
+    .bd-save-bar .flex { justify-content: stretch; }
+    .bd-save-bar .btn { flex: 1; }
+}

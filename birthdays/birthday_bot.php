@@ -37,6 +37,7 @@ require_once $root . '/config.php';
 require_once $root . '/lib/db.php';
 require_once $root . '/lib/crypto.php';
 require_once $root . '/lib/mssql_client.php';
+require_once $root . '/lib/birthday_config.php';
 require_once __DIR__ . '/lib/birthday_lib.php';
 require_once __DIR__ . '/lib/slack_client.php';
 require_once __DIR__ . '/lib/gif_source.php';
@@ -128,55 +129,31 @@ $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags[
 // ---------------------------------------------------------------------------
 
 /**
- * Where the config lives, in order of preference.
+ * Load the configuration.
  *
- * data/ comes FIRST and is the recommended home on the venue server, because
- * update.sh syncs the repo over the install directory with `rsync --delete`.
- * The config is gitignored, so it isn't in the repo — meaning a copy sitting at
- * birthdays/config.php gets DELETED by the next deploy, taking the Slack token
- * and the roster query with it. data/ is excluded from that sync (it holds the
- * database), so a config there survives every update.
+ * Settings come from BirthdayConfig, which layers built-in defaults, then
+ * data/birthday_config.php if it exists, then whatever the Birthdays page has
+ * saved into api_config. So a file-only install keeps working untouched, and
+ * anything edited on the page wins.
  *
- * birthdays/config.php still works for installs that don't deploy this way.
+ * --config=PATH replaces the file layer, for testing against a config that
+ * isn't the live one.
  */
-$configCandidates = [];
+$configFile = $root . '/data/birthday_config.php';
 if (!empty($flags['config']) && is_string($flags['config'])) {
-    $configCandidates[] = $flags['config'];
-} else {
-    $env = getenv('BIRTHDAY_CONFIG');
-    if (is_string($env) && $env !== '') {
-        $configCandidates[] = $env;
-    }
-    $configCandidates[] = $root . '/data/birthday_config.php';
-    $configCandidates[] = __DIR__ . '/config.php';
-}
-
-$configPath = '';
-foreach ($configCandidates as $cand) {
-    if (is_file($cand)) { $configPath = $cand; break; }
-}
-
-if ($configPath === '') {
-    if (!empty($flags['config'])) {
-        fwrite(STDERR, "--config: no such file: " . $flags['config'] . "\n");
+    $configFile = $flags['config'];
+    if (!is_file($configFile)) {
+        fwrite(STDERR, "--config: no such file: {$configFile}\n");
         exit(1);
     }
-    fwrite(STDERR,
-        "No config file yet. Looked in:\n"
-        . "  " . $root . "/data/birthday_config.php   (recommended — survives update.sh)\n"
-        . "  " . __DIR__ . "/config.php\n\n"
-        . "  cp birthdays/config.example.php data/birthday_config.php\n"
-        . "  chmod 600 data/birthday_config.php\n\n"
-        . "Then fill in the Slack token and the channel ID. The roster query is\n"
-        . "already filled in for this venue; run `php birthdays/discover.php` if you\n"
-        . "need to re-derive it.\n");
-    exit(1);
+} elseif (!is_file($configFile)) {
+    // The legacy location, for an install that predates the move to data/.
+    $legacy = __DIR__ . '/config.php';
+    $configFile = is_file($legacy) ? $legacy : null;
 }
-$cfg = require $configPath;
-if (!is_array($cfg)) {
-    fwrite(STDERR, "birthdays/config.php must return an array.\n");
-    exit(1);
-}
+
+$cfg = BirthdayConfig::load($configFile);
+$configPath = $configFile ?? '(defaults + Birthdays page)';
 
 $tz = trim((string)($cfg['timezone'] ?? ''));
 if ($tz === '' && defined('DEFAULT_TIMEZONE')) {
@@ -409,6 +386,10 @@ if ($doCheck) {
     };
     echo "\nBirthday bot health check\n" . str_repeat('=', 62) . "\n";
     $row('Config', 'ok', $configPath);
+    foreach (BirthdayConfig::warnings() as $w) {
+        $row('Stored value', 'FAIL', substr($w, 0, 70));
+        $problems[] = $w;
+    }
 
     // -- MSSQL ------------------------------------------------------------
     $drivers = MssqlClient::availableDrivers();

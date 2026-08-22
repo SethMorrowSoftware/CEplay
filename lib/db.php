@@ -333,6 +333,56 @@ class DB {
             error_log('view_tags migration skipped: ' . $e->getMessage());
         }
 
+        // One-time migration: the Birthdays page gets its own keys. Grant both
+        // to every role that already holds 'settings' — the people who
+        // configure the CenterEdge connection are the people who would
+        // configure the birthday bot — so introducing the page changes nobody's
+        // effective access, and no role silently gains the ability to post to
+        // Slack. Flagged so it runs once and never overrides later edits.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_birthdays_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms) || in_array('*', $perms, true)) {
+                        continue;
+                    }
+                    if (!in_array('settings', $perms, true)) {
+                        continue;
+                    }
+                    $before = $perms;
+                    foreach (['view_birthdays', 'birthdays_manage'] as $key) {
+                        if (!in_array($key, $perms, true)) {
+                            $perms[] = $key;
+                        }
+                    }
+                    if ($perms !== $before) {
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                // Mirror per-user overrides in both directions, as above: a user
+                // explicitly denied Settings must not gain the birthday bot's
+                // Slack token through a key their role just picked up.
+                foreach (['view_birthdays', 'birthdays_manage'] as $key) {
+                    self::execute(
+                        "INSERT OR IGNORE INTO user_permission_overrides (user_id, permission_key, effect)
+                         SELECT user_id, :p0, effect FROM user_permission_overrides
+                         WHERE permission_key = 'settings'",
+                        [$key]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_birthdays_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('birthdays migration skipped: ' . $e->getMessage());
+        }
+
         // One-time: stamp the Go-Kart Labor queries with the venue's
         // confirmed-working Grafana query (CatNo 108 sales, 'Go-Karts' job
         // join for labor). While the filters were being pinned down, interim
