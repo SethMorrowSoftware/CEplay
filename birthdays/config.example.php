@@ -25,10 +25,16 @@ return [
     // below, and users:read.email only if you turn on mention_by_email).
     'slack_bot_token' => 'xoxb-your-bot-token-here',
 
-    // Channel ID — NOT the name. In Slack: right-click the channel ->
-    // "View channel details" -> the ID is at the bottom (C0123456789).
-    // Invite the bot first: /invite @your-bot-name
-    'slack_channel' => 'C0123456789',
+    // Where to post. A channel NAME is fine — "#birthday-test" or
+    // "birthday-test" — and the bot looks the ID up (that needs the
+    // channels:read scope, which the shipped app manifest includes; a private
+    // channel also needs groups:read and the bot invited).
+    //
+    // A raw ID (C0123456789) works too and is marginally faster, since it
+    // skips that lookup on every run. install.sh resolves whatever you type
+    // and stores the ID for you. To find one by hand: right-click the channel
+    // in Slack -> View channel details -> the ID is at the bottom.
+    'slack_channel' => '#your-channel',
 
     // Optional text prepended to the message, e.g. '<!here>' or '<!channel>'.
     // Leave empty for no ping.

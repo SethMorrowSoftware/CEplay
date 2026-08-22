@@ -60,7 +60,9 @@ else
     warn "No env file at ${ENV_FILE}; the encryption key may be missing."
 fi
 
-echo -e "${DIM}→ ${MSSQL_IMAGE} php ${SCRIPT} $*${NC}" >&2
+# The progress line goes to stderr, so callers that capture stdout stay clean.
+# PG_QUIET silences it for scripts (install.sh) that need stderr for REAL errors.
+[[ -n "${PG_QUIET:-}" ]] || echo -e "${DIM}→ ${MSSQL_IMAGE} php ${SCRIPT} $*${NC}" >&2
 exec podman run --rm \
     --network host \
     "${ENV_ARGS[@]}" \

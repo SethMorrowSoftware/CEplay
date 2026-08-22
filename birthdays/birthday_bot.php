@@ -54,6 +54,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --test-slack           Check the token and post a test message; exit.
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
+  --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --config=PATH          Use a specific config file.
@@ -67,7 +68,7 @@ TXT;
  * exactly the failure this bot must not have.
  */
 const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
-                    'roster-file', 'config', 'check', 'help'];
+                    'roster-file', 'config', 'check', 'resolve-channel', 'help'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -169,6 +170,41 @@ function bdayLog(string $msg): void
     }
 }
 
+/**
+ * Which channel do we actually post to?
+ *
+ * A channel ID goes straight through — the daily run should never spend an API
+ * call, or need the channels:read scope, just to find a channel it already
+ * knows. A #name is looked up once. If the lookup is impossible (no
+ * channels:read), the name is handed to chat.postMessage anyway: Slack accepts
+ * a name for some tokens, and if it doesn't, its own error is clearer than a
+ * guess would be.
+ *
+ * @return array{0: string, 1: string} [channel to use, note for the log]
+ */
+function bdayChannelFor(SlackClient $slack, string $configured): array
+{
+    $configured = trim($configured);
+    if ($configured === '' || $configured === 'C0123456789' || $configured === '#your-channel') {
+        throw new RuntimeException('slack_channel is not set in the config.');
+    }
+    if (preg_match('/^[CGD][A-Z0-9]{8,}$/', $configured)) {
+        return [$configured, ''];
+    }
+    try {
+        $r = $slack->resolveChannel($configured);
+        $note = $r['resolved']
+            ? 'Resolved #' . $r['name'] . ' to ' . $r['id']
+                . ' (put that ID in slack_channel to skip this lookup each run).'
+            : '';
+        return [$r['id'], $note];
+    } catch (RuntimeException $e) {
+        return [ltrim($configured, '#'),
+            'Could not look the channel name up (' . $e->getMessage()
+            . ') — passing it to Slack as-is.'];
+    }
+}
+
 $today = date('Y-m-d');
 $target = $today;
 if (!empty($flags['date'])) {
@@ -189,6 +225,26 @@ $nameStyle = (string)($cfg['name_style'] ?? 'full');
 if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
     fwrite(STDERR, "name_style must be one of: full, first, first_initial.\n");
     exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --resolve-channel: print the ID for a name, for scripts to capture
+// ---------------------------------------------------------------------------
+
+if (!empty($flags['resolve-channel'])) {
+    $want = (string)$flags['resolve-channel'];
+    try {
+        $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
+        $r = $slack->resolveChannel($want);
+        if ($r['resolved']) {
+            fwrite(STDERR, '#' . $r['name'] . ' -> ' . $r['id'] . "\n");
+        }
+        echo $r['id'] . "\n";   // stdout stays clean for $(...) capture
+        exit(0);
+    } catch (Exception $e) {
+        fwrite(STDERR, $e->getMessage() . "\n");
+        exit(1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,11 +327,19 @@ if ($doCheck) {
     $chan = trim((string)($cfg['slack_channel'] ?? ''));
     if ($chan === '' || $chan === 'C0123456789') {
         $row('Slack channel', 'FAIL', 'not set');
-        $problems[] = 'slack_channel is not set to a real channel ID.';
+        $problems[] = 'slack_channel is not set in the config.';
+    } elseif (isset($sc)) {
+        try {
+            $rc = $sc->resolveChannel($chan);
+            $row('Slack channel', 'ok',
+                ($rc['name'] !== '' ? '#' . $rc['name'] . ' = ' : '') . $rc['id']
+                . ' (use --test-slack to prove delivery)');
+        } catch (Exception $e) {
+            $row('Slack channel', 'FAIL', substr($e->getMessage(), 0, 70));
+            $problems[] = 'Channel: ' . $e->getMessage();
+        }
     } else {
-        // Only a real post proves the bot can write here, and --check posts
-        // nothing — so this confirms the shape and defers the rest.
-        $row('Slack channel', 'ok', $chan . ' (use --test-slack to prove delivery)');
+        $row('Slack channel', '-', $chan . ' (not checked — the token failed)');
     }
 
     // -- GIFs -------------------------------------------------------------
@@ -392,11 +456,8 @@ if ($testSlack) {
         $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
         $who = $slack->authTest();
         bdayLog("Slack auth OK — workspace '{$who['team']}', bot '{$who['user']}'.");
-        $channel = trim((string)($cfg['slack_channel'] ?? ''));
-        if ($channel === '' || $channel === 'C0123456789') {
-            fwrite(STDERR, "Set slack_channel to a real channel ID before testing delivery.\n");
-            exit(1);
-        }
+        [$channel, $note] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
+        if ($note !== '') { bdayLog($note); }
         $slack->postMessage($channel, ':wave: Birthday bot test — this channel is wired up correctly.', [
             'username'   => (string)($cfg['bot_username'] ?? ''),
             'icon_emoji' => (string)($cfg['bot_icon_emoji'] ?? ''),
@@ -685,11 +746,13 @@ if ($dryRun) {
     exit(0);
 }
 
-$channel = trim((string)($cfg['slack_channel'] ?? ''));
-if ($channel === '' || $channel === 'C0123456789') {
-    fwrite(STDERR, "slack_channel is not set to a real channel ID.\n");
+try {
+    [$channel, $chanNote] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
+} catch (RuntimeException $e) {
+    fwrite(STDERR, $e->getMessage() . "\n");
     exit(1);
 }
+if ($chanNote !== '') { bdayLog($chanNote); }
 
 $posted = [];
 $failed = 0;

@@ -22,7 +22,7 @@ birthdays/
 ├─ EXPLORER-QUERIES.md    The schema discovery, as Explorer copy/paste SQL
 ├─ lib/                   Date matching, message building, GIFs, Slack
 ├─ systemd/               Daily timer units
-└─ tests/                 218 assertions — run anywhere, no database needed
+└─ tests/                 244 assertions — run anywhere, no database needed
 ```
 
 ---
@@ -70,7 +70,7 @@ the name style. `--uninstall` removes the timer and leaves your config alone.
 | | |
 |---|---|
 | **Slack bot token** | `xoxb-…`. It points you at `slack-app-manifest.yml` — paste that into **Create New App → From an app manifest** and Slack sets the name and every permission for you, so there is no scope-hunting. |
-| **Channel** | Paste the channel link straight out of Slack (right-click the channel → *Copy link*) — it pulls the ID out for you. A bare `C0123456789` works too. |
+| **Channel** | Just the name: `#birthday-test`. A pasted channel link or a raw `C0123456789` work too. It looks the name up and stores the ID, so the daily run never has to. |
 | **How names appear** | Full name, first name only, or first + initial. |
 | **Giphy API key** | Optional. A [free key](https://developers.giphy.com) gets a fresh GIF daily instead of a fixed list. Press Enter to skip. |
 | **Reactions** | Whether the bot adds the first 🎉 to its own message. |
@@ -105,6 +105,7 @@ sudo cp birthdays/config.example.php data/birthday_config.php
 sudo chown 33:33 data/birthday_config.php    # the container runs as uid 33
 sudo chmod 600 data/birthday_config.php      # it holds the bot token
 sudo vi data/birthday_config.php             # set slack_bot_token + slack_channel
+#    slack_channel takes '#birthday-test' or a C0123456789 ID.
 
 # 2. Check it
 sudo bash birthdays/run.sh --check
@@ -157,6 +158,10 @@ attractions — the go-karts, Laser Tag, Free Fall, the skee-ball lanes, the
 redemption counter — plus a separate pool for days when several people are
 celebrating. Write your own with `messages_single` / `messages_multi`, or pin
 one fixed wording with `message_single` / `message_multi`.
+
+**Channel by name.** `slack_channel` takes `#birthday-test` as happily as a
+`C0123456789`. Names are resolved through `conversations.list`; the installer
+does it once and stores the ID so the daily run never spends a lookup.
 
 **Animated GIFs**, as a Slack image block. Two sources: a free Giphy key
 (`giphy_api_key`) searches fresh every time and never goes stale; the curated
@@ -241,6 +246,7 @@ probes as copy/paste SQL for the Database Explorer.
 | | |
 |---|---|
 | `--check` | Health-check everything and print a checklist. Posts nothing |
+| `--resolve-channel=X` | Print the channel ID for a `#name`. Posts nothing |
 | `--list[=DAYS]` | Upcoming birthdays (default 60 days). Posts nothing |
 | `--dry-run` | Build today's message and print it. Posts nothing |
 | `--date=YYYY-MM-DD` | Treat that date as today |
@@ -258,7 +264,7 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | Key | Default | What it does |
 |---|---|---|
 | `slack_bot_token` | — | `xoxb-…` bot token |
-| `slack_channel` | — | Channel **ID** (`C…`), not the name |
+| `slack_channel` | — | `#birthday-test`, or a channel ID (an ID skips a lookup each run) |
 | `mention` | `''` | Prefix such as `<!here>` |
 | `roster_sql` | verified | The one SELECT defining "current employee" |
 | `name_style` | `full` | `full` / `first` / `first_initial` |
@@ -292,7 +298,8 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | `No MSSQL PDO driver in this PHP runtime` | You ran `php` directly — use `birthdays/run.sh` |
 | `MSSQL is not configured in the app yet` | Set the connection on the Go-Kart Labor page → Settings |
 | `not_in_channel` | `/invite @your-bot-name` into the channel |
-| `channel_not_found` | You used the channel name; it needs the ID (`C…`) |
+| `channel_not_found` | The name doesn't match a channel the bot can see — `--resolve-channel='#name'` lists near matches |
+| Channel name won't resolve | Needs `channels:read` (and `groups:read` + an invite for a private channel). Add them **and reinstall the app**, or just use the ID |
 | `missing_scope` | Add the scope **and reinstall the app** |
 | `invalid_auth` / `token_revoked` | Reinstall and copy the new `xoxb-` token |
 | Rows returned but nobody had a usable birthday | `roster_sql` isn't aliasing the birthday column `birth_date` |
@@ -312,6 +319,7 @@ it, so the tests run anywhere:
 ```bash
 php birthdays/tests/test_birthday_lib.php        # 121 — matching, messages, blocks, state
 php birthdays/tests/test_gif_source.php          #  30 — GIF selection, Giphy parsing
+php birthdays/tests/test_slack_channel.php       #  26 — channel name/ID/link resolution
 php birthdays/tests/test_discover_helpers.php    #  67 — column/table/status-label classification
 ```
 

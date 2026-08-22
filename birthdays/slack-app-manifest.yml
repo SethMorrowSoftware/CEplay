@@ -37,6 +37,13 @@ oauth_config:
       # Let the bot add the first :tada: to its own message, so nobody has to
       # break the ice. Only used when add_reactions is on.
       - reactions:write
+      # Look a channel up by NAME, so you can configure "#birthday-test"
+      # instead of hunting for a C0123456789 ID. Grants the channel LIST
+      # (names, topics, member counts) — not the ability to read any messages.
+      - channels:read
+      # The same, for a private channel — and only for private channels the
+      # bot has actually been invited to.
+      - groups:read
       #
       # NOT requested, on purpose:
       #   users:read.email  — only needed to turn names into real @-mentions

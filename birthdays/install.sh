@@ -84,7 +84,10 @@ else
     ok "MSSQL driver image ready"
 fi
 
-run_bot() { bash "${SCRIPT_DIR}/run.sh" "$@" 2>/dev/null; }
+# PG_QUIET drops run.sh's progress line but keeps stderr intact — the channel
+# lookup below reads real error messages off it, and `2>/dev/null` here would
+# throw away the one thing that tells the operator what went wrong.
+run_bot() { PG_QUIET=1 bash "${SCRIPT_DIR}/run.sh" "$@"; }
 
 # =============================================================================
 #  2. Slack
@@ -124,22 +127,79 @@ else
     TOKEN="$EXISTING_TOKEN"
 fi
 
-# Channel: accept the ID, or the URL people actually copy out of Slack.
-echo
+# =============================================================================
+#  3. Write the config far enough to look the channel up
+#
+#  The token has to be on disk before the bot can ask Slack anything, so the
+#  config is created here rather than at the end. Everything after this point
+#  edits it in place.
+# =============================================================================
+
+set_key() {  # set_key <key> <php-literal>
+    sed -i -E "s|^([[:space:]]*'${1}'[[:space:]]*=>[[:space:]]*).*\$|\1${2},|" "$CONFIG"
+}
+
+if [[ ! -f "$CONFIG" ]]; then
+    cp "$EXAMPLE" "$CONFIG"
+    info "Created ${CONFIG}"
+else
+    cp "$CONFIG" "${CONFIG}.bak"
+    info "Updating ${CONFIG} (previous version saved as ${CONFIG##*/}.bak)"
+fi
+set_key slack_bot_token "'${TOKEN}'"
+# uid 33 is what the app's container runs as; a root-owned 0600 file would be
+# unreadable to the bot itself — and this has to work before the lookup below.
+chown 33:33 "$CONFIG"
+chmod 600 "$CONFIG"
+
+hdr "3/5  Channel"
+
 echo "  Which channel should it post in?"
-echo -e "${DIM}    In Slack: right-click the channel -> Copy link, and paste that here.${NC}"
-echo -e "${DIM}    Or paste the channel ID from View channel details (e.g. C0123456789).${NC}"
+echo -e "${DIM}    Just the name is fine: #birthday-test${NC}"
+echo -e "${DIM}    A pasted channel link or a raw ID (C0123456789) also work.${NC}"
 echo
-read -rp "  Channel: " CHAN_RAW
-CHAN="$(echo "$CHAN_RAW" | grep -oE '[CGD][A-Z0-9]{6,}' | head -1 || true)"
-[[ -n "$CHAN" ]] || die "Couldn't find a channel ID in \"${CHAN_RAW}\".
-Paste either the channel link or an ID that looks like C0123456789."
-ok "Channel ${CHAN}"
+
+CHAN=""
+# Created here, not inline in the redirect below: `${VAR:=$(mktemp)}` inside a
+# command substitution assigns in the SUBSHELL, leaving it unset out here — and
+# `set -u` then turns the error path into its own error.
+TMP_ERR="$(mktemp)"
+trap 'rm -f "$TMP_ERR"' EXIT
+for attempt in 1 2 3; do
+    read -rp "  Channel: " CHAN_RAW
+    CHAN_RAW="$(echo "$CHAN_RAW" | tr -d '[:space:]')"
+    if [[ -z "$CHAN_RAW" ]]; then
+        warn "Nothing entered."
+        continue
+    fi
+    # The bot does the lookup, so this understands names, links and IDs
+    # identically — and the same code runs at post time.
+    if CHAN="$(run_bot --resolve-channel="$CHAN_RAW" 2>"$TMP_ERR")"; then
+        CHAN="$(echo "$CHAN" | tr -d '[:space:]')"
+        RESOLVED_NOTE="$(cat "$TMP_ERR" 2>/dev/null || true)"
+        [[ -n "$RESOLVED_NOTE" ]] && echo -e "${DIM}    ${RESOLVED_NOTE}${NC}"
+        ok "Channel ${CHAN}"
+        break
+    fi
+    CHAN=""
+    warn "$(cat "$TMP_ERR" 2>/dev/null | head -3 || echo 'Lookup failed.')"
+    if [[ $attempt -lt 3 ]]; then
+        echo -e "${DIM}    A private channel needs the bot invited first: /invite @your-bot-name${NC}"
+    fi
+done
+if [[ -z "$CHAN" ]]; then
+    echo
+    warn "Couldn't look that channel up — Slack may be unreachable from this host."
+    read -rp "  Store what you typed and let the bot resolve it later? [y/N] " asis
+    [[ "${asis,,}" == "y" ]] || die "Stopped. Fix the Slack connection (or use a channel ID) and re-run."
+    CHAN="$CHAN_RAW"
+fi
+set_key slack_channel "'${CHAN}'"
 
 # =============================================================================
-#  3. Options
+#  4. Options
 # =============================================================================
-hdr "3/5  Options (press Enter for the default)"
+hdr "4/5  Options (press Enter for the default)"
 
 echo "  About a fifth of your staff are under 18. The bot never posts an age or"
 echo "  a birth year, but you can also shorten how names appear."
@@ -169,36 +229,10 @@ read -rp "  What time should it post? [09:00] " PTIME
 PTIME="${PTIME:-09:00}"
 [[ "$PTIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "Time must be HH:MM in 24-hour form, e.g. 09:00 or 16:30."
 
-# =============================================================================
-#  4. Write the config
-# =============================================================================
-hdr "4/5  Writing the config"
-
-# data/ rather than birthdays/: update.sh syncs the repo over the install
-# directory with `rsync --delete`, and this file is gitignored — so a copy
-# beside the code would be deleted by the next deploy.
-if [[ ! -f "$CONFIG" ]]; then
-    cp "$EXAMPLE" "$CONFIG"
-    info "Created ${CONFIG}"
-else
-    cp "$CONFIG" "${CONFIG}.bak"
-    info "Updating ${CONFIG} (previous version saved as ${CONFIG##*/}.bak)"
-fi
-
-set_key() {  # set_key <key> <php-literal>
-    local key="$1" val="$2"
-    sed -i -E "s|^([[:space:]]*'${key}'[[:space:]]*=>[[:space:]]*).*\$|\1${val},|" "$CONFIG"
-}
-set_key slack_bot_token "'${TOKEN}'"
-set_key slack_channel   "'${CHAN}'"
-set_key name_style      "'${NAME_STYLE}'"
-set_key add_reactions   "${ADD_REACTIONS}"
+set_key name_style    "'${NAME_STYLE}'"
+set_key add_reactions "${ADD_REACTIONS}"
 [[ -n "$GIPHY" ]] && set_key giphy_api_key "'${GIPHY}'"
-
-# uid 33 is what the app's container runs as; root-owned 0600 would be
-# unreadable to the bot itself.
-chown 33:33 "$CONFIG"
-chmod 600 "$CONFIG"
+chown 33:33 "$CONFIG"; chmod 600 "$CONFIG"
 ok "Config written, owned by uid 33, mode 600"
 
 php -l "$CONFIG" >/dev/null 2>&1 || die "The config has a syntax error — restore ${CONFIG}.bak and report this."
