@@ -235,7 +235,30 @@ set_key add_reactions "${ADD_REACTIONS}"
 chown 33:33 "$CONFIG"; chmod 600 "$CONFIG"
 ok "Config written, owned by uid 33, mode 600"
 
-php -l "$CONFIG" >/dev/null 2>&1 || die "The config has a syntax error — restore ${CONFIG}.bak and report this."
+# Lint the config — but NOT with a bare `php`. This host runs PHP only inside
+# the app's container, so a host interpreter usually does not exist; calling one
+# and treating its absence as a parse failure reports a broken config when the
+# config is fine. Use the container when there is no host php, and print the
+# real parser output rather than asserting what went wrong.
+lint_config() {
+    if command -v php >/dev/null 2>&1; then
+        php -l "$CONFIG" 2>&1
+    else
+        podman run --rm \
+            -v "${INSTALL_DIR}:${INSTALL_DIR}:z" \
+            -w "$INSTALL_DIR" -u 33:33 \
+            "$MSSQL_IMAGE" php -l "$CONFIG" 2>&1
+    fi
+}
+if ! LINT_OUT="$(lint_config)"; then
+    die "The config didn't parse:
+
+${LINT_OUT}
+
+Restore the previous version with:
+  sudo cp ${CONFIG}.bak ${CONFIG}"
+fi
+ok "Config parses cleanly"
 
 # =============================================================================
 #  5. Verify, then schedule
