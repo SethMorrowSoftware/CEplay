@@ -51,7 +51,8 @@ Usage: php birthdays/birthday_bot.php [options]
   --dry-run              Build today's message and print it; post nothing.
   --date=YYYY-MM-DD      Treat that date as today (for testing).
   --list[=DAYS]          Print upcoming birthdays (default 60 days) and exit.
-  --test-slack           Check the token and post a test message; exit.
+  --test-slack           Check the token and post a plain test message; exit.
+  --demo                 Post a FULL sample announcement (GIF and all); exit.
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
@@ -68,7 +69,7 @@ TXT;
  * exactly the failure this bot must not have.
  */
 const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
-                    'roster-file', 'config', 'check', 'resolve-channel', 'help'];
+                    'roster-file', 'config', 'check', 'resolve-channel', 'demo', 'help'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -91,6 +92,7 @@ $force     = !empty($flags['force']);
 $testSlack = !empty($flags['test-slack']);
 $testGifs  = !empty($flags['test-gifs']);
 $doCheck   = !empty($flags['check']);
+$doDemo    = !empty($flags['demo']);
 $doList    = array_key_exists('list', $flags);
 $rosterFile = isset($flags['roster-file']) && is_string($flags['roster-file']) ? $flags['roster-file'] : '';
 $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags['list'])) : 60;
@@ -225,6 +227,77 @@ $nameStyle = (string)($cfg['name_style'] ?? 'full');
 if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
     fwrite(STDERR, "name_style must be one of: full, first, first_initial.\n");
     exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --demo: post a complete sample announcement
+//
+// --test-slack proves delivery with a plain line of text. This shows the real
+// thing — the quip, the GIF, the footer, the reactions — so the format can be
+// reviewed before anyone's actual birthday. It uses a placeholder name and says
+// it's a preview, because putting a real employee's name up out of season is
+// confusing, and it touches neither the roster nor the already-greeted record.
+// ---------------------------------------------------------------------------
+
+if ($doDemo) {
+    try {
+        $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
+        [$channel, $note] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
+        if ($note !== '') { bdayLog($note); }
+
+        $sample = [
+            'emp_no' => '', 'first' => 'Robin', 'last' => 'Sample',
+            'name' => 'Robin Sample', 'birth_date' => '1990-01-01',
+            'month' => 1, 'day' => 1, 'email' => '', 'slack_id' => '',
+        ];
+        $msgCfg = [
+            'name_style'     => $nameStyle,
+            'bold_names'     => (bool)($cfg['bold_names'] ?? true),
+            'venue_label'    => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
+            'mention'        => '',   // never ping a channel for a preview
+            'message_single' => (string)($cfg['message_single'] ?? ''),
+            'messages_single' => $cfg['messages_single'] ?? null,
+        ];
+        if ($msgCfg['message_single'] === '') { unset($msgCfg['message_single']); }
+
+        // Vary the seed per run so repeated demos show different quips and GIFs.
+        $seed = 'demo|' . date('Y-m-d H:i:s');
+        $text = bdayBuildText([$sample], $msgCfg, $seed);
+        $gif  = GifSource::pick($cfg, $seed);
+        bdayLog($gif !== null
+            ? 'GIF from ' . $gif['source'] . ': ' . $gif['url']
+            : 'No GIF resolved — posting without one. Run --test-gifs to see why.');
+
+        $blocks = bdayBuildBlocks($text, $gif['url'] ?? null, $cfg);
+        $blocks[] = ['type' => 'context', 'elements' => [['type' => 'mrkdwn',
+            'text' => ':wrench: _Preview — this is what the daily post looks like. '
+                . '"Robin Sample" is a placeholder, not a real birthday._']]];
+
+        $ts = $slack->postMessage($channel, $text, [
+            'blocks'     => $blocks,
+            'username'   => (string)($cfg['bot_username'] ?? ''),
+            'icon_emoji' => (string)($cfg['bot_icon_emoji'] ?? ''),
+        ]);
+        bdayLog('Posted the sample announcement to ' . $channel . ' (ts ' . $ts . ').');
+
+        if (!empty($cfg['add_reactions']) && $ts !== '') {
+            $added = 0;
+            $emojis = (array)($cfg['reactions'] ?? ['tada', 'birthday']);
+            foreach ($emojis as $e) {
+                if ($slack->addReaction($channel, $ts, (string)$e)) { $added++; }
+            }
+            bdayLog($added > 0
+                ? "Added {$added} reaction(s)."
+                : 'Reactions were NOT added — the token is probably missing reactions:write '
+                  . '(add it and REINSTALL the app, or set add_reactions to false).');
+        }
+        echo "\nThat is exactly what a real birthday post looks like.\n"
+           . "Nothing was recorded, and no employee data was used.\n\n";
+        exit(0);
+    } catch (Exception $e) {
+        fwrite(STDERR, 'Demo failed: ' . $e->getMessage() . "\n");
+        exit(2);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +694,22 @@ if (count($celebrants) > $max) {
 $statePath = (string)($cfg['state_file'] ?? (__DIR__ . '/../data/birthday_state.json'));
 $state = bdayStateLoad($statePath);
 
-if (!$force) {
+/**
+ * A --date that isn't today is a REHEARSAL, and must not touch the record of
+ * who has been greeted.
+ *
+ * Otherwise previewing a future birthday writes state for that date, and on the
+ * real morning the bot finds it already "done" and says nothing — the test
+ * silently cancels the very greeting it was checking. So a test date neither
+ * reads state (it always posts, no --force needed) nor writes it.
+ */
+$isRehearsal = ($target !== $today);
+if ($isRehearsal) {
+    bdayLog('Rehearsing ' . $target . ' — this run will NOT be recorded, so the real '
+        . 'greeting on that day still goes out.');
+}
+
+if (!$force && !$isRehearsal) {
     $pending = [];
     foreach ($celebrants as $p) {
         if (!bdayStateHas($state, $target, $p)) {
@@ -792,7 +880,9 @@ foreach ($messages as $idx => $m) {
 
 // Record only the people whose message actually went out, so a partial
 // failure is retried on the next run instead of being silently swallowed.
-if ($posted) {
+if ($posted && $isRehearsal) {
+    bdayLog('Rehearsal — not recorded.');
+} elseif ($posted) {
     $state = bdayStateMark($state, $target, $posted);
     $state = bdayStatePrune($state, $today, 45);
     if (!bdayStateSave($statePath, $state)) {

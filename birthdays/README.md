@@ -80,6 +80,28 @@ Nothing else needs editing. **`roster_sql` is already correct for this venue** �
 `dbo.Employees`, `DateOfBirth`, `EmpStatus = 1`, all verified against the live
 database.
 
+### Seeing what it actually looks like
+
+```bash
+sudo bash birthdays/run.sh --demo
+```
+
+Posts a complete announcement to the channel — the quip, the GIF, the footer
+and the reactions — under a placeholder name, labelled as a preview. Nothing is
+recorded and no employee data is used, so it's safe to run whenever you want to
+show someone the format. Run it again for a different quip and GIF.
+
+To see a **real** upcoming one instead, pick a date from `--list` and rehearse it:
+
+```bash
+sudo bash birthdays/run.sh --list
+sudo bash birthdays/run.sh --date=2026-09-08
+```
+
+A `--date` other than today is treated as a rehearsal: it always posts, and it
+is deliberately **not** recorded — otherwise previewing a future birthday would
+mark it done and the bot would say nothing on the real morning.
+
 ### Is it working?
 
 ```bash
@@ -251,7 +273,8 @@ probes as copy/paste SQL for the Database Explorer.
 | `--dry-run` | Build today's message and print it. Posts nothing |
 | `--date=YYYY-MM-DD` | Treat that date as today |
 | `--test-gifs` | Check every GIF URL resolves |
-| `--test-slack` | Check the token and post one test message |
+| `--test-slack` | Check the token and post one plain test message |
+| `--demo` | Post a full sample announcement — quip, GIF, reactions |
 | `--force` | Post even if today's greeting already went out |
 | `--config=PATH` | Use a specific config file |
 | `--roster-file=PATH` | Read the roster from JSON instead of MSSQL (testing) |
