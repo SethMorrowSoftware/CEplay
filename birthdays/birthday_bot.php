@@ -200,6 +200,19 @@ if ($rosterFile !== '') {
         fwrite(STDERR, "roster_sql is empty — run `php birthdays/discover.php` to generate one.\n");
         exit(1);
     }
+    // The shipped default deliberately carries a marker where the employment
+    // filter belongs. Refusing to run while it is still there is the one check
+    // that cannot be satisfied by accident: a greeting sent to somebody who
+    // left last year is worse than sending nothing at all.
+    if (stripos($rosterSql, 'TODO_CONFIRM_EMPLOYMENT_FILTER') !== false) {
+        fwrite(STDERR,
+            "roster_sql still contains TODO_CONFIRM_EMPLOYMENT_FILTER.\n\n"
+            . "That marker stands where the \"still employed\" filter belongs. Run\n"
+            . "`php birthdays/discover.php` (or the EmployeeStatus queries in\n"
+            . "EXPLORER-QUERIES.md) to find which column and value mean current staff,\n"
+            . "then replace the marker line in birthdays/config.php.\n");
+        exit(1);
+    }
     if (stripos($rosterSql, 'where') === false) {
         bdayLog('WARNING: roster_sql has no WHERE clause, so it has no "still employed" filter. '
             . 'Everyone who ever worked here will be wished a happy birthday.');

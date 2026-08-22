@@ -54,6 +54,27 @@ particular table with `--table=Name`.
 Prefer the web UI? `EXPLORER-QUERIES.md` has the same probes as copy/paste SQL
 for the Database Explorer (`#/explorer`, needs the `data_explorer` permission).
 
+### What this venue's database says
+
+Confirmed August 2026 via the Explorer:
+
+| | |
+|---|---|
+| Staff roster | **`dbo.Employees`** |
+| Birthday column | **`DateOfBirth`** (`datetime`) |
+| Status codes | **`dbo.EmployeeStatus`** — a real lookup table, so the labels are in the database |
+| Does not exist | `TimeClock_Employees` — the time-clock module is punches and scheduling only |
+
+Every other birthday column in the schema is the guest side — `Customers`,
+`ChildCustomers`, `GroupChildren`, the waiver tables, `TicketDetails`. Don't
+point the bot at any of them.
+
+`config.example.php` already carries the confirmed table and column. It leaves a
+`TODO_CONFIRM_EMPLOYMENT_FILTER` marker where the "still employed" condition
+goes, and **the bot refuses to run until you replace it** — a greeting sent to
+somebody who left last year is worse than sending nothing, so that one can't be
+skipped by accident.
+
 **Two things to confirm before trusting the generated query**, because nothing
 else can check them for you:
 

@@ -89,6 +89,10 @@ t('CustVisits',           d_looksLikeGuestTable('CustVisits'), true);
 t('PlayerCardTrans',      d_looksLikeGuestTable('PlayerCardTrans'), true);
 t('TimeClock_Employees',  d_looksLikeGuestTable('TimeClock_Employees'), false);
 t('Employees',            d_looksLikeGuestTable('Employees'), false);
+t('CustomersWithName',    d_looksLikeGuestTable('CustomersWithName'), true);
+t('Customer_Waivers',     d_looksLikeGuestTable('Customer_Waivers'), true);
+t('GroupChildren',        d_looksLikeGuestTable('GroupChildren'), true);
+t('EmployeeStatus',       d_looksLikeGuestTable('EmployeeStatus'), false);
 
 echo "\ntable ranking\n";
 $empCols = [
@@ -110,19 +114,21 @@ $punchCols = [
     ['col' => 'PayRate', 'typ' => 'money'],
 ];
 
-$roster = d_staffScore('TimeClock_Employees', $empCols);
-$plain  = d_staffScore('Employees', $empCols);
+// `Employees` is this venue's real roster table (confirmed August 2026);
+// the prefixed variant covers other CenterEdge installs.
+$roster = d_staffScore('Employees', $empCols);
+$plain  = d_staffScore('TimeClock_Employees', $empCols);
 $party  = d_staffScore('GroupBirthdays', $partyCols);
 $cust   = d_staffScore('Customers', $custCols);
 $punch  = d_staffScore('TimeClock_Weekly', $punchCols);
 
-printf("  scores: TimeClock_Employees=%d Employees=%d TimeClock_Weekly=%d GroupBirthdays=%d Customers=%d\n",
+printf("  scores: Employees=%d TimeClock_Employees=%d TimeClock_Weekly=%d GroupBirthdays=%d Customers=%d\n",
     $roster, $plain, $punch, $party, $cust);
 
 t('roster beats the party table', $roster > $party, true);
 t('roster beats the customer table', $roster > $cust, true);
 t('roster beats the punch table', $roster > $punch, true);
-t('a plainly-named Employees table still wins', $plain > $cust, true);
+t('a prefixed roster table also wins', $plain > $cust, true);
 t('guest tables score negative', $party < 0 && $cust < 0, true);
 
 echo "\nSQL helpers\n";

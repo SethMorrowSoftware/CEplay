@@ -57,19 +57,31 @@ return [
     //                 the clean ISO form the bot prefers.
     //   email       — OPTIONAL. Only needed if mention_by_email is true.
     //
-    // The "still employed" filter belongs in this query's WHERE clause. The
-    // value below is a STARTING POINT from a typical CenterEdge time-clock
-    // schema — confirm the table name and the status value with discover.php
-    // before you trust it.
+    // The "still employed" filter belongs in this query's WHERE clause.
+    //
+    // CONFIRMED on this venue's database (August 2026): the staff roster is
+    // `dbo.Employees` and the birthday column is `DateOfBirth` (datetime).
+    // Every other birthday column in the schema belongs to the GUEST side —
+    // Customers, ChildCustomers, GroupChildren, the waiver tables — so don't
+    // be tempted by them.
+    //
+    // NOT yet confirmed: which column marks somebody as current staff. This
+    // database has a separate `EmployeeStatus` lookup table, so run
+    // discover.php (or the queries in EXPLORER-QUERIES.md) to see the codes
+    // and their labels, then replace the marker line below.
+    //
+    // The bot REFUSES TO RUN while TODO_CONFIRM_EMPLOYMENT_FILTER is still in
+    // this query — a birthday message to somebody who left last year is worse
+    // than no message, so this cannot be skipped by accident.
     'roster_sql' => <<<SQL
 SELECT EmpNo AS emp_no,
        FirstName AS first_name,
        LastName AS last_name,
-       CONVERT(VARCHAR(10), BirthDate, 120) AS birth_date
-FROM CenterEdge.dbo.TimeClock_Employees
-WHERE Stus = 1
-  AND BirthDate IS NOT NULL
-  AND YEAR(BirthDate) >= 1901
+       CONVERT(VARCHAR(10), DateOfBirth, 120) AS birth_date
+FROM CenterEdge.dbo.Employees
+WHERE DateOfBirth IS NOT NULL
+  AND YEAR(DateOfBirth) >= 1901
+  AND TODO_CONFIRM_EMPLOYMENT_FILTER  /* replace: e.g. StatusNo = 1, or TermDate IS NULL */
 SQL,
 
     // Safety cap on how many roster rows to read (a roster is hundreds, not
