@@ -328,6 +328,7 @@ if ($doDemo) {
             'icon_emoji' => (string)($cfg['bot_icon_emoji'] ?? ''),
         ]);
         bdayLog('Posted the sample announcement to ' . $channel . ' (ts ' . $ts . ').');
+        if ($slack->customizeDropped() !== '') { bdayLog('WARNING: ' . $slack->customizeDropped()); }
 
         if (!empty($cfg['add_reactions']) && $ts !== '') {
             $added = 0;
@@ -464,6 +465,15 @@ if ($doCheck) {
         $row('Slack channel', '-', $chan . ' (not checked — the token failed)');
     }
 
+    $botName = trim((string)($cfg['bot_username'] ?? ''));
+    if ($botName === '') {
+        $row('Posts as', '-', 'your Slack app\'s own name');
+    } else {
+        $row('Posts as', 'ok', $botName
+            . (($cfg['bot_icon_emoji'] ?? '') !== '' ? ' ' . $cfg['bot_icon_emoji'] : '')
+            . ' (needs chat:write.customize — --demo confirms it)');
+    }
+
     // -- GIFs -------------------------------------------------------------
     if (empty($cfg['gifs_enabled'])) {
         $row('GIFs', '-', 'disabled');
@@ -585,6 +595,7 @@ if ($testSlack) {
             'icon_emoji' => (string)($cfg['bot_icon_emoji'] ?? ''),
         ]);
         bdayLog("Test message delivered to {$channel}.");
+        if ($slack->customizeDropped() !== '') { bdayLog('WARNING: ' . $slack->customizeDropped()); }
         exit(0);
     } catch (Exception $e) {
         fwrite(STDERR, 'Slack test failed: ' . $e->getMessage() . "\n");
@@ -903,6 +914,7 @@ foreach ($messages as $idx => $m) {
         $posted = array_merge($posted, $m['people']);
         bdayLog('Posted to ' . $channel . ' (ts ' . $ts . ')'
             . ($m['gif'] !== null ? ' with a GIF from ' . $m['gif']['source'] : ' without a GIF') . '.');
+        if ($slack->customizeDropped() !== '') { bdayLog('WARNING: ' . $slack->customizeDropped()); }
 
         // Seed the reactions so nobody has to be first. Best-effort: a missing
         // reactions:write scope must not turn a delivered greeting into a

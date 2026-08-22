@@ -206,6 +206,13 @@ does it once and stores the ID so the daily run never spends a lookup.
 (`giphy_api_key`) searches fresh every time and never goes stale; the curated
 `gifs` list is the fallback for when there's no key or Giphy is down.
 
+**Its own name.** Posts show the Slack app's name by default — awkward if you
+reuse one shared app for several integrations and birthday wishes arrive from
+"monitors". Set `bot_username => 'Birthday Bot'` and `bot_icon_emoji =>
+':birthday:'` and the same token posts under that name instead. Needs
+`chat:write.customize`; without it the greeting still goes out under the app's
+own name, with a warning in the log.
+
 **Reactions.** Set `add_reactions` and the bot drops the first 🎉 🎂 on its own
 message so nobody has to break the ice.
 
@@ -318,6 +325,8 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | `giphy_rating` | `g` | `g` or `pg` only; anything else forced to `g` |
 | `gifs` | built-in list | Fallback URLs when there's no Giphy key |
 | `gif_verify` | `true` | HEAD-check before posting; skip dead links |
+| `bot_username` | `''` | Post as this name, e.g. `Birthday Bot` (`chat:write.customize`) |
+| `bot_icon_emoji` | `''` | Icon to post with, e.g. `:birthday:` |
 | `add_reactions` | `false` | Bot adds the first reactions (`reactions:write`) |
 | `mention_by_email` | `false` | Real @-mentions; needs `users:read.email` |
 | `leap_day_mode` | `feb28` | `feb28` / `mar1` / `skip` |
@@ -347,6 +356,7 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | Message posts but no GIF | `--test-gifs`; it tells you whether it's link rot or no network |
 | `Giphy returned HTTP 401/403` | Wrong or unactivated `giphy_api_key` |
 | Reactions missing | Add `reactions:write` **and reinstall the app** |
+| Posts show the wrong bot name | Add `chat:write.customize` **and reinstall**, then set `bot_username`. The log says when the override was dropped |
 | Said "Already wished" and posted nothing | Working as intended; `--force` to repost |
 | Nothing at 09:00 | `systemctl status ceplay-birthdays.service`; `journalctl -u ceplay-birthdays` |
 | Config vanished after an update | It was at `birthdays/config.php` — move it to `data/` (step 3) |

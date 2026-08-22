@@ -20,9 +20,11 @@ return [
     // -----------------------------------------------------------------------
 
     // Bot User OAuth Token from https://api.slack.com/apps -> your app ->
-    // "OAuth & Permissions". Starts with xoxb-. Required scope: chat:write
-    // (add chat:write.customize only if you set bot_username/bot_icon_emoji
-    // below, and users:read.email only if you turn on mention_by_email).
+    // "OAuth & Permissions". Starts with xoxb-. Required scope: chat:write.
+    // Optional: chat:write.customize to post under a custom name (see
+    // bot_username below), channels:read to use a #channel-name instead of an
+    // ID, reactions:write for add_reactions, users:read.email for
+    // mention_by_email.
     'slack_bot_token' => 'xoxb-your-bot-token-here',
 
     // Where to post. A channel NAME is fine — "#birthday-test" or
@@ -40,7 +42,21 @@ return [
     // Leave empty for no ping.
     'mention' => '',
 
-    // Optional display overrides (each needs the chat:write.customize scope).
+    // What the birthday posts appear as in Slack.
+    //
+    // By default they show the Slack APP's own name — which is a problem if you
+    // are reusing one shared app for several integrations, since birthday
+    // wishes would arrive from something like "monitors". Setting a name here
+    // overrides it per message, so the same token can post as "Birthday Bot".
+    //
+    //     'bot_username'   => 'Birthday Bot',
+    //     'bot_icon_emoji' => ':birthday:',
+    //
+    // Needs the chat:write.customize scope (add it to the app and REINSTALL —
+    // an existing token does not gain a scope). If the scope is missing the
+    // greeting is STILL posted, just under the app's own name, with a warning
+    // in the log — a birthday message under the wrong name beats no message.
+    // Leave both empty to use the app's name and icon.
     'bot_username'   => '',
     'bot_icon_emoji' => '',
 

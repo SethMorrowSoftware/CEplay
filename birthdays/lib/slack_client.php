@@ -23,6 +23,9 @@ class SlackClient
     /** @var string Channel ID Slack reported for the last postMessage. */
     private $lastChannelId = '';
 
+    /** @var string Why a display-name override was dropped, if it was. */
+    private $customizeDropped = '';
+
     public function __construct(string $token, int $timeout = 20)
     {
         $token = trim($token);
@@ -80,11 +83,38 @@ class SlackClient
                 $payload[$k] = $opts[$k];
             }
         }
-        $r = $this->call('chat.postMessage', $payload);
+        $this->customizeDropped = '';
+        try {
+            $r = $this->call('chat.postMessage', $payload);
+        } catch (RuntimeException $e) {
+            // Overriding the display name needs chat:write.customize. If that
+            // scope is missing, send the message WITHOUT the override rather
+            // than not at all — a greeting under the wrong bot name still beats
+            // silence on somebody's birthday. The caller logs why.
+            $customised = isset($payload['username']) || isset($payload['icon_emoji']);
+            if ($customised && strpos($e->getMessage(), 'missing_scope') !== false) {
+                $this->customizeDropped = 'The custom display name needs the chat:write.customize'
+                    . ' scope, which this token lacks — posted under the app\'s own name instead.'
+                    . ' Add the scope and REINSTALL the app, or clear bot_username.';
+                unset($payload['username'], $payload['icon_emoji']);
+                $r = $this->call('chat.postMessage', $payload);
+            } else {
+                throw $e;
+            }
+        }
         // Slack echoes the channel it actually delivered to. When a NAME was
         // passed, that response is the cheapest way to learn the ID.
         $this->lastChannelId = (string)($r['channel'] ?? '');
         return (string)($r['ts'] ?? '');
+    }
+
+    /**
+     * Empty unless the last postMessage had to drop its display-name override;
+     * otherwise the reason, ready to log.
+     */
+    public function customizeDropped(): string
+    {
+        return $this->customizeDropped;
     }
 
     /** The channel ID Slack resolved for the most recent postMessage. */
