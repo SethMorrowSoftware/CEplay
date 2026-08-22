@@ -52,8 +52,9 @@ Usage: php birthdays/birthday_bot.php [options]
   --date=YYYY-MM-DD      Treat that date as today (for testing).
   --list[=DAYS]          Print upcoming birthdays (default 60 days) and exit.
   --test-slack           Check the token and post a plain test message; exit.
-  --demo[=N]             Post a FULL sample announcement (GIF and all); exit.
-                         N = how many people share it (default 1, max 6).
+  --demo[=N]             Post ONE full sample announcement (GIF and all); exit.
+                         N = how many people share that one birthday (max 6).
+                         Run it repeatedly for different quips and GIFs.
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
@@ -309,7 +310,10 @@ if ($doDemo) {
         }
 
         // Vary the seed per run so repeated demos show different quips and GIFs.
-        $seed = 'demo|' . date('Y-m-d H:i:s');
+        // Microtime plus randomness, not the second: two demos fired back to
+        // back would otherwise land in the same second, pick the same pair, and
+        // look like the variety isn't working.
+        $seed = 'demo|' . microtime(true) . '|' . bin2hex(random_bytes(4));
         $text = bdayBuildText($sample, $msgCfg, $seed);
         $gif  = GifSource::pick($cfg, $seed);
         bdayLog($gif !== null
