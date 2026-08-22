@@ -53,6 +53,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --list[=DAYS]          Print upcoming birthdays (default 60 days) and exit.
   --test-slack           Check the token and post a test message; exit.
   --test-gifs            Check every configured GIF URL resolves; exit.
+  --check                Health-check everything and print a checklist; exit.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --config=PATH          Use a specific config file.
@@ -66,7 +67,7 @@ TXT;
  * exactly the failure this bot must not have.
  */
 const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
-                    'roster-file', 'config', 'help'];
+                    'roster-file', 'config', 'check', 'help'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -88,6 +89,7 @@ $dryRun    = !empty($flags['dry-run']);
 $force     = !empty($flags['force']);
 $testSlack = !empty($flags['test-slack']);
 $testGifs  = !empty($flags['test-gifs']);
+$doCheck   = !empty($flags['check']);
 $doList    = array_key_exists('list', $flags);
 $rosterFile = isset($flags['roster-file']) && is_string($flags['roster-file']) ? $flags['roster-file'] : '';
 $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags['list'])) : 60;
@@ -186,6 +188,124 @@ if (!in_array($leapMode, ['feb28', 'mar1', 'skip'], true)) {
 $nameStyle = (string)($cfg['name_style'] ?? 'full');
 if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
     fwrite(STDERR, "name_style must be one of: full, first, first_initial.\n");
+    exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --check: one command that answers "is this thing actually wired up?"
+//
+// Every dependency, in order, with the specific fix beside anything broken.
+// Posts nothing. The installer runs this, and it is the first thing to reach
+// for when the channel goes quiet.
+// ---------------------------------------------------------------------------
+
+if ($doCheck) {
+    $problems = [];
+    $row = function (string $label, string $status, string $detail = '') {
+        printf("  %-18s %-6s %s\n", $label, $status, $detail);
+    };
+    echo "\nBirthday bot health check\n" . str_repeat('=', 62) . "\n";
+    $row('Config', 'ok', $configPath);
+
+    // -- MSSQL ------------------------------------------------------------
+    $drivers = MssqlClient::availableDrivers();
+    if (!$drivers) {
+        $row('MSSQL driver', 'FAIL', 'none installed — run via birthdays/run.sh');
+        $problems[] = 'No MSSQL driver. Run the bot through birthdays/run.sh so it uses the pdo_dblib image.';
+    } else {
+        $row('MSSQL driver', 'ok', implode(', ', $drivers));
+        if (!MssqlClient::isConfigured()) {
+            $row('MSSQL config', 'FAIL', 'not set up');
+            $problems[] = 'MSSQL is not configured. Set it on the Go-Kart Labor page -> Settings.';
+        } else {
+            $st = MssqlClient::settings();
+            $row('MSSQL config', 'ok', $st['host'] . ':' . $st['port'] . '/' . $st['database']);
+            $rosterSql = trim((string)($cfg['roster_sql'] ?? ''));
+            if (stripos($rosterSql, 'TODO_CONFIRM_EMPLOYMENT_FILTER') !== false) {
+                $row('Roster query', 'FAIL', 'employment filter not filled in');
+                $problems[] = 'roster_sql still has TODO_CONFIRM_EMPLOYMENT_FILTER in it.';
+            } else {
+                try {
+                    $c = new MssqlClient();
+                    $c->setTimeout(max(5, (int)($cfg['query_timeout'] ?? 30)));
+                    $t0 = microtime(true);
+                    $rr = $c->rows($rosterSql, max(1, (int)($cfg['roster_max_rows'] ?? 5000)));
+                    $ms = (int)round((microtime(true) - $t0) * 1000);
+                    $nn = bdayNormalizeRoster($rr, [
+                        'today'              => $today,
+                        'ignore_birth_dates' => (array)($cfg['ignore_birth_dates'] ?? []),
+                        'exclude_emp_nos'    => (array)($cfg['exclude_emp_nos'] ?? []),
+                        'exclude_names'      => (array)($cfg['exclude_names'] ?? []),
+                    ]);
+                    $n = count($nn['people']);
+                    if ($n === 0) {
+                        $row('Roster query', 'FAIL', count($rr) . ' rows, but 0 usable birthdays');
+                        $problems[] = 'The roster query returns rows but no usable birth dates — check the birth_date alias.';
+                    } else {
+                        $row('Roster query', 'ok', $n . ' current employees with a birthday (' . $ms . 'ms)');
+                        $up = bdayUpcoming($nn['people'], $today, 60, $leapMode);
+                        $next = $up ? array_key_first($up) : null;
+                        $today_hits = bdayCelebrants($nn['people'], $today, $leapMode);
+                        $row('Today', $today_hits ? 'ok' : '-',
+                            $today_hits ? count($today_hits) . ' birthday(s)' : 'nobody today');
+                        $row('Next birthday', $next ? 'ok' : '-',
+                            $next ? $next . ' (' . count($up[$next]) . ' person/people)' : 'none in 60 days');
+                    }
+                } catch (Exception $e) {
+                    $row('Roster query', 'FAIL', substr($e->getMessage(), 0, 60));
+                    $problems[] = 'Could not run the roster query: ' . $e->getMessage();
+                }
+            }
+        }
+    }
+
+    // -- Slack ------------------------------------------------------------
+    try {
+        $sc = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
+        $who = $sc->authTest();
+        $row('Slack token', 'ok', 'workspace "' . $who['team'] . '", bot "' . $who['user'] . '"');
+    } catch (Exception $e) {
+        $row('Slack token', 'FAIL', substr($e->getMessage(), 0, 60));
+        $problems[] = 'Slack: ' . $e->getMessage();
+    }
+    $chan = trim((string)($cfg['slack_channel'] ?? ''));
+    if ($chan === '' || $chan === 'C0123456789') {
+        $row('Slack channel', 'FAIL', 'not set');
+        $problems[] = 'slack_channel is not set to a real channel ID.';
+    } else {
+        // Only a real post proves the bot can write here, and --check posts
+        // nothing — so this confirms the shape and defers the rest.
+        $row('Slack channel', 'ok', $chan . ' (use --test-slack to prove delivery)');
+    }
+
+    // -- GIFs -------------------------------------------------------------
+    if (empty($cfg['gifs_enabled'])) {
+        $row('GIFs', '-', 'disabled');
+    } else {
+        $gt = max(2, (int)($cfg['gif_timeout'] ?? 6));
+        $key = trim((string)($cfg['giphy_api_key'] ?? ''));
+        $pick = GifSource::pick($cfg, 'health-check');
+        if ($pick !== null) {
+            $row('GIFs', 'ok', $pick['source']);
+        } elseif (!GifSource::internetReachable($gt)) {
+            $row('GIFs', 'WARN', 'no outbound network from this host');
+            $problems[] = 'This host cannot reach the internet, so GIFs (and Slack) will not work.';
+        } else {
+            $row('GIFs', 'WARN', 'none resolved — run --test-gifs'
+                . ($key === '' ? ' (or set giphy_api_key)' : ''));
+        }
+    }
+
+    echo str_repeat('=', 62) . "\n";
+    if (!$problems) {
+        echo "Everything checks out.\n\n";
+        exit(0);
+    }
+    echo count($problems) . " problem(s) to fix:\n";
+    foreach ($problems as $i => $pr) {
+        echo '  ' . ($i + 1) . '. ' . $pr . "\n";
+    }
+    echo "\n";
     exit(1);
 }
 

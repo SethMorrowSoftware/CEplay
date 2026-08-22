@@ -13,7 +13,9 @@ single-statement guard the Go-Kart Labor and Card Loads reports use.
 
 ```
 birthdays/
+├─ install.sh             One-command installer (also --uninstall)
 ├─ run.sh                 Run any command inside the MSSQL-enabled container
+├─ slack-app-manifest.yml Paste into Slack to create the app with its scopes
 ├─ birthday_bot.php       The daily runner
 ├─ discover.php           Re-derive the roster query from the live database
 ├─ config.example.php     Copy to data/birthday_config.php and fill in
@@ -27,150 +29,122 @@ birthdays/
 
 # Installing
 
-Five steps, about fifteen minutes. Everything runs on the venue server.
+Two commands.
 
-## 1. Get the code onto the server
+## 1. Put the code on the server
 
-The bot lives on the branch `claude/birthday-slackbot-employee-db-r69vnu`.
-`update.sh` pulls whichever branch the source clone is on, then syncs it into
-the live app directory.
-
-**To try it before merging** — check the branch out in the source clone:
+The bot lives on the branch `claude/birthday-slackbot-employee-db-r69vnu`, so
+point the source clone at it and deploy the normal way:
 
 ```bash
 cd /var/persist/pause-groups-src
 sudo git fetch origin
 sudo git checkout claude/birthday-slackbot-employee-db-r69vnu
-sudo bash /var/persist/pause-groups-src/update.sh
-```
-
-**Once you're happy with it**, merge the branch to `main`, put the source clone
-back on `main`, and from then on the normal `sudo bash update.sh` carries the
-bot along with every other update:
-
-```bash
-cd /var/persist/pause-groups-src
-sudo git checkout main && sudo git pull
 sudo bash update.sh
 ```
 
-Either way, confirm the files landed:
+(Once you're happy with it, merge the branch to `main` and put the clone back
+on `main` — after that the bot rides along with every routine `update.sh`.)
+
+## 2. Run the installer
 
 ```bash
-ls /var/persist/pause-groups/birthdays/
+sudo bash /var/persist/pause-groups/birthdays/install.sh
 ```
 
-> `update.sh` also rebuilds the `pdo_dblib` overlay image the bot needs to read
-> the roster. If you've never run the Go-Kart Labor report, that build is what
-> makes MSSQL work at all.
+That's it. It asks a handful of questions, then does everything else:
 
-## 2. Create the Slack bot
+- checks podman, the MSSQL driver image and the app's database connection,
+  and stops with the exact fix if any are missing;
+- takes your Slack token and channel, and **verifies both before writing
+  anything**;
+- writes the config to the right place with the right owner and permissions;
+- runs a full health check and offers a test post;
+- installs and starts the daily timer at whatever time you choose.
 
-1. <https://api.slack.com/apps> → **Create New App** → **From scratch**.
-2. Name it (e.g. `Castle Birthdays`), pick the workspace.
-3. **OAuth & Permissions → Bot Token Scopes** → add **`chat:write`**.
-   - `chat:write.public` too, if you want it to post without being invited.
-   - `reactions:write` if you want the bot to add the first 🎉 itself.
-   - `chat:write.customize` only for `bot_username`/`bot_icon_emoji`.
-   - `users:read.email` only for `mention_by_email`.
-4. **Install to Workspace**, then copy the **Bot User OAuth Token** (`xoxb-…`).
-5. In Slack, invite it to the channel: `/invite @Castle Birthdays`
-6. Get the **channel ID**: channel name → *View channel details* → the ID is at
-   the bottom (`C0123456789`). The bot needs the ID, not the name.
+It is safe to re-run — use it later to change the channel, the posting time or
+the name style. `--uninstall` removes the timer and leaves your config alone.
 
-> Adding a scope later means **reinstalling** the app — an existing token does
-> not gain it. The GIF needs no extra scope; it's a Block Kit image block, not
-> an upload.
+### What it will ask you
 
-## 3. Configure
+| | |
+|---|---|
+| **Slack bot token** | `xoxb-…`. It points you at `slack-app-manifest.yml` — paste that into **Create New App → From an app manifest** and Slack sets the name and every permission for you, so there is no scope-hunting. |
+| **Channel** | Paste the channel link straight out of Slack (right-click the channel → *Copy link*) — it pulls the ID out for you. A bare `C0123456789` works too. |
+| **How names appear** | Full name, first name only, or first + initial. |
+| **Giphy API key** | Optional. A [free key](https://developers.giphy.com) gets a fresh GIF daily instead of a fixed list. Press Enter to skip. |
+| **Reactions** | Whether the bot adds the first 🎉 to its own message. |
+| **Posting time** | Defaults to 09:00. |
 
-**The config goes in `data/`, not in `birthdays/`.** `update.sh` syncs the repo
-over the install directory with `rsync --delete`, and the config is gitignored —
-so a copy at `birthdays/config.php` would be deleted by the next deploy, taking
-your Slack token with it. `data/` is excluded from that sync and gets the right
-ownership automatically.
+Nothing else needs editing. **`roster_sql` is already correct for this venue** —
+`dbo.Employees`, `DateOfBirth`, `EmpStatus = 1`, all verified against the live
+database.
+
+### Is it working?
+
+```bash
+sudo bash birthdays/run.sh --check
+```
+
+One command, one checklist: config, MSSQL driver, database connection, roster
+query (with a headcount), Slack token, GIF source, today's birthdays and the
+next one coming up. Anything broken is listed with its fix. Posts nothing.
+
+### If you'd rather do it by hand
+
+<details>
+<summary>Manual install</summary>
 
 ```bash
 cd /var/persist/pause-groups
+
+# 1. Config — in data/, NOT in birthdays/. update.sh syncs the repo over the
+#    install dir with `rsync --delete`, and this file is gitignored, so a copy
+#    beside the code gets deleted by the next deploy.
 sudo cp birthdays/config.example.php data/birthday_config.php
-sudo chown 33:33 data/birthday_config.php     # the container runs as uid 33
-sudo chmod 600 data/birthday_config.php       # it holds the bot token
-sudo vi data/birthday_config.php
-```
+sudo chown 33:33 data/birthday_config.php    # the container runs as uid 33
+sudo chmod 600 data/birthday_config.php      # it holds the bot token
+sudo vi data/birthday_config.php             # set slack_bot_token + slack_channel
 
-Fill in two things:
-
-```php
-'slack_bot_token' => 'xoxb-…',        // from step 2
-'slack_channel'   => 'C0123456789',   // the channel ID
-```
-
-**`roster_sql` is already correct for this venue** — `dbo.Employees`,
-`DateOfBirth`, `EmpStatus = 1`, all verified against the live database. Leave it
-alone unless the POS schema changes.
-
-Optional but recommended: a free [Giphy API key](https://developers.giphy.com)
-in `giphy_api_key` gets you a fresh GIF every day instead of a fixed list.
-
-## 4. Test before switching it on
-
-`run.sh` runs each command inside the MSSQL-enabled container for you. The
-first three post **nothing**.
-
-```bash
-cd /var/persist/pause-groups
-
-# Does the roster query return sensible people?
+# 2. Check it
+sudo bash birthdays/run.sh --check
 sudo bash birthdays/run.sh --list
-
-# What would today's message say? (shows the exact quip and GIF)
 sudo bash birthdays/run.sh --dry-run
-
-# Do the GIF URLs resolve from this network?
-sudo bash birthdays/run.sh --test-gifs
-
-# Is the token good and the channel reachable? (posts ONE test message)
 sudo bash birthdays/run.sh --test-slack
-```
 
-`--list` is the one that catches a problem fastest. You should see real staff
-names on plausible dates. If it shows forty people on one date, something is
-pointed at the wrong column.
-
-To preview a specific day: `sudo bash birthdays/run.sh --dry-run --date=2026-12-26`
-
-## 5. Schedule it
-
-```bash
-cd /var/persist/pause-groups
+# 3. Timer
 sudo install -m 0644 birthdays/systemd/ceplay-birthdays.service /etc/systemd/system/
 sudo install -m 0644 birthdays/systemd/ceplay-birthdays.timer   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ceplay-birthdays.timer
-
-systemctl list-timers ceplay-birthdays.timer     # confirm the next firing
 ```
 
-Posts at **09:00** local. To move it, edit `OnCalendar` in
-`/etc/systemd/system/ceplay-birthdays.timer` and
+Change the posting time by editing `OnCalendar` in the timer unit, then
 `sudo systemctl daemon-reload`.
-
-`Persistent=true` means a machine that was off at 09:00 runs the job when it
-boots, so an overnight outage doesn't cost anyone their message. That's safe
-because of the state file: it will not post twice for the same day.
-
-Watch it work:
-
-```bash
-sudo systemctl start ceplay-birthdays.service   # run it right now
-journalctl -u ceplay-birthdays -n 50            # or: tail data/birthdays.log
-```
 
 Not on Fedora CoreOS? Plain cron works identically:
 
 ```cron
 0 9 * * * cd /path/to/ceplay && /usr/bin/php birthdays/birthday_bot.php >> data/birthdays.log 2>&1
 ```
+
+</details>
+
+### Day to day
+
+```bash
+sudo bash birthdays/run.sh --check         # is everything still wired up?
+sudo bash birthdays/run.sh --list          # upcoming birthdays
+sudo bash birthdays/run.sh --dry-run       # today's message, posting nothing
+sudo systemctl start ceplay-birthdays      # run it right now
+journalctl -u ceplay-birthdays -n 50       # or: tail data/birthdays.log
+sudo bash birthdays/install.sh             # change channel / time / options
+sudo bash birthdays/install.sh --uninstall # stop it posting
+```
+
+`Persistent=true` on the timer means a machine that was off at 09:00 runs the
+job when it boots, so an overnight outage doesn't cost anyone their message.
+That's safe because of the state file: it will not post twice for the same day.
 
 ---
 
@@ -266,6 +240,7 @@ probes as copy/paste SQL for the Database Explorer.
 
 | | |
 |---|---|
+| `--check` | Health-check everything and print a checklist. Posts nothing |
 | `--list[=DAYS]` | Upcoming birthdays (default 60 days). Posts nothing |
 | `--dry-run` | Build today's message and print it. Posts nothing |
 | `--date=YYYY-MM-DD` | Treat that date as today |

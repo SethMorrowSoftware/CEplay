@@ -1,0 +1,53 @@
+# Slack app manifest for the birthday bot.
+#
+# Instead of creating an app and clicking through the scope list, paste this in:
+#
+#   1. https://api.slack.com/apps  ->  Create New App  ->  From an app manifest
+#   2. Pick your workspace, choose YAML, paste this whole file, Next, Create.
+#   3. Install to Workspace -> Allow.
+#   4. OAuth & Permissions -> copy the "Bot User OAuth Token" (starts xoxb-).
+#
+# That token is what birthdays/install.sh asks you for.
+#
+# Change `name` and `display_name` to whatever you want the bot called in
+# Slack — everything else can stay as it is.
+display_information:
+  name: Castle Birthdays
+  description: Wishes the team a happy birthday each morning.
+  long_description: >-
+    Posts a birthday greeting each morning for anyone on the employee roster
+    whose birthday is today and who is still employed. Reads the roster from
+    the CenterEdge POS database; it does not read any Slack messages, and it
+    only ever posts to the one channel it is configured for.
+  background_color: "#3b1d52"
+
+features:
+  bot_user:
+    display_name: Castle Birthdays
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Post the birthday message. The only scope that is strictly required.
+      - chat:write
+      # Post without being invited to the channel first. Convenient; drop it
+      # if you would rather explicitly /invite the bot.
+      - chat:write.public
+      # Let the bot add the first :tada: to its own message, so nobody has to
+      # break the ice. Only used when add_reactions is on.
+      - reactions:write
+      #
+      # NOT requested, on purpose:
+      #   users:read.email  — only needed to turn names into real @-mentions
+      #                       (mention_by_email). It grants read access to every
+      #                       member's email address, so it is left out unless
+      #                       you actually want that feature. Adding it later
+      #                       means reinstalling the app.
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+  # The bot never reads anything from Slack, so there are no event
+  # subscriptions, no slash commands and no interactivity to configure.
