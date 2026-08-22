@@ -20,9 +20,11 @@ return [
     // -----------------------------------------------------------------------
 
     // Bot User OAuth Token from https://api.slack.com/apps -> your app ->
-    // "OAuth & Permissions". Starts with xoxb-. Required scope: chat:write
-    // (add chat:write.customize only if you set bot_username/bot_icon_emoji
-    // below, and users:read.email only if you turn on mention_by_email).
+    // "OAuth & Permissions". Starts with xoxb-. Required scope: chat:write.
+    // Optional: chat:write.customize to post under a custom name (see
+    // bot_username below), channels:read to use a #channel-name instead of an
+    // ID, reactions:write for add_reactions, users:read.email for
+    // mention_by_email.
     'slack_bot_token' => 'xoxb-your-bot-token-here',
 
     // Where to post. A channel NAME is fine — "#birthday-test" or
@@ -40,7 +42,21 @@ return [
     // Leave empty for no ping.
     'mention' => '',
 
-    // Optional display overrides (each needs the chat:write.customize scope).
+    // What the birthday posts appear as in Slack.
+    //
+    // By default they show the Slack APP's own name — which is a problem if you
+    // are reusing one shared app for several integrations, since birthday
+    // wishes would arrive from something like "monitors". Setting a name here
+    // overrides it per message, so the same token can post as "Birthday Bot".
+    //
+    //     'bot_username'   => 'Birthday Bot',
+    //     'bot_icon_emoji' => ':birthday:',
+    //
+    // Needs the chat:write.customize scope (add it to the app and REINSTALL —
+    // an existing token does not gain a scope). If the scope is missing the
+    // greeting is STILL posted, just under the app's own name, with a warning
+    // in the log — a birthday message under the wrong name beats no message.
+    // Leave both empty to use the app's name and icon.
     'bot_username'   => '',
     'bot_icon_emoji' => '',
 
@@ -128,23 +144,37 @@ SQL,
     // Used by the {venue} placeholder.
     'venue_label' => 'The Castle Fun Center',
 
-    // The bot ships a POOL of arcade-flavoured birthday messages (see
-    // BDAY_FUN_SINGLE / BDAY_FUN_MULTI in lib/birthday_lib.php) and picks one
-    // per day. The pick is deterministic from the date and the people in it,
-    // so --dry-run shows exactly what will post and a re-run never swaps it.
+    // The message is composed from TWO pools: a greeting line and a flavour
+    // line, drawn independently and joined. That is 14 x 51 = 714 different
+    // single-person messages out of 65 written lines — adding one good flavour
+    // line adds fourteen new messages. See BDAY_GREETINGS / BDAY_FLAVORS in
+    // lib/birthday_lib.php (and the BDAY_MULTI_* pools for shared birthdays).
     //
-    // To use your own lines, uncomment these and write as many as you like.
-    // Placeholders: {names} {count} {venue}. Do NOT add an age or a birth year.
+    // The pick is deterministic from the date and the people celebrating, so
+    // --dry-run shows exactly what will post and a re-run never swaps it.
     //
-    // 'messages_single' => [
+    // To add your own lines, uncomment these. A greeting MUST contain {names};
+    // a flavour line must stand on its own after any greeting, so write it as a
+    // complete sentence that never refers back to the line above. Placeholders:
+    // {names} {count} {venue}. Never add an age or a birth year.
+    //
+    // 'greetings' => [
     //     ":birthday: Happy Birthday, {names}! :tada:",
-    //     ":tada: It's {names}'s birthday! Hope it's a good one. :birthday:",
     // ],
-    // 'messages_multi' => [
-    //     ":birthday: {count} birthdays at {venue} today — Happy Birthday, {names}! :tada:",
+    // 'flavors' => [
+    //     "Hope the karts are fast and the tickets plentiful.",
+    //     "Somebody put a candle in the pizza.",
     // ],
+    // 'multi_greetings' => [...],  // must contain {names}
+    // 'multi_flavors'   => [...],  // must read as plural
     //
-    // Or pin ONE exact wording, which overrides the pool entirely:
+    // An empty 'flavors' => [] posts the greeting alone.
+    //
+    // Or replace composition entirely with whole templates:
+    // 'messages_single' => [":birthday: Happy Birthday, {names}!"],
+    // 'messages_multi'  => [":birthday: Happy Birthday, {names}!"],
+    //
+    // Or pin ONE exact wording, which overrides everything above:
     // 'message_single' => ":birthday: Happy Birthday, {names}!",
     // 'message_multi'  => ":birthday: Happy Birthday, {names}!",
 

@@ -44,6 +44,10 @@ oauth_config:
       # The same, for a private channel — and only for private channels the
       # bot has actually been invited to.
       - groups:read
+      # Post under a custom display name and icon, so birthday messages can
+      # show as "Birthday Bot" even when the app itself is a shared one used
+      # for other things. Only used when bot_username is set.
+      - chat:write.customize
       #
       # NOT requested, on purpose:
       #   users:read.email  — only needed to turn names into real @-mentions

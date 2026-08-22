@@ -83,10 +83,12 @@ database.
 ### Seeing what it actually looks like
 
 ```bash
-sudo bash birthdays/run.sh --demo
+sudo bash birthdays/run.sh --demo      # one person
+sudo bash birthdays/run.sh --demo=3    # three sharing a day
 ```
 
-Posts a complete announcement to the channel — the quip, the GIF, the footer
+A shared birthday uses a different set of pools and joins the names, so it's
+worth previewing separately. Posts a complete announcement to the channel — the quip, the GIF, the footer
 and the reactions — under a placeholder name, labelled as a preview. Nothing is
 recorded and no employee data is used, so it's safe to run whenever you want to
 show someone the format. Run it again for a different quip and GIF.
@@ -175,11 +177,26 @@ That's safe because of the state file: it will not post twice for the same day.
 
 ## The fun bits
 
-**Rotating messages.** A pool of birthday lines written around this venue's own
-attractions — the go-karts, Laser Tag, Free Fall, the skee-ball lanes, the
-redemption counter — plus a separate pool for days when several people are
-celebrating. Write your own with `messages_single` / `messages_multi`, or pin
-one fixed wording with `message_single` / `message_multi`.
+**Rotating messages.** Each post is composed from two pools — a greeting and a
+flavour line, drawn independently and joined — so **65 written lines produce 714
+different messages** (and 200 more for shared birthdays). The jokes come from
+this venue's own floor: the karts and the Spiral, Laser Tag, Free Fall, the
+Dragon Coaster, the cages, the driving range, mini golf, the rock wall,
+Ballocity, the zipline, skee-ball, Ice Ball, the cranes, Tin Can Alley and the
+redemption counter.
+
+> :sparkles: *Mason Quinones* has a birthday today! :birthday:
+> Tin Can Alley doesn't stand a chance.
+
+> :birthday: Raise a slice for *Mason Quinones*! :cake:
+> Top of the leaderboard, and nobody beats it.
+
+Add your own with `greetings` / `flavors` (and `multi_greetings` /
+`multi_flavors`) — one new flavour line is fourteen new messages. A greeting
+must contain `{names}`; a flavour line has to stand alone after *any* greeting,
+so write complete sentences. `messages_single` / `messages_multi` replace
+composition with whole templates, and `message_single` / `message_multi` pin one
+exact wording.
 
 **Channel by name.** `slack_channel` takes `#birthday-test` as happily as a
 `C0123456789`. Names are resolved through `conversations.list`; the installer
@@ -188,6 +205,13 @@ does it once and stores the ID so the daily run never spends a lookup.
 **Animated GIFs**, as a Slack image block. Two sources: a free Giphy key
 (`giphy_api_key`) searches fresh every time and never goes stale; the curated
 `gifs` list is the fallback for when there's no key or Giphy is down.
+
+**Its own name.** Posts show the Slack app's name by default — awkward if you
+reuse one shared app for several integrations and birthday wishes arrive from
+"monitors". Set `bot_username => 'Birthday Bot'` and `bot_icon_emoji =>
+':birthday:'` and the same token posts under that name instead. Needs
+`chat:write.customize`; without it the greeting still goes out under the app's
+own name, with a warning in the log.
 
 **Reactions.** Set `add_reactions` and the bot drops the first 🎉 🎂 on its own
 message so nobody has to break the ice.
@@ -274,7 +298,7 @@ probes as copy/paste SQL for the Database Explorer.
 | `--date=YYYY-MM-DD` | Treat that date as today |
 | `--test-gifs` | Check every GIF URL resolves |
 | `--test-slack` | Check the token and post one plain test message |
-| `--demo` | Post a full sample announcement — quip, GIF, reactions |
+| `--demo[=N]` | Post a full sample announcement; `N` = people sharing it (max 6) |
 | `--force` | Post even if today's greeting already went out |
 | `--config=PATH` | Use a specific config file |
 | `--roster-file=PATH` | Read the roster from JSON instead of MSSQL (testing) |
@@ -301,6 +325,8 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | `giphy_rating` | `g` | `g` or `pg` only; anything else forced to `g` |
 | `gifs` | built-in list | Fallback URLs when there's no Giphy key |
 | `gif_verify` | `true` | HEAD-check before posting; skip dead links |
+| `bot_username` | `''` | Post as this name, e.g. `Birthday Bot` (`chat:write.customize`) |
+| `bot_icon_emoji` | `''` | Icon to post with, e.g. `:birthday:` |
 | `add_reactions` | `false` | Bot adds the first reactions (`reactions:write`) |
 | `mention_by_email` | `false` | Real @-mentions; needs `users:read.email` |
 | `leap_day_mode` | `feb28` | `feb28` / `mar1` / `skip` |
@@ -330,6 +356,7 @@ In `data/birthday_config.php`; see `config.example.php` for the annotated form.
 | Message posts but no GIF | `--test-gifs`; it tells you whether it's link rot or no network |
 | `Giphy returned HTTP 401/403` | Wrong or unactivated `giphy_api_key` |
 | Reactions missing | Add `reactions:write` **and reinstall the app** |
+| Posts show the wrong bot name | Add `chat:write.customize` **and reinstall**, then set `bot_username`. The log says when the override was dropped |
 | Said "Already wished" and posted nothing | Working as intended; `--force` to repost |
 | Nothing at 09:00 | `systemctl status ceplay-birthdays.service`; `journalctl -u ceplay-birthdays` |
 | Config vanished after an update | It was at `birthdays/config.php` — move it to `data/` (step 3) |

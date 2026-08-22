@@ -221,6 +221,22 @@ read -rp "  Giphy API key [skip]: " GIPHY
 GIPHY="$(echo "${GIPHY:-}" | tr -d '[:space:]')"
 
 echo
+echo "  Birthday posts appear under your Slack app's own name. If that app is"
+echo "  shared with other integrations (\"monitors\", say), you can have these"
+echo "  posts show a different name instead."
+echo -e "${DIM}    Needs the chat:write.customize scope on the app. Without it the${NC}"
+echo -e "${DIM}    greeting still posts — just under the app's own name.${NC}"
+read -rp "  Display name [leave blank to keep the app's name]: " BOTNAME
+BOTNAME="$(echo "${BOTNAME:-}" | sed 's/^ *//;s/ *$//')"
+BOTICON=""
+if [[ -n "$BOTNAME" ]]; then
+    read -rp "  Icon emoji [:birthday:]: " BOTICON
+    BOTICON="$(echo "${BOTICON:-:birthday:}" | tr -d '[:space:]')"
+    # Slack wants it colon-wrapped; accept it typed either way.
+    [[ "$BOTICON" == :*: ]] || BOTICON=":${BOTICON//:/}:"
+fi
+
+echo
 read -rp "  Should the bot add the first 🎉 reaction itself? [Y/n] " rx
 if [[ "${rx,,}" == "n" ]]; then ADD_REACTIONS="false"; else ADD_REACTIONS="true"; fi
 
@@ -231,6 +247,8 @@ PTIME="${PTIME:-09:00}"
 
 set_key name_style    "'${NAME_STYLE}'"
 set_key add_reactions "${ADD_REACTIONS}"
+set_key bot_username   "'${BOTNAME}'"
+set_key bot_icon_emoji "'${BOTICON}'"
 [[ -n "$GIPHY" ]] && set_key giphy_api_key "'${GIPHY}'"
 chown 33:33 "$CONFIG"; chmod 600 "$CONFIG"
 ok "Config written, owned by uid 33, mode 600"
@@ -313,6 +331,7 @@ NEXT="$(systemctl list-timers "$TIMER" --no-pager --no-legend 2>/dev/null | awk 
 hdr "Done"
 cat <<EOF
   Posting to      ${CHAN} at ${PTIME} every day
+  Shows up as     ${BOTNAME:-your Slack app's own name}
   Next run        ${NEXT:-see: systemctl list-timers ${TIMER}}
   Config          ${CONFIG}
   Log             ${DATA_DIR}/birthdays.log

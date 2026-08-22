@@ -360,42 +360,142 @@ function bdayJoinNames(array $parts): string
 /**
  * Fun message pools.
  *
- * The venue is an arcade / go-kart / laser-tag park, so the jokes are drawn
- * from its own attractions — the names come straight out of the card system
- * (Go-Karts, Laser Tag, Free Fall, Dragon Coaster, Ballocity, the batting
- * cages, mini golf, the redemption counter). A generic "Happy Birthday!" is
- * fine; sounding like the place you actually work is better.
+ * A greeting and a flavour line are drawn SEPARATELY and joined, so the variety
+ * is multiplicative rather than additive: 14 greetings x 52 flavours is 728
+ * distinct single-person messages, where a flat list of whole templates would
+ * have to be 728 entries long to match it. Adding one good flavour line adds
+ * fourteen new messages.
+ *
+ * That only works if every flavour line stands on its own after ANY greeting —
+ * so each is a complete sentence that never refers back to the line above it.
+ * Keep that discipline when adding more.
+ *
+ * The jokes come from this venue's own floor: the karts and the Spiral, Laser
+ * Tag, Free Fall, the Dragon Coaster, the batting cages, the driving range,
+ * mini golf, the rock wall, Ballocity, the zipline, skee-ball and Ice Ball, the
+ * crane machines, Tin Can Alley, and the redemption counter. Attraction names
+ * are the ones the card system actually uses.
  *
  * Placeholders: {names} {count} {venue}. Deliberately no {age} and no birth
  * year — the roster holds full dates of birth, a fifth of this staff are
  * minors, and a channel is not the place to publish either.
  *
- * Which one gets used is DETERMINISTIC per day and per person (see
+ * Which pair gets used is DETERMINISTIC per day and per person (see
  * bdaySeedFor), so --dry-run shows the message that will actually be posted
  * and a re-run never silently swaps it.
  */
-const BDAY_FUN_SINGLE = [
-    ":birthday: Happy Birthday, {names}! :tada:\nHope today's an all-time high score.",
-    ":tada: It's {names}'s birthday! :birthday:\nUnlimited continues today — no quarters needed. :joystick:",
-    ":birthday: Happy Birthday, {names}! :racing_car:\nMay every light be green and may you get the fast kart.",
-    ":cake: Happy Birthday, {names}! :sparkles:\nMay the claw be generous and the tickets rain down. :teddy_bear:",
-    ":birthday: Happy Birthday, {names}! :bowling:\nYou get the good skee-ball lane today. House rules.",
-    ":tada: {names} is celebrating today! :birthday:\nDirect hits only in Laser Tag. :dart:",
-    ":balloon: Happy Birthday, {names}! :birthday:\nEvery putt a hole in one, every swipe a jackpot. :golf:",
-    ":birthday: Happy Birthday to {names}! :star2:\nTop of the leaderboard today, no argument. :trophy:",
-    ":cake: It's {names}'s birthday! :confetti_ball:\nZipline's yours, the line's empty, and the pizza's hot.",
-    ":birthday: Happy Birthday, {names}! :dizzy:\nFree Fall, Dragon Coaster, cake. In that order.",
-    ":tada: Happy Birthday, {names}! :birthday:\nSlow pitches in the cage and top-shelf prizes at the counter.",
-    ":confetti_ball: Big day for {names}! :birthday:\nEveryone at {venue} hopes it's a good one.",
+const BDAY_GREETINGS = [
+    ":birthday: Happy Birthday, {names}! :tada:",
+    ":tada: It's {names}'s birthday! :birthday:",
+    ":cake: Happy Birthday, {names}! :sparkles:",
+    ":confetti_ball: Big day for {names}! :birthday:",
+    ":balloon: Happy Birthday, {names}! :birthday:",
+    ":birthday: {names} is celebrating today! :tada:",
+    ":star2: Happy Birthday, {names}! :birthday:",
+    ":partying_face: Happy Birthday, {names}! :tada:",
+    ":cake: It's {names}'s birthday! :confetti_ball:",
+    ":birthday: Everybody wish {names} a happy birthday! :tada:",
+    ":tada: Happy Birthday to {names}! :birthday:",
+    ":sparkles: {names} has a birthday today! :birthday:",
+    ":birthday: Raise a slice for {names}! :cake:",
+    ":trophy: Happy Birthday, {names}! :birthday:",
 ];
 
-const BDAY_FUN_MULTI = [
-    ":birthday: {count} birthdays at {venue} today! :tada:\nHappy Birthday, {names}!",
-    ":tada: {count}-player birthday mode: {names}! :birthday:\nHappy Birthday from all of us!",
-    ":confetti_ball: {count} of us are celebrating today — Happy Birthday, {names}! :birthday:\nHigh scores all round.",
-    ":cake: Co-op birthday unlocked: {names}! :video_game:\nThat's {count} good reasons for cake.",
-    ":birthday: Happy Birthday, {names}! :tada:\n{count} celebrations, one very good day at {venue}.",
-    ":balloon: Busy day at the party table — Happy Birthday to {names}! :birthday:\nAll {count} of you. :confetti_ball:",
+const BDAY_FLAVORS = [
+    // Karts
+    "All green lights on the Spiral today.",
+    "May you get the fast kart, and may nobody be in your mirrors.",
+    "The good kart. You know the one.",
+    "May every kart start on the first turn of the key.",
+    "Clear track, clean lap, no yellow flags.",
+    "May you never get the sticky steering wheel.",
+    // Laser Tag / Free Fall / coaster / zipline / rock wall
+    "Direct hits only in Laser Tag.",
+    "Take the good headset. You've earned it.",
+    "Free Fall drops on cue every single time today.",
+    "Dragon Coaster runs all shift without a hiccup.",
+    "The zipline's fast and the harness actually fits.",
+    "Top buzzer on the rock wall, first climb.",
+    // Arcade / redemption
+    "May the claw be generous and the tickets rain down.",
+    "You get the good skee-ball lane today. House rules.",
+    "Ice Ball's warmed up and every roll is a hundred.",
+    "Every crane grabs on the first try today.",
+    "Tin Can Alley doesn't stand a chance.",
+    "The Wheel lands on your number every spin.",
+    "May every token you touch turn into tickets.",
+    "May the ticket counter round up, just this once.",
+    "Prize counter's fully stocked, and the top shelf is in play.",
+    "Ms. Pac-Man says happy birthday too.",
+    "Hope today's an all-time high score.",
+    "Unlimited continues today — no quarters needed.",
+    "Extra life. No continues needed.",
+    "Top of the leaderboard, and nobody beats it.",
+    "The arcade's yours for five minutes. Go.",
+    "May your air hockey puck never once leave the table.",
+    // Cages / range / golf
+    "Slow pitches in the cage and top-shelf prizes at the counter.",
+    "Batting cage on slow-pitch all day.",
+    "The driving range bucket is bottomless today.",
+    "Every putt a hole in one.",
+    "May the mini golf windmill show you mercy.",
+    // Working here
+    "May every radio call today be somebody else's.",
+    "Nobody's putting you on ball-pit duty today.",
+    "Ballocity is officially somebody else's problem.",
+    "Somebody else can run the party room today.",
+    "Zero re-racks, zero jams, zero radio calls.",
+    "Hope the whole day runs like a slow Tuesday.",
+    "May every reader beep on the first tap.",
+    "Not one card gets declined on your watch today.",
+    "First in line for everything.",
+    "You've earned the golf cart today.",
+    "May your shift fly by and the cake last.",
+    "Nobody spills anything within ten feet of you.",
+    // Cake
+    "Cake first, karts after. We don't make the rules.",
+    "Hope somebody hid a cupcake in the break room for you.",
+    "There had better be cake. Somebody check.",
+    "Free Fall, Dragon Coaster, cake. In that order.",
+    "Pizza's hot, the line's short, the day's yours.",
+    "Have a great one — from the whole crew.",
+];
+
+const BDAY_MULTI_GREETINGS = [
+    ":birthday: {count} birthdays at {venue} today — Happy Birthday, {names}! :tada:",
+    ":tada: {count}-player birthday mode: {names}! :birthday:",
+    ":confetti_ball: {count} of us are celebrating today — Happy Birthday, {names}! :birthday:",
+    ":cake: Co-op birthday unlocked: {names}! :video_game:",
+    ":balloon: Busy day at the party table — Happy Birthday to {names}! :birthday:",
+    ":tada: {count} candles' worth of chaos today. Happy Birthday, {names}! :birthday:",
+    ":sparkles: {count} birthdays, one very good day. Happy Birthday, {names}! :birthday:",
+    ":confetti_ball: The birthday list is long today: {names}. Happy Birthday, all of you! :birthday:",
+    ":cake: {count} people, one cake. Happy Birthday, {names}! :birthday:",
+    ":birthday: Everybody wish {names} a happy birthday! :tada:",
+];
+
+/** Flavour lines for a shared birthday — every one has to read as plural. */
+const BDAY_MULTI_FLAVORS = [
+    "High scores all round.",
+    "The karts are yours. Try not to wreck each other.",
+    "Split the cake, share the leaderboard.",
+    "May all your claws be generous.",
+    "Everybody gets a good skee-ball lane today.",
+    "Same team in Laser Tag, obviously.",
+    "That's a lot of candles for one break room.",
+    "Somebody's bringing cake. It had better be somebody.",
+    "May every kart start on the first turn of the key.",
+    "Prize counter's stocked for all of you.",
+    "Green lights the whole way round.",
+    "Nobody's on ball-pit duty today.",
+    "First in line for everything, all of you.",
+    "Hope the whole day runs like a slow Tuesday.",
+    "Extra lives all round.",
+    "May the tickets rain down on every one of you.",
+    "Take the good headsets.",
+    "The arcade's yours for five minutes. Go.",
+    "Zero radio calls between the lot of you today.",
+    "Slow pitches in the cage for everyone.",
 ];
 
 /**
@@ -425,10 +525,11 @@ function bdaySeedIndex(string $seed, int $count): int
 }
 
 /**
- * Choose the template for this greeting.
+ * Choose the wording for this greeting.
  *
- * Precedence: a single fixed template in config wins (someone who has settled
- * on exact wording keeps it), then a custom pool, then the built-in pool.
+ * Precedence: one fixed template in config wins outright (somebody who has
+ * settled on exact wording keeps it), then a custom pool of whole templates,
+ * then a greeting and a flavour line composed from the pools.
  */
 function bdayPickTemplate(int $count, array $cfg, string $seed): string
 {
@@ -440,11 +541,40 @@ function bdayPickTemplate(int $count, array $cfg, string $seed): string
     }
 
     $pool = $isMulti ? ($cfg['messages_multi'] ?? null) : ($cfg['messages_single'] ?? null);
-    $pool = is_array($pool) ? array_values(array_filter(array_map('strval', $pool))) : [];
-    if (!$pool) {
-        $pool = $isMulti ? BDAY_FUN_MULTI : BDAY_FUN_SINGLE;
+    $pool = bdayCleanPool($pool);
+    if ($pool) {
+        return $pool[bdaySeedIndex($seed, count($pool))];
     }
-    return $pool[bdaySeedIndex($seed, count($pool))];
+
+    $greetings = bdayCleanPool($isMulti ? ($cfg['multi_greetings'] ?? null) : ($cfg['greetings'] ?? null));
+    if (!$greetings) {
+        $greetings = $isMulti ? BDAY_MULTI_GREETINGS : BDAY_GREETINGS;
+    }
+    $flavors = bdayCleanPool($isMulti ? ($cfg['multi_flavors'] ?? null) : ($cfg['flavors'] ?? null));
+    if ($flavors === [] && !array_key_exists($isMulti ? 'multi_flavors' : 'flavors', $cfg)) {
+        $flavors = $isMulti ? BDAY_MULTI_FLAVORS : BDAY_FLAVORS;
+    }
+
+    // The two halves are seeded independently, so the greeting and the flavour
+    // vary against each other instead of moving in lockstep.
+    $greeting = $greetings[bdaySeedIndex($seed . '|greet', count($greetings))];
+    if (!$flavors) {
+        return $greeting;   // an explicitly empty flavour list means greeting only
+    }
+    return $greeting . "\n" . $flavors[bdaySeedIndex($seed . '|flavor', count($flavors))];
+}
+
+/** Normalise a configured pool to a clean list of non-empty strings. */
+function bdayCleanPool($pool): array
+{
+    if (!is_array($pool)) {
+        return [];
+    }
+    return array_values(array_filter(array_map(function ($v) {
+        return trim((string)$v);
+    }, $pool), function ($v) {
+        return $v !== '';
+    }));
 }
 
 /**

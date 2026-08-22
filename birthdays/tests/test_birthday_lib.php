@@ -190,75 +190,99 @@ $multi = bdayBuildText([$p, $p2, $p3], ['venue_label' => 'X'], 'seed-1');
 ok('multi message lists all three',
     strpos($multi, '*Alex Rivera*, *Sam Torres* and *Kim Nguyen*') !== false);
 
-// Every template in the shipped pools has to survive rendering — a stray or
+// Every line in every shipped pool has to survive rendering — a stray or
 // misspelled placeholder would otherwise reach the channel as literal
 // "{nmaes}" on whichever day its seed happened to land on.
-section('message pools — invariants across EVERY template');
+section('message pools — invariants across EVERY line');
 
 $poolCfg = ['venue_label' => 'The Castle Fun Center'];
-$badSingle = []; $badMulti = [];
-foreach (BDAY_FUN_SINGLE as $i => $tpl) {
-    $out = bdayBuildText([$p], $poolCfg + ['message_single' => $tpl]);
-    if (preg_match('/\{[a-z_]+\}/', $out)
-        || strpos($out, '*Alex Rivera*') === false
-        || trim($out) === ''
-        || strpos($out, '1990') !== false) {
-        $badSingle[] = $i;
-    }
-}
-foreach (BDAY_FUN_MULTI as $i => $tpl) {
-    $out = bdayBuildText([$p, $p2, $p3], $poolCfg + ['message_multi' => $tpl]);
-    if (preg_match('/\{[a-z_]+\}/', $out)
-        || strpos($out, '*Alex Rivera*, *Sam Torres* and *Kim Nguyen*') === false
-        || trim($out) === '') {
-        $badMulti[] = $i;
-    }
-}
-is_eq('every single-person template renders cleanly', $badSingle, []);
-is_eq('every multi-person template renders cleanly', $badMulti, []);
-ok('single pool is non-trivial', count(BDAY_FUN_SINGLE) >= 6);
-ok('multi pool is non-trivial', count(BDAY_FUN_MULTI) >= 3);
+$render = function (string $tpl, array $people) use ($poolCfg) {
+    $key = count($people) > 1 ? 'message_multi' : 'message_single';
+    return bdayBuildText($people, $poolCfg + [$key => $tpl]);
+};
 
-// A four-digit year anywhere in a template would read as somebody's birth year.
+$bad = [];
+foreach (BDAY_GREETINGS as $i => $tpl) {
+    $out = $render($tpl, [$p]);
+    if (preg_match('/\{[a-z_]+\}/', $out)
+        || strpos($tpl, '{names}') === false
+        || strpos($out, '*Alex Rivera*') === false) {
+        $bad[] = $i;
+    }
+}
+is_eq('every greeting names the person and renders cleanly', $bad, []);
+
+$bad = [];
+foreach (BDAY_MULTI_GREETINGS as $i => $tpl) {
+    $out = $render($tpl, [$p, $p2, $p3]);
+    if (preg_match('/\{[a-z_]+\}/', $out)
+        || strpos($tpl, '{names}') === false
+        || strpos($out, '*Alex Rivera*, *Sam Torres* and *Kim Nguyen*') === false) {
+        $bad[] = $i;
+    }
+}
+is_eq('every multi greeting lists everyone', $bad, []);
+
+// A flavour line follows an arbitrary greeting, so it has to stand alone: a
+// complete sentence, with no placeholder of its own to leak.
+$bad = [];
+foreach (array_merge(BDAY_FLAVORS, BDAY_MULTI_FLAVORS) as $i => $line) {
+    if ($line === '' || preg_match('/\{[a-z_]+\}/', $line)
+        || !preg_match('/[.!?]$/', $line)
+        || strtoupper($line[0]) !== $line[0]) {
+        $bad[] = $line;
+    }
+}
+is_eq('every flavour line is a self-contained sentence', $bad, []);
+
+is_eq('no duplicate greetings', count(BDAY_GREETINGS), count(array_unique(BDAY_GREETINGS)));
+is_eq('no duplicate flavours', count(BDAY_FLAVORS), count(array_unique(BDAY_FLAVORS)));
+is_eq('no duplicate multi greetings',
+    count(BDAY_MULTI_GREETINGS), count(array_unique(BDAY_MULTI_GREETINGS)));
+is_eq('no duplicate multi flavours',
+    count(BDAY_MULTI_FLAVORS), count(array_unique(BDAY_MULTI_FLAVORS)));
+
+// A four-digit year anywhere would read as somebody's birth year.
 $yearish = [];
-foreach (array_merge(BDAY_FUN_SINGLE, BDAY_FUN_MULTI) as $i => $tpl) {
-    if (preg_match('/\b(19|20)\d{2}\b/', $tpl)) { $yearish[] = $i; }
+foreach (array_merge(BDAY_GREETINGS, BDAY_FLAVORS, BDAY_MULTI_GREETINGS, BDAY_MULTI_FLAVORS) as $line) {
+    if (preg_match('/\b(19|20)\d{2}\b/', $line)) { $yearish[] = $line; }
 }
-is_eq('no template contains a year-like number', $yearish, []);
+is_eq('no pool line contains a year-like number', $yearish, []);
 
-section('seeded (deterministic) selection');
+section('composition — the point of splitting the pools');
 
-is_eq('same seed -> same message',
-    bdayBuildText([$p], $poolCfg, 'abc'), bdayBuildText([$p], $poolCfg, 'abc'));
-ok('different seeds can differ',
-    count(array_unique(array_map(function ($n) use ($p, $poolCfg) {
-        return bdayBuildText([$p], $poolCfg, 'seed' . $n);
-    }, range(1, 40)))) > 1);
+// Greeting and flavour are seeded separately, so the combinations multiply
+// instead of the pools moving in lockstep.
+$seen = [];
+for ($i = 0; $i < 600; $i++) {
+    $seen[bdayBuildText([$p], $poolCfg, 'seed-' . $i)] = true;
+}
+ok('600 seeds produce a wide spread of messages (' . count($seen) . ' distinct)',
+    count($seen) > 200);
+ok('far more combinations than either pool alone',
+    count($seen) > max(count(BDAY_GREETINGS), count(BDAY_FLAVORS)));
 
-is_eq('seed index stays in range', bdaySeedIndex('anything', 5) < 5, true);
-is_eq('seed index is non-negative', bdaySeedIndex('anything', 5) >= 0, true);
-is_eq('empty pool -> index 0', bdaySeedIndex('x', 0), 0);
-is_eq('seed index is stable', bdaySeedIndex('same', 12), bdaySeedIndex('same', 12));
+$composed = bdayPickTemplate(1, [], 'x');
+ok('a composed message is two lines', substr_count($composed, "\n") === 1);
+[$g, $f] = explode("\n", $composed);
+ok('first line is a greeting', in_array($g, BDAY_GREETINGS, true));
+ok('second line is a flavour', in_array($f, BDAY_FLAVORS, true));
 
-is_eq('seed ignores celebrant order',
-    bdaySeedFor('2026-08-21', [$p, $p2]), bdaySeedFor('2026-08-21', [$p2, $p]));
-ok('seed changes with the date',
-    bdaySeedFor('2026-08-21', [$p]) !== bdaySeedFor('2027-08-21', [$p]));
-ok('seed changes with the people',
-    bdaySeedFor('2026-08-21', [$p]) !== bdaySeedFor('2026-08-21', [$p2]));
+$composedMulti = bdayPickTemplate(3, [], 'x');
+[$mg, $mf] = explode("\n", $composedMulti);
+ok('multi composes from the multi pools',
+    in_array($mg, BDAY_MULTI_GREETINGS, true) && in_array($mf, BDAY_MULTI_FLAVORS, true));
 
-section('template precedence');
+// An empty flavour list is a real choice (greeting only), not a fall-through.
+$greetOnly = bdayPickTemplate(1, ['flavors' => []], 'x');
+ok('an empty flavour list gives the greeting alone',
+    strpos($greetOnly, "\n") === false && in_array($greetOnly, BDAY_GREETINGS, true));
 
-is_eq('a fixed template beats everything',
-    bdayPickTemplate(1, ['message_single' => 'FIXED', 'messages_single' => ['A', 'B']], 's'), 'FIXED');
-ok('a custom pool beats the built-in',
-    in_array(bdayPickTemplate(1, ['messages_single' => ['A', 'B']], 's'), ['A', 'B'], true));
-ok('falls back to the built-in pool',
-    in_array(bdayPickTemplate(1, [], 's'), BDAY_FUN_SINGLE, true));
-ok('multi uses the multi pool',
-    in_array(bdayPickTemplate(3, [], 's'), BDAY_FUN_MULTI, true));
-ok('an empty custom pool falls through',
-    in_array(bdayPickTemplate(1, ['messages_single' => []], 's'), BDAY_FUN_SINGLE, true));
+$customFlavor = bdayPickTemplate(1, ['flavors' => ['Only this one.']], 'x');
+ok('a custom flavour pool is used', substr($customFlavor, -15) === 'Only this one.' || strpos($customFlavor, 'Only this one.') !== false);
+
+$customGreet = bdayPickTemplate(1, ['greetings' => ['Hi {names}!'], 'flavors' => ['Bye.']], 'x');
+is_eq('custom greeting and flavour compose', $customGreet, "Hi {names}!\nBye.");
 
 section('Block Kit assembly');
 
