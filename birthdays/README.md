@@ -93,6 +93,39 @@ One thing only you can confirm: that the most-repeated birth dates are
 placeholders rather than real birthdays. Anything with a double-digit count is a
 default the POS stamped in — add it to `ignore_birth_dates`.
 
+### Verified against the live roster, August 2026
+
+A 100-row sample of the real query was run end to end through the bot:
+
+- **No placeholder dates at all** — not one birth date repeats exactly, so
+  `ignore_birth_dates` can stay empty here.
+- **Birthdays spread across all 12 months** (5–14 each), which is what real data
+  looks like; a spike would have meant a hire date.
+- **At most 3 people share a day** in that sample, well under `max_celebrants`.
+- **No 29 February birthdays** currently on staff, so the leap-day rule won't
+  fire — it stays correct for when it does.
+- Names with apostrophes and multi-word first/last names render correctly and
+  survive JSON encoding into the Slack payload.
+
+⚠️ **That sample was exactly 100 rows, which is the Explorer's default limit —
+so it was almost certainly truncated.** Get the true figure with a count rather
+than assuming (the bot itself reads up to `roster_max_rows`, 5000, so it is not
+affected):
+
+```sql
+SELECT COUNT(*) AS active_with_birthday
+FROM CenterEdge.dbo.Employees
+WHERE EmpStatus = 1 AND DateOfTerminate IS NULL
+  AND DateOfBirth IS NOT NULL AND YEAR(DateOfBirth) >= 1901
+```
+
+**A staffing note worth a decision, not a default:** this roster runs from teens
+to sixties — about a fifth of the sample were under 18. The bot never publishes
+an age or a birth year, which matters more here than at an all-adult venue. If
+the channel is wide or has guests in it, consider `'name_style' => 'first'` or
+`'first_initial'` so posts read "Happy Birthday, Mason!" rather than naming a
+minor in full. Your call; `full` is the default.
+
 ## 2. Create the Slack bot
 
 1. <https://api.slack.com/apps> → **Create New App** → **From scratch**.

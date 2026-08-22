@@ -215,6 +215,11 @@ WHERE EmpStatus = 1
 If only a handful of current staff have a birthday on file, the bot works but
 stays quiet most of the year — worth knowing before you announce it.
 
+⚠️ **Watch the row cap when you spot-check the roster query itself.** The
+Explorer returns **100 rows by default** (500 max), so a result of exactly 100
+is truncation, not a count. Use the aggregate above for the real number — the
+bot reads up to `roster_max_rows` (5000) and isn't affected.
+
 ## 9. The roster query
 
 This is what goes into `roster_sql` in `birthdays/config.php`. The bot does the
