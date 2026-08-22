@@ -72,6 +72,7 @@
 @import url("pages/items.css");
 @import url("pages/explorer.css");
 @import url("pages/tags.css");
+@import url("pages/birthdays.css");
 
 /* --- Cross-cutting components (must come after pages) ------- */
 @import url("components/clickable.css");

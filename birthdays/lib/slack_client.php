@@ -30,7 +30,8 @@ class SlackClient
     {
         $token = trim($token);
         if ($token === '') {
-            throw new RuntimeException('Slack bot token is empty — set slack_bot_token in config.php.');
+            throw new RuntimeException('No Slack bot token configured — set one on the '
+                . 'Birthdays page in CEplay, or in data/birthday_config.php.');
         }
         if (strpos($token, 'xoxb-') !== 0) {
             throw new RuntimeException('Slack token does not look like a bot token (expected it to start with "xoxb-").');

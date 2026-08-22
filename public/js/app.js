@@ -28,6 +28,7 @@ const Icons = {
     items:     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 8.5 12 12.8 3.5 8.5 12 4.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3.5 8.5v7L12 19.8l8.5-4.3v-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 12.8v7" stroke="currentColor" stroke-width="2"/></svg>',
     explorer:  '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 5.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 11.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
     logs:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M5 9h14M5 14h10M5 19h14"/></svg>',
+    birthdays: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2c.9 1 1.4 1.8 1.4 2.4a1.4 1.4 0 0 1-2.8 0c0-.6.5-1.4 1.4-2.4z"/><path d="M12 6.2v3.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M4 14.4c1.3 0 1.3 1.2 2.7 1.2s1.3-1.2 2.7-1.2 1.3 1.2 2.6 1.2 1.3-1.2 2.7-1.2 1.3 1.2 2.6 1.2 1.4-1.2 2.7-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 14.4v-1.5a2.6 2.6 0 0 1 2.6-2.6h10.8a2.6 2.6 0 0 1 2.6 2.6v1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 17.6v2.2a1.6 1.6 0 0 0 1.6 1.6h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
     settings:  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     sun:       '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>',
     moon:      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
@@ -74,7 +75,8 @@ const App = {
         'analytics', 'view_revenue', 'cards', 'manual_control',
         'overrides_manage', 'groups_manage', 'reader_groups_manage',
         'promotions_manage', 'items_manage',
-        'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'
+        'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs',
+        'view_birthdays', 'birthdays_manage'
     ],
 
     /**
@@ -84,9 +86,9 @@ const App = {
      * with the real resolved list.
      */
     LEGACY_ACCESS: {
-        admin:   ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs'],
+        admin:   ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'settings', 'data_explorer', 'users', 'view_logs', 'view_birthdays', 'birthdays_manage'],
         manager: ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'view_revenue', 'cards', 'manual_control', 'overrides_manage', 'groups_manage', 'reader_groups_manage', 'promotions_manage', 'items_manage', 'schedules_manage', 'view_logs'],
-        tech:    ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users']
+        tech:    ['view_dashboard', 'view_games', 'view_tags', 'view_groups', 'view_kiosks', 'view_schedules', 'view_overrides', 'analytics', 'manual_control', 'overrides_manage', 'settings', 'users', 'view_birthdays', 'birthdays_manage']
     },
 
     /**
@@ -116,6 +118,7 @@ const App = {
         '#/analytics':   'analytics',
         '#/logs':        'view_logs',
         '#/explorer':    'data_explorer',
+        '#/birthdays':   'view_birthdays',
         '#/settings':    'settings'
     },
 
@@ -544,6 +547,7 @@ const App = {
             { hash: '#/analytics', icon: Icons.analytics, label: 'Analytics' },
             { hash: '#/logs',      icon: Icons.logs,      label: 'Action Log' },
             { hash: '#/explorer',  icon: Icons.explorer,  label: 'DB Explorer' },
+            { hash: '#/birthdays', icon: Icons.birthdays, label: 'Birthdays' },
             { hash: '#/settings',  icon: Icons.settings,  label: 'Settings' }
         ];
         // Every section is gated by its SECTION_AREAS permission — a role
