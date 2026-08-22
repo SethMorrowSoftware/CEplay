@@ -83,10 +83,12 @@ database.
 ### Seeing what it actually looks like
 
 ```bash
-sudo bash birthdays/run.sh --demo
+sudo bash birthdays/run.sh --demo      # one person
+sudo bash birthdays/run.sh --demo=3    # three sharing a day
 ```
 
-Posts a complete announcement to the channel — the quip, the GIF, the footer
+A shared birthday uses a different set of pools and joins the names, so it's
+worth previewing separately. Posts a complete announcement to the channel — the quip, the GIF, the footer
 and the reactions — under a placeholder name, labelled as a preview. Nothing is
 recorded and no employee data is used, so it's safe to run whenever you want to
 show someone the format. Run it again for a different quip and GIF.
@@ -289,7 +291,7 @@ probes as copy/paste SQL for the Database Explorer.
 | `--date=YYYY-MM-DD` | Treat that date as today |
 | `--test-gifs` | Check every GIF URL resolves |
 | `--test-slack` | Check the token and post one plain test message |
-| `--demo` | Post a full sample announcement — quip, GIF, reactions |
+| `--demo[=N]` | Post a full sample announcement; `N` = people sharing it (max 6) |
 | `--force` | Post even if today's greeting already went out |
 | `--config=PATH` | Use a specific config file |
 | `--roster-file=PATH` | Read the roster from JSON instead of MSSQL (testing) |

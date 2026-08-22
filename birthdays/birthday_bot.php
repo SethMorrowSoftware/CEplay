@@ -52,7 +52,8 @@ Usage: php birthdays/birthday_bot.php [options]
   --date=YYYY-MM-DD      Treat that date as today (for testing).
   --list[=DAYS]          Print upcoming birthdays (default 60 days) and exit.
   --test-slack           Check the token and post a plain test message; exit.
-  --demo                 Post a FULL sample announcement (GIF and all); exit.
+  --demo[=N]             Post a FULL sample announcement (GIF and all); exit.
+                         N = how many people share it (default 1, max 6).
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
@@ -64,12 +65,20 @@ Usage: php birthdays/birthday_bot.php [options]
 TXT;
 
 /**
- * Known flags. An unknown one is a hard error rather than something quietly
- * ignored: a typo'd "--dryrun" that silently fell through to a REAL post is
- * exactly the failure this bot must not have.
+ * Known flags, and whether each takes a value.
+ *
+ * An unknown flag is a hard error rather than something quietly ignored: a
+ * typo'd "--dryrun" that silently fell through to a REAL post is exactly the
+ * failure this bot must not have.
+ *
+ * Values are policed for the same reason. A switch given a value is rejected,
+ * because "--dry-run=0" would otherwise be read as falsy and POST FOR REAL —
+ * the opposite of what was typed. A value-taking flag given none is rejected
+ * too, rather than silently doing something else.
  */
-const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
-                    'roster-file', 'config', 'check', 'resolve-channel', 'demo', 'help'];
+const BDAY_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help'];
+const BDAY_OPTIONAL_VALUE = ['list', 'demo'];
+const BDAY_REQUIRES_VALUE = ['date', 'roster-file', 'config', 'resolve-channel'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -77,22 +86,37 @@ foreach (array_slice($argv, 1) as $arg) {
         fwrite(STDERR, "Unrecognised argument: {$arg}\n\n" . BDAY_USAGE);
         exit(1);
     }
-    if (!in_array($m[1], BDAY_FLAGS, true)) {
-        fwrite(STDERR, "Unknown option: --{$m[1]}\n\n" . BDAY_USAGE);
+    [$name, $value] = [$m[1], $m[2] ?? null];
+    $known = array_merge(BDAY_SWITCHES, BDAY_OPTIONAL_VALUE, BDAY_REQUIRES_VALUE);
+    if (!in_array($name, $known, true)) {
+        fwrite(STDERR, "Unknown option: --{$name}\n\n" . BDAY_USAGE);
         exit(1);
     }
-    $flags[$m[1]] = $m[2] ?? true;
+    if ($value !== null && in_array($name, BDAY_SWITCHES, true)) {
+        fwrite(STDERR, "--{$name} is a switch and takes no value — write it as --{$name}.\n\n"
+            . BDAY_USAGE);
+        exit(1);
+    }
+    if ($value === null && in_array($name, BDAY_REQUIRES_VALUE, true)) {
+        fwrite(STDERR, "--{$name} needs a value, e.g. --{$name}=…\n\n" . BDAY_USAGE);
+        exit(1);
+    }
+    if ($value !== null && $value === '' && !in_array($name, BDAY_OPTIONAL_VALUE, true)) {
+        fwrite(STDERR, "--{$name} was given an empty value.\n\n" . BDAY_USAGE);
+        exit(1);
+    }
+    $flags[$name] = $value ?? true;
 }
-if (!empty($flags['help'])) {
+if (array_key_exists('help', $flags)) {
     echo BDAY_USAGE;
     exit(0);
 }
-$dryRun    = !empty($flags['dry-run']);
-$force     = !empty($flags['force']);
-$testSlack = !empty($flags['test-slack']);
-$testGifs  = !empty($flags['test-gifs']);
-$doCheck   = !empty($flags['check']);
-$doDemo    = !empty($flags['demo']);
+$dryRun    = array_key_exists('dry-run', $flags);
+$force     = array_key_exists('force', $flags);
+$testSlack = array_key_exists('test-slack', $flags);
+$testGifs  = array_key_exists('test-gifs', $flags);
+$doCheck   = array_key_exists('check', $flags);
+$doDemo    = array_key_exists('demo', $flags);
 $doList    = array_key_exists('list', $flags);
 $rosterFile = isset($flags['roster-file']) && is_string($flags['roster-file']) ? $flags['roster-file'] : '';
 $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags['list'])) : 60;
@@ -245,24 +269,48 @@ if ($doDemo) {
         [$channel, $note] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
         if ($note !== '') { bdayLog($note); }
 
-        $sample = [
-            'emp_no' => '', 'first' => 'Robin', 'last' => 'Sample',
-            'name' => 'Robin Sample', 'birth_date' => '1990-01-01',
-            'month' => 1, 'day' => 1, 'email' => '', 'slack_id' => '',
-        ];
+        // --demo=3 previews a shared birthday, which uses a different pool
+        // and different name-joining ("A, B and C") than the single case.
+        $howMany = is_string($flags['demo']) ? (int)$flags['demo'] : 1;
+        $howMany = max(1, min(6, $howMany));
+
+        // A shared surname makes these read as obviously synthetic, so nobody
+        // in the channel goes looking for an employee who doesn't exist.
+        $firstNames = ['Robin', 'Casey', 'Jordan', 'Riley', 'Avery', 'Quinn'];
+        $sample = [];
+        for ($i = 0; $i < $howMany; $i++) {
+            $sample[] = [
+                'emp_no' => '', 'first' => $firstNames[$i], 'last' => 'Sample',
+                'name' => $firstNames[$i] . ' Sample', 'birth_date' => '1990-01-01',
+                'month' => 1, 'day' => 1, 'email' => '', 'slack_id' => '',
+            ];
+        }
+
         $msgCfg = [
-            'name_style'     => $nameStyle,
-            'bold_names'     => (bool)($cfg['bold_names'] ?? true),
-            'venue_label'    => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
-            'mention'        => '',   // never ping a channel for a preview
-            'message_single' => (string)($cfg['message_single'] ?? ''),
+            'name_style'      => $nameStyle,
+            'bold_names'      => (bool)($cfg['bold_names'] ?? true),
+            'venue_label'     => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
+            'mention'         => '',   // never ping a channel for a preview
+            'message_single'  => (string)($cfg['message_single'] ?? ''),
+            'message_multi'   => (string)($cfg['message_multi'] ?? ''),
             'messages_single' => $cfg['messages_single'] ?? null,
+            'messages_multi'  => $cfg['messages_multi'] ?? null,
+            'greetings'       => $cfg['greetings'] ?? null,
+            'flavors'         => $cfg['flavors'] ?? null,
+            'multi_greetings' => $cfg['multi_greetings'] ?? null,
+            'multi_flavors'   => $cfg['multi_flavors'] ?? null,
         ];
-        if ($msgCfg['message_single'] === '') { unset($msgCfg['message_single']); }
+        foreach (['message_single', 'message_multi'] as $k) {
+            if ($msgCfg[$k] === '') { unset($msgCfg[$k]); }
+        }
+        foreach (['messages_single', 'messages_multi', 'greetings', 'flavors',
+                  'multi_greetings', 'multi_flavors'] as $k) {
+            if ($msgCfg[$k] === null) { unset($msgCfg[$k]); }
+        }
 
         // Vary the seed per run so repeated demos show different quips and GIFs.
         $seed = 'demo|' . date('Y-m-d H:i:s');
-        $text = bdayBuildText([$sample], $msgCfg, $seed);
+        $text = bdayBuildText($sample, $msgCfg, $seed);
         $gif  = GifSource::pick($cfg, $seed);
         bdayLog($gif !== null
             ? 'GIF from ' . $gif['source'] . ': ' . $gif['url']
@@ -271,7 +319,8 @@ if ($doDemo) {
         $blocks = bdayBuildBlocks($text, $gif['url'] ?? null, $cfg);
         $blocks[] = ['type' => 'context', 'elements' => [['type' => 'mrkdwn',
             'text' => ':wrench: _Preview — this is what the daily post looks like. '
-                . '"Robin Sample" is a placeholder, not a real birthday._']]];
+                . ($howMany > 1 ? 'These names are placeholders' : '"Robin Sample" is a placeholder')
+                . ', not a real birthday._']]];
 
         $ts = $slack->postMessage($channel, $text, [
             'blocks'     => $blocks,
@@ -304,7 +353,7 @@ if ($doDemo) {
 // --resolve-channel: print the ID for a name, for scripts to capture
 // ---------------------------------------------------------------------------
 
-if (!empty($flags['resolve-channel'])) {
+if (array_key_exists('resolve-channel', $flags)) {
     $want = (string)$flags['resolve-channel'];
     try {
         $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
