@@ -175,11 +175,26 @@ That's safe because of the state file: it will not post twice for the same day.
 
 ## The fun bits
 
-**Rotating messages.** A pool of birthday lines written around this venue's own
-attractions — the go-karts, Laser Tag, Free Fall, the skee-ball lanes, the
-redemption counter — plus a separate pool for days when several people are
-celebrating. Write your own with `messages_single` / `messages_multi`, or pin
-one fixed wording with `message_single` / `message_multi`.
+**Rotating messages.** Each post is composed from two pools — a greeting and a
+flavour line, drawn independently and joined — so **65 written lines produce 714
+different messages** (and 200 more for shared birthdays). The jokes come from
+this venue's own floor: the karts and the Spiral, Laser Tag, Free Fall, the
+Dragon Coaster, the cages, the driving range, mini golf, the rock wall,
+Ballocity, the zipline, skee-ball, Ice Ball, the cranes, Tin Can Alley and the
+redemption counter.
+
+> :sparkles: *Mason Quinones* has a birthday today! :birthday:
+> Tin Can Alley doesn't stand a chance.
+
+> :birthday: Raise a slice for *Mason Quinones*! :cake:
+> Top of the leaderboard, and nobody beats it.
+
+Add your own with `greetings` / `flavors` (and `multi_greetings` /
+`multi_flavors`) — one new flavour line is fourteen new messages. A greeting
+must contain `{names}`; a flavour line has to stand alone after *any* greeting,
+so write complete sentences. `messages_single` / `messages_multi` replace
+composition with whole templates, and `message_single` / `message_multi` pin one
+exact wording.
 
 **Channel by name.** `slack_channel` takes `#birthday-test` as happily as a
 `C0123456789`. Names are resolved through `conversations.list`; the installer

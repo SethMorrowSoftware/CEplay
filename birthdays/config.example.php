@@ -128,23 +128,37 @@ SQL,
     // Used by the {venue} placeholder.
     'venue_label' => 'The Castle Fun Center',
 
-    // The bot ships a POOL of arcade-flavoured birthday messages (see
-    // BDAY_FUN_SINGLE / BDAY_FUN_MULTI in lib/birthday_lib.php) and picks one
-    // per day. The pick is deterministic from the date and the people in it,
-    // so --dry-run shows exactly what will post and a re-run never swaps it.
+    // The message is composed from TWO pools: a greeting line and a flavour
+    // line, drawn independently and joined. That is 14 x 51 = 714 different
+    // single-person messages out of 65 written lines — adding one good flavour
+    // line adds fourteen new messages. See BDAY_GREETINGS / BDAY_FLAVORS in
+    // lib/birthday_lib.php (and the BDAY_MULTI_* pools for shared birthdays).
     //
-    // To use your own lines, uncomment these and write as many as you like.
-    // Placeholders: {names} {count} {venue}. Do NOT add an age or a birth year.
+    // The pick is deterministic from the date and the people celebrating, so
+    // --dry-run shows exactly what will post and a re-run never swaps it.
     //
-    // 'messages_single' => [
+    // To add your own lines, uncomment these. A greeting MUST contain {names};
+    // a flavour line must stand on its own after any greeting, so write it as a
+    // complete sentence that never refers back to the line above. Placeholders:
+    // {names} {count} {venue}. Never add an age or a birth year.
+    //
+    // 'greetings' => [
     //     ":birthday: Happy Birthday, {names}! :tada:",
-    //     ":tada: It's {names}'s birthday! Hope it's a good one. :birthday:",
     // ],
-    // 'messages_multi' => [
-    //     ":birthday: {count} birthdays at {venue} today — Happy Birthday, {names}! :tada:",
+    // 'flavors' => [
+    //     "Hope the karts are fast and the tickets plentiful.",
+    //     "Somebody put a candle in the pizza.",
     // ],
+    // 'multi_greetings' => [...],  // must contain {names}
+    // 'multi_flavors'   => [...],  // must read as plural
     //
-    // Or pin ONE exact wording, which overrides the pool entirely:
+    // An empty 'flavors' => [] posts the greeting alone.
+    //
+    // Or replace composition entirely with whole templates:
+    // 'messages_single' => [":birthday: Happy Birthday, {names}!"],
+    // 'messages_multi'  => [":birthday: Happy Birthday, {names}!"],
+    //
+    // Or pin ONE exact wording, which overrides everything above:
     // 'message_single' => ":birthday: Happy Birthday, {names}!",
     // 'message_multi'  => ":birthday: Happy Birthday, {names}!",
 
