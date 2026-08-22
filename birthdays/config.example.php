@@ -106,10 +106,14 @@ SQL,
     'query_timeout' => 30,
 
     // -----------------------------------------------------------------------
-    // Message
+    // Message — the fun part
     // -----------------------------------------------------------------------
 
     // 'full' (First Last) | 'first' (First) | 'first_initial' (First L.)
+    //
+    // Worth a thought here: this roster runs from teens to sixties. The bot
+    // never publishes an age or a birth year, but if the channel is wide or
+    // has guests in it, 'first' reads better than naming a 15-year-old in full.
     'name_style' => 'full',
 
     // Wrap names in *bold*. Ignored for names rendered as @-mentions.
@@ -118,19 +122,85 @@ SQL,
     // Used by the {venue} placeholder.
     'venue_label' => 'The Castle Fun Center',
 
-    // Placeholders: {names} {count} {venue}
-    // No {age} and no birth year, deliberately — the roster holds full dates
-    // of birth and a channel is not the place to publish them.
-    'message_single' => ":birthday: Happy Birthday, {names}! :tada:\nFrom everyone at {venue} — have a great one!",
-    'message_multi'  => ":birthday: {count} birthdays today — Happy Birthday, {names}! :tada:\nFrom everyone at {venue}!",
+    // The bot ships a POOL of arcade-flavoured birthday messages (see
+    // BDAY_FUN_SINGLE / BDAY_FUN_MULTI in lib/birthday_lib.php) and picks one
+    // per day. The pick is deterministic from the date and the people in it,
+    // so --dry-run shows exactly what will post and a re-run never swaps it.
+    //
+    // To use your own lines, uncomment these and write as many as you like.
+    // Placeholders: {names} {count} {venue}. Do NOT add an age or a birth year.
+    //
+    // 'messages_single' => [
+    //     ":birthday: Happy Birthday, {names}! :tada:",
+    //     ":tada: It's {names}'s birthday! Hope it's a good one. :birthday:",
+    // ],
+    // 'messages_multi' => [
+    //     ":birthday: {count} birthdays at {venue} today — Happy Birthday, {names}! :tada:",
+    // ],
+    //
+    // Or pin ONE exact wording, which overrides the pool entirely:
+    // 'message_single' => ":birthday: Happy Birthday, {names}!",
+    // 'message_multi'  => ":birthday: Happy Birthday, {names}!",
 
-    // Post one message per person instead of one combined message.
+    // Small line under the message. null = ":balloon: from everyone at {venue}".
+    // Empty string = no footer.
+    'footer_text' => null,
+
+    // Post one message per person instead of one combined message. Each gets
+    // its own quip and its own GIF.
     'post_separately' => false,
 
-    // Turn names into real @-mentions by looking each person up in Slack by
-    // email address. Requires the users:read.email scope AND an `email`
-    // column in roster_sql. Anyone without a match falls back to their name.
-    'mention_by_email' => false,
+    // -----------------------------------------------------------------------
+    // Animated GIFs
+    // -----------------------------------------------------------------------
+
+    // Attach an animated GIF to each greeting (a Slack image block, which
+    // animates). Set false for text only.
+    'gifs_enabled' => true,
+
+    // BEST OPTION: a free Giphy API key (https://developers.giphy.com — takes
+    // about two minutes). With one set, the bot searches for a fresh GIF every
+    // time instead of cycling a fixed list, and never goes stale. Without one
+    // it falls back to the curated list below.
+    'giphy_api_key' => '',
+
+    // Content rating for Giphy results. 'g' or 'pg' only — anything else is
+    // forced back to 'g'. This is a work channel at a family venue with minors
+    // on staff; leave it at 'g'.
+    'giphy_rating' => 'g',
+
+    // Rotated through when searching Giphy, so the results stay varied.
+    // 'gif_search_terms' => ['happy birthday', 'birthday cake', 'confetti celebration'],
+
+    // Fallback list, used when there's no Giphy key (or Giphy is down).
+    // Defaults to GifSource::DEFAULT_GIFS. These are hotlinked third-party
+    // URLs and CAN rot, so run `php birthdays/birthday_bot.php --test-gifs` to
+    // see which still resolve, and paste your own here to replace them —
+    // any public https .gif URL works.
+    // 'gifs' => [
+    //     'https://media.giphy.com/media/xxxxxxxx/giphy.gif',
+    // ],
+
+    // HEAD-check the chosen GIF before posting, and move to the next candidate
+    // if it has gone. Costs one request a day and means a dead link degrades to
+    // "no image" instead of a broken one in the channel. Leave this on.
+    'gif_verify' => true,
+
+    // Seconds to allow for the GIF check / Giphy search.
+    'gif_timeout' => 6,
+
+    // What screen readers announce for the image.
+    'gif_alt_text' => 'A birthday celebration GIF',
+
+    // -----------------------------------------------------------------------
+    // Reactions
+    // -----------------------------------------------------------------------
+
+    // Have the bot add the first reactions to its own message, so nobody has
+    // to break the ice. Needs the reactions:write scope — add it and REINSTALL
+    // the app. Best-effort: if it fails, the greeting still posts.
+    'add_reactions' => false,
+    'reactions' => ['tada', 'birthday'],
 
     // -----------------------------------------------------------------------
     // Behaviour

@@ -179,17 +179,112 @@ is_eq('join four',   bdayJoinNames(['A', 'B', 'C', 'D']), 'A, B, C and D');
 
 is_eq('slack escaping', bdaySlackEscape('Ben & <Jerry>'), 'Ben &amp; &lt;Jerry&gt;');
 
-$single = bdayBuildText([$p], ['venue_label' => 'The Castle Fun Center']);
-ok('single message names the person', strpos($single, '*Alex Rivera*') !== false);
-ok('single message uses the venue',   strpos($single, 'The Castle Fun Center') !== false);
-ok('no birth year leaks into the message', strpos($single, '1990') === false);
-
 $p2 = $p; $p2['first'] = 'Sam'; $p2['last'] = 'Torres'; $p2['name'] = 'Sam Torres'; $p2['emp_no'] = '2';
 $p3 = $p; $p3['first'] = 'Kim'; $p3['last'] = 'Nguyen'; $p3['name'] = 'Kim Nguyen'; $p3['emp_no'] = '3';
-$multi = bdayBuildText([$p, $p2, $p3], ['venue_label' => 'X']);
+
+$single = bdayBuildText([$p], ['venue_label' => 'The Castle Fun Center'], 'seed-1');
+ok('single message names the person', strpos($single, '*Alex Rivera*') !== false);
+ok('no birth year leaks into the message', strpos($single, '1990') === false);
+
+$multi = bdayBuildText([$p, $p2, $p3], ['venue_label' => 'X'], 'seed-1');
 ok('multi message lists all three',
     strpos($multi, '*Alex Rivera*, *Sam Torres* and *Kim Nguyen*') !== false);
-is_eq('{count} substituted', substr_count($multi, '3'), 1);
+
+// Every template in the shipped pools has to survive rendering — a stray or
+// misspelled placeholder would otherwise reach the channel as literal
+// "{nmaes}" on whichever day its seed happened to land on.
+section('message pools — invariants across EVERY template');
+
+$poolCfg = ['venue_label' => 'The Castle Fun Center'];
+$badSingle = []; $badMulti = [];
+foreach (BDAY_FUN_SINGLE as $i => $tpl) {
+    $out = bdayBuildText([$p], $poolCfg + ['message_single' => $tpl]);
+    if (preg_match('/\{[a-z_]+\}/', $out)
+        || strpos($out, '*Alex Rivera*') === false
+        || trim($out) === ''
+        || strpos($out, '1990') !== false) {
+        $badSingle[] = $i;
+    }
+}
+foreach (BDAY_FUN_MULTI as $i => $tpl) {
+    $out = bdayBuildText([$p, $p2, $p3], $poolCfg + ['message_multi' => $tpl]);
+    if (preg_match('/\{[a-z_]+\}/', $out)
+        || strpos($out, '*Alex Rivera*, *Sam Torres* and *Kim Nguyen*') === false
+        || trim($out) === '') {
+        $badMulti[] = $i;
+    }
+}
+is_eq('every single-person template renders cleanly', $badSingle, []);
+is_eq('every multi-person template renders cleanly', $badMulti, []);
+ok('single pool is non-trivial', count(BDAY_FUN_SINGLE) >= 6);
+ok('multi pool is non-trivial', count(BDAY_FUN_MULTI) >= 3);
+
+// A four-digit year anywhere in a template would read as somebody's birth year.
+$yearish = [];
+foreach (array_merge(BDAY_FUN_SINGLE, BDAY_FUN_MULTI) as $i => $tpl) {
+    if (preg_match('/\b(19|20)\d{2}\b/', $tpl)) { $yearish[] = $i; }
+}
+is_eq('no template contains a year-like number', $yearish, []);
+
+section('seeded (deterministic) selection');
+
+is_eq('same seed -> same message',
+    bdayBuildText([$p], $poolCfg, 'abc'), bdayBuildText([$p], $poolCfg, 'abc'));
+ok('different seeds can differ',
+    count(array_unique(array_map(function ($n) use ($p, $poolCfg) {
+        return bdayBuildText([$p], $poolCfg, 'seed' . $n);
+    }, range(1, 40)))) > 1);
+
+is_eq('seed index stays in range', bdaySeedIndex('anything', 5) < 5, true);
+is_eq('seed index is non-negative', bdaySeedIndex('anything', 5) >= 0, true);
+is_eq('empty pool -> index 0', bdaySeedIndex('x', 0), 0);
+is_eq('seed index is stable', bdaySeedIndex('same', 12), bdaySeedIndex('same', 12));
+
+is_eq('seed ignores celebrant order',
+    bdaySeedFor('2026-08-21', [$p, $p2]), bdaySeedFor('2026-08-21', [$p2, $p]));
+ok('seed changes with the date',
+    bdaySeedFor('2026-08-21', [$p]) !== bdaySeedFor('2027-08-21', [$p]));
+ok('seed changes with the people',
+    bdaySeedFor('2026-08-21', [$p]) !== bdaySeedFor('2026-08-21', [$p2]));
+
+section('template precedence');
+
+is_eq('a fixed template beats everything',
+    bdayPickTemplate(1, ['message_single' => 'FIXED', 'messages_single' => ['A', 'B']], 's'), 'FIXED');
+ok('a custom pool beats the built-in',
+    in_array(bdayPickTemplate(1, ['messages_single' => ['A', 'B']], 's'), ['A', 'B'], true));
+ok('falls back to the built-in pool',
+    in_array(bdayPickTemplate(1, [], 's'), BDAY_FUN_SINGLE, true));
+ok('multi uses the multi pool',
+    in_array(bdayPickTemplate(3, [], 's'), BDAY_FUN_MULTI, true));
+ok('an empty custom pool falls through',
+    in_array(bdayPickTemplate(1, ['messages_single' => []], 's'), BDAY_FUN_SINGLE, true));
+
+section('Block Kit assembly');
+
+$blocks = bdayBuildBlocks('hello', 'https://example.com/a.gif', ['venue_label' => 'Castle']);
+is_eq('three blocks with a GIF', count($blocks), 3);
+is_eq('first block is the message', $blocks[0]['type'], 'section');
+is_eq('message text carried through', $blocks[0]['text']['text'], 'hello');
+is_eq('second block is the image', $blocks[1]['type'], 'image');
+is_eq('image url carried through', $blocks[1]['image_url'], 'https://example.com/a.gif');
+ok('alt_text is present (Slack rejects an image block without it)',
+    !empty($blocks[1]['alt_text']));
+is_eq('last block is the footer', $blocks[2]['type'], 'context');
+ok('footer names the venue', strpos($blocks[2]['elements'][0]['text'], 'Castle') !== false);
+
+$noGif = bdayBuildBlocks('hello', null, []);
+is_eq('no image block without a GIF', count($noGif), 2);
+is_eq('still has the message', $noGif[0]['type'], 'section');
+
+$noFooter = bdayBuildBlocks('hello', null, ['footer_text' => '']);
+is_eq('empty footer text drops the block', count($noFooter), 1);
+
+$custom = bdayBuildBlocks('hi', null, ['footer_text' => 'my footer']);
+is_eq('custom footer used', $custom[1]['elements'][0]['text'], 'my footer');
+
+ok('blocks are JSON-encodable for the Slack payload',
+    json_encode(bdayBuildBlocks("a *b* c", 'https://x/y.gif', [])) !== false);
 
 $mentioned = $p; $mentioned['slack_id'] = 'U0123ABC';
 is_eq('mention replaces the name',

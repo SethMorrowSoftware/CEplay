@@ -51,7 +51,11 @@ class SlackClient
      * Post a message. $channel should be a channel ID (C…/G…), not a name —
      * names only resolve for some token types and fail confusingly otherwise.
      *
-     * @param array $opts username / icon_emoji (both need the
+     * $text is ALWAYS sent, even when blocks are supplied: it is what push
+     * notifications and screen readers use, and a blocks-only message arrives
+     * on a phone as an empty notification.
+     *
+     * @param array $opts blocks (array), username / icon_emoji (both need the
      *                    chat:write.customize scope), thread_ts
      * @return string The posted message timestamp.
      */
@@ -60,9 +64,14 @@ class SlackClient
         $payload = [
             'channel'      => $channel,
             'text'         => $text,
+            // The GIF is an image BLOCK, so link previews stay off: unfurling
+            // would add a second, redundant copy of it under the message.
             'unfurl_links' => false,
             'unfurl_media' => false,
         ];
+        if (!empty($opts['blocks']) && is_array($opts['blocks'])) {
+            $payload['blocks'] = $opts['blocks'];
+        }
         foreach (['username', 'icon_emoji', 'thread_ts'] as $k) {
             if (!empty($opts[$k])) {
                 $payload[$k] = $opts[$k];
@@ -70,6 +79,31 @@ class SlackClient
         }
         $r = $this->call('chat.postMessage', $payload);
         return (string)($r['ts'] ?? '');
+    }
+
+    /**
+     * Add an emoji reaction to a message. Needs the reactions:write scope.
+     *
+     * Returns false rather than throwing on the everyday failures (already
+     * reacted, unknown emoji name, scope not granted) — a missing party popper
+     * is not worth failing a birthday post over.
+     */
+    public function addReaction(string $channel, string $ts, string $emoji): bool
+    {
+        $emoji = trim($emoji, ": \t\n");
+        if ($emoji === '' || $ts === '') {
+            return false;
+        }
+        try {
+            $this->call('reactions.add', [
+                'channel'   => $channel,
+                'timestamp' => $ts,
+                'name'      => $emoji,
+            ]);
+            return true;
+        } catch (RuntimeException $e) {
+            return false;
+        }
     }
 
     /**
@@ -154,6 +188,9 @@ class SlackClient
             'not_allowed_token_type' => ' — this needs a bot token (xoxb-), not a user token',
             'restricted_action'   => ' — workspace settings block the bot from posting here',
             'is_archived'         => ' — the channel is archived',
+            'invalid_blocks'      => ' — Slack rejected the Block Kit payload (check the GIF URL is https)',
+            'invalid_blocks_format' => ' — the blocks payload is malformed',
+            'msg_too_long'        => ' — the message text is over Slack\'s limit; shorten the template',
         ];
         return $hints[$error] ?? '';
     }

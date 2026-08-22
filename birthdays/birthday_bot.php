@@ -39,6 +39,7 @@ require_once $root . '/lib/crypto.php';
 require_once $root . '/lib/mssql_client.php';
 require_once __DIR__ . '/lib/birthday_lib.php';
 require_once __DIR__ . '/lib/slack_client.php';
+require_once __DIR__ . '/lib/gif_source.php';
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -51,6 +52,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --date=YYYY-MM-DD      Treat that date as today (for testing).
   --list[=DAYS]          Print upcoming birthdays (default 60 days) and exit.
   --test-slack           Check the token and post a test message; exit.
+  --test-gifs            Check every configured GIF URL resolves; exit.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --help                 Show this.
@@ -62,7 +64,8 @@ TXT;
  * ignored: a typo'd "--dryrun" that silently fell through to a REAL post is
  * exactly the failure this bot must not have.
  */
-const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'list', 'date', 'roster-file', 'help'];
+const BDAY_FLAGS = ['dry-run', 'force', 'test-slack', 'test-gifs', 'list', 'date',
+                    'roster-file', 'help'];
 
 $flags = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -83,6 +86,7 @@ if (!empty($flags['help'])) {
 $dryRun    = !empty($flags['dry-run']);
 $force     = !empty($flags['force']);
 $testSlack = !empty($flags['test-slack']);
+$testGifs  = !empty($flags['test-gifs']);
 $doList    = array_key_exists('list', $flags);
 $rosterFile = isset($flags['roster-file']) && is_string($flags['roster-file']) ? $flags['roster-file'] : '';
 $listDays  = $doList && is_string($flags['list']) ? max(1, min(400, (int)$flags['list'])) : 60;
@@ -147,6 +151,80 @@ $nameStyle = (string)($cfg['name_style'] ?? 'full');
 if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
     fwrite(STDERR, "name_style must be one of: full, first, first_initial.\n");
     exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --test-gifs: confirm the GIF URLs actually resolve
+//
+// The curated list is hotlinked from a third party and can rot at any time, so
+// this is the check that says whether it still works. The bot also verifies
+// the one GIF it is about to use at post time, so a dead entry degrades to
+// "no image" rather than a broken one — this just tells you up front.
+// ---------------------------------------------------------------------------
+
+if ($testGifs) {
+    $timeout = max(2, (int)($cfg['gif_timeout'] ?? 6));
+    $list = $cfg['gifs'] ?? GifSource::DEFAULT_GIFS;
+    $list = array_values(array_filter(array_map('trim', array_map('strval', (array)$list))));
+
+    echo "\nGIFs are " . (empty($cfg['gifs_enabled']) ? "OFF (gifs_enabled is false)" : "ON") . ".\n";
+
+    $key = trim((string)($cfg['giphy_api_key'] ?? ''));
+    if ($key !== '') {
+        $terms = $cfg['gif_search_terms'] ?? GifSource::DEFAULT_SEARCH_TERMS;
+        $terms = array_values(array_filter(array_map('strval', (array)$terms)));
+        $term = $terms[0] ?? 'happy birthday';
+        echo "\nGiphy API (rating=" . ($cfg['giphy_rating'] ?? 'g') . "), searching \"{$term}\":\n";
+        try {
+            $found = GifSource::giphySearch($key, $term, $timeout, (string)($cfg['giphy_rating'] ?? 'g'));
+            echo '  ' . count($found) . " result(s).\n";
+            if ($found) {
+                $ok = GifSource::urlResolves($found[0], $timeout);
+                echo '  first result ' . ($ok ? 'resolves OK' : 'DID NOT resolve') . ": {$found[0]}\n";
+                echo "  Giphy is working — the curated list below is only the fallback.\n";
+            }
+        } catch (Exception $e) {
+            echo '  FAILED: ' . $e->getMessage() . "\n";
+            echo "  The bot will fall back to the curated list below.\n";
+        }
+    } else {
+        echo "\nNo giphy_api_key set, so the curated list is the only source.\n"
+           . "A free key at https://developers.giphy.com gives a fresh GIF every time.\n";
+    }
+
+    echo "\nCurated list (" . count($list) . " entries):\n";
+    $good = 0;
+    foreach ($list as $url) {
+        if (!GifSource::looksLikeUrl($url)) {
+            echo "  BAD URL   {$url}\n";
+            continue;
+        }
+        $ok = GifSource::urlResolves($url, $timeout);
+        if ($ok) { $good++; }
+        echo '  ' . ($ok ? 'ok       ' : 'DEAD     ') . $url . "\n";
+    }
+    echo "\n{$good} of " . count($list) . " resolve.\n";
+    if ($good === 0) {
+        // Before blaming the list, check this host can reach anything at all —
+        // a firewalled venue network makes every URL look rotten, and telling
+        // someone to prune a perfectly good list would be a wrong answer.
+        if (!GifSource::internetReachable($timeout)) {
+            echo "\nBUT this host can't reach slack.com either, so that is a CONNECTIVITY\n"
+               . "problem, not a dead list — don't prune anything on the strength of it.\n"
+               . "Check the firewall/proxy, then re-run. (Note the bot needs to reach\n"
+               . "slack.com regardless, so this has to be fixed anyway.)\n\n";
+            exit(1);
+        }
+        echo "This host CAN reach slack.com, so the URLs really have gone. Either set\n"
+           . "giphy_api_key, or replace the `gifs` list in config.php with URLs of your\n"
+           . "own (any public https .gif). Birthday messages still post without an image.\n\n";
+        exit(1);
+    }
+    if ($good < count($list)) {
+        echo "Prune the dead ones from `gifs` in config.php to keep the rotation varied.\n";
+    }
+    echo "\n";
+    exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,13 +484,28 @@ foreach (['message_single', 'message_multi'] as $k) {
     }
 }
 
+$msgCfg['messages_single'] = $cfg['messages_single'] ?? null;
+$msgCfg['messages_multi']  = $cfg['messages_multi'] ?? null;
+
 $batches = !empty($cfg['post_separately'])
     ? array_map(function ($p) { return [$p]; }, $celebrants)
     : [$celebrants];
 
 $messages = [];
 foreach ($batches as $batch) {
-    $messages[] = ['people' => $batch, 'text' => bdayBuildText($batch, $msgCfg)];
+    // One seed per message, from the date and the people in it. Everything
+    // random-looking downstream (which quip, which GIF) derives from this, so
+    // a dry run previews EXACTLY what the real run will post, and re-running
+    // never quietly changes the message.
+    $seed = bdaySeedFor($target, $batch);
+    $text = bdayBuildText($batch, $msgCfg, $seed);
+    $gif  = GifSource::pick($cfg, $seed);
+    $messages[] = [
+        'people' => $batch,
+        'text'   => $text,
+        'gif'    => $gif,
+        'blocks' => bdayBuildBlocks($text, $gif['url'] ?? null, $cfg),
+    ];
 }
 
 if ($dryRun) {
@@ -421,6 +514,15 @@ if ($dryRun) {
         echo "\nchannel: " . (string)($cfg['slack_channel'] ?? '(unset)') . "\n";
         echo "-----------------------------------------------------------------\n";
         echo $m['text'] . "\n";
+        if ($m['gif'] !== null) {
+            echo "\n[GIF · " . $m['gif']['source'] . "]\n" . $m['gif']['url'] . "\n";
+        } elseif (!empty($cfg['gifs_enabled'])) {
+            echo "\n[no GIF — nothing resolved; run --test-gifs]\n";
+        }
+        $footer = end($m['blocks']);
+        if (is_array($footer) && ($footer['type'] ?? '') === 'context') {
+            echo "\n" . $footer['elements'][0]['text'] . "\n";
+        }
         echo "-----------------------------------------------------------------\n";
     }
     echo "\n";
@@ -438,11 +540,28 @@ $failed = 0;
 foreach ($messages as $idx => $m) {
     try {
         $ts = $slack->postMessage($channel, $m['text'], [
+            'blocks'     => $m['blocks'],
             'username'   => (string)($cfg['bot_username'] ?? ''),
             'icon_emoji' => (string)($cfg['bot_icon_emoji'] ?? ''),
         ]);
         $posted = array_merge($posted, $m['people']);
-        bdayLog('Posted to ' . $channel . ' (ts ' . $ts . ').');
+        bdayLog('Posted to ' . $channel . ' (ts ' . $ts . ')'
+            . ($m['gif'] !== null ? ' with a GIF from ' . $m['gif']['source'] : ' without a GIF') . '.');
+
+        // Seed the reactions so nobody has to be first. Best-effort: a missing
+        // reactions:write scope must not turn a delivered greeting into a
+        // failure, so addReaction() reports rather than throws.
+        if (!empty($cfg['add_reactions']) && $ts !== '') {
+            $emojis = (array)($cfg['reactions'] ?? ['tada', 'birthday']);
+            $added = 0;
+            foreach ($emojis as $emoji) {
+                if ($slack->addReaction($channel, $ts, (string)$emoji)) { $added++; }
+            }
+            if ($added < count($emojis)) {
+                bdayLog('Note: ' . (count($emojis) - $added) . ' reaction(s) were not added '
+                    . '(reactions:write scope missing, or an unknown emoji name).');
+            }
+        }
     } catch (Exception $e) {
         $failed++;
         bdayLog('ERROR: ' . $e->getMessage());

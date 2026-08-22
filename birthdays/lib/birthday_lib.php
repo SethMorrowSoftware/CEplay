@@ -358,13 +358,103 @@ function bdayJoinNames(array $parts): string
 }
 
 /**
+ * Fun message pools.
+ *
+ * The venue is an arcade / go-kart / laser-tag park, so the jokes are drawn
+ * from its own attractions — the names come straight out of the card system
+ * (Go-Karts, Laser Tag, Free Fall, Dragon Coaster, Ballocity, the batting
+ * cages, mini golf, the redemption counter). A generic "Happy Birthday!" is
+ * fine; sounding like the place you actually work is better.
+ *
+ * Placeholders: {names} {count} {venue}. Deliberately no {age} and no birth
+ * year — the roster holds full dates of birth, a fifth of this staff are
+ * minors, and a channel is not the place to publish either.
+ *
+ * Which one gets used is DETERMINISTIC per day and per person (see
+ * bdaySeedFor), so --dry-run shows the message that will actually be posted
+ * and a re-run never silently swaps it.
+ */
+const BDAY_FUN_SINGLE = [
+    ":birthday: Happy Birthday, {names}! :tada:\nHope today's an all-time high score.",
+    ":tada: It's {names}'s birthday! :birthday:\nUnlimited continues today — no quarters needed. :joystick:",
+    ":birthday: Happy Birthday, {names}! :racing_car:\nMay every light be green and may you get the fast kart.",
+    ":cake: Happy Birthday, {names}! :sparkles:\nMay the claw be generous and the tickets rain down. :teddy_bear:",
+    ":birthday: Happy Birthday, {names}! :bowling:\nYou get the good skee-ball lane today. House rules.",
+    ":tada: {names} is celebrating today! :birthday:\nDirect hits only in Laser Tag. :dart:",
+    ":balloon: Happy Birthday, {names}! :birthday:\nEvery putt a hole in one, every swipe a jackpot. :golf:",
+    ":birthday: Happy Birthday to {names}! :star2:\nTop of the leaderboard today, no argument. :trophy:",
+    ":cake: It's {names}'s birthday! :confetti_ball:\nZipline's yours, the line's empty, and the pizza's hot.",
+    ":birthday: Happy Birthday, {names}! :dizzy:\nFree Fall, Dragon Coaster, cake. In that order.",
+    ":tada: Happy Birthday, {names}! :birthday:\nSlow pitches in the cage and top-shelf prizes at the counter.",
+    ":confetti_ball: Big day for {names}! :birthday:\nEveryone at {venue} hopes it's a good one.",
+];
+
+const BDAY_FUN_MULTI = [
+    ":birthday: {count} birthdays at {venue} today! :tada:\nHappy Birthday, {names}!",
+    ":tada: {count}-player birthday mode: {names}! :birthday:\nHappy Birthday from all of us!",
+    ":confetti_ball: {count} of us are celebrating today — Happy Birthday, {names}! :birthday:\nHigh scores all round.",
+    ":cake: Co-op birthday unlocked: {names}! :video_game:\nThat's {count} good reasons for cake.",
+    ":birthday: Happy Birthday, {names}! :tada:\n{count} celebrations, one very good day at {venue}.",
+    ":balloon: Busy day at the party table — Happy Birthday to {names}! :birthday:\nAll {count} of you. :confetti_ball:",
+];
+
+/**
+ * A stable seed for one day's greeting.
+ *
+ * Built from the date plus the people in it, so: the same greeting on every
+ * run that day, a different one for a different person, and a different one
+ * for the same person next year.
+ */
+function bdaySeedFor(string $date, array $celebrants): string
+{
+    $keys = [];
+    foreach ($celebrants as $p) {
+        $keys[] = bdayPersonKey($p);
+    }
+    sort($keys);
+    return $date . '|' . implode(',', $keys);
+}
+
+/** Stable index from a seed — same seed, same pick, every run. */
+function bdaySeedIndex(string $seed, int $count): int
+{
+    if ($count <= 0) {
+        return 0;
+    }
+    return (int)(sprintf('%u', crc32($seed)) % $count);
+}
+
+/**
+ * Choose the template for this greeting.
+ *
+ * Precedence: a single fixed template in config wins (someone who has settled
+ * on exact wording keeps it), then a custom pool, then the built-in pool.
+ */
+function bdayPickTemplate(int $count, array $cfg, string $seed): string
+{
+    $isMulti = $count > 1;
+
+    $fixed = $isMulti ? ($cfg['message_multi'] ?? '') : ($cfg['message_single'] ?? '');
+    if (is_string($fixed) && $fixed !== '') {
+        return $fixed;
+    }
+
+    $pool = $isMulti ? ($cfg['messages_multi'] ?? null) : ($cfg['messages_single'] ?? null);
+    $pool = is_array($pool) ? array_values(array_filter(array_map('strval', $pool))) : [];
+    if (!$pool) {
+        $pool = $isMulti ? BDAY_FUN_MULTI : BDAY_FUN_SINGLE;
+    }
+    return $pool[bdaySeedIndex($seed, count($pool))];
+}
+
+/**
  * Build the message text.
  *
  * Templates support {names}, {count} and {venue}. Deliberately no {age} and no
  * birth year anywhere: the roster carries dates of birth, and a public channel
  * is not the place to publish them.
  */
-function bdayBuildText(array $celebrants, array $cfg): string
+function bdayBuildText(array $celebrants, array $cfg, string $seed = ''): string
 {
     if (!$celebrants) {
         return '';
@@ -377,14 +467,7 @@ function bdayBuildText(array $celebrants, array $cfg): string
     }
     $joined = bdayJoinNames($names);
 
-    // These defaults are the same wording as config.example.php, so a config
-    // that omits the templates produces exactly the same message as one that
-    // ships them.
-    $template = count($celebrants) === 1
-        ? ($cfg['message_single']
-            ?? ":birthday: Happy Birthday, {names}! :tada:\nFrom everyone at {venue} — have a great one!")
-        : ($cfg['message_multi']
-            ?? ":birthday: {count} birthdays today — Happy Birthday, {names}! :tada:\nFrom everyone at {venue}!");
+    $template = bdayPickTemplate(count($celebrants), $cfg, $seed);
 
     $text = strtr($template, [
         '{names}' => $joined,
@@ -394,6 +477,45 @@ function bdayBuildText(array $celebrants, array $cfg): string
 
     $prefix = trim((string)($cfg['mention'] ?? ''));
     return $prefix !== '' ? $prefix . ' ' . $text : $text;
+}
+
+/**
+ * Assemble the Slack Block Kit payload: the greeting, the GIF, and a small
+ * footer line.
+ *
+ * `text` is still sent alongside these as the notification/accessibility
+ * fallback — a blocks-only message shows up blank in a push notification.
+ */
+function bdayBuildBlocks(string $text, ?string $gifUrl, array $cfg): array
+{
+    $blocks = [[
+        'type' => 'section',
+        'text' => ['type' => 'mrkdwn', 'text' => $text],
+    ]];
+
+    if ($gifUrl !== null && $gifUrl !== '') {
+        $blocks[] = [
+            'type'      => 'image',
+            'image_url' => $gifUrl,
+            // Required by Slack, and it is what screen readers announce.
+            'alt_text'  => (string)($cfg['gif_alt_text'] ?? 'A birthday celebration GIF'),
+        ];
+    }
+
+    $footer = $cfg['footer_text'] ?? null;
+    if ($footer === null) {
+        $footer = ':balloon: from everyone at '
+            . bdaySlackEscape((string)($cfg['venue_label'] ?? 'The Castle Fun Center'));
+    }
+    $footer = trim((string)$footer);
+    if ($footer !== '') {
+        $blocks[] = [
+            'type'     => 'context',
+            'elements' => [['type' => 'mrkdwn', 'text' => $footer]],
+        ];
+    }
+
+    return $blocks;
 }
 
 // ---------------------------------------------------------------------------

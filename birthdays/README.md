@@ -2,7 +2,9 @@
 
 Posts a birthday greeting to Slack each morning for anyone on the CenterEdge
 employee roster whose birthday is today **and** whose employment-status column
-still says they work here.
+still says they work here — with an animated GIF and a rotating set of
+arcade-flavoured one-liners, so it reads like the place you work rather than a
+cron job.
 
 It **does not change the CEplay app**. It borrows two things and writes
 nothing back: the app's stored (encrypted) MSSQL connection, and its read-only
@@ -132,8 +134,13 @@ minor in full. Your call; `full` is the default.
 2. Name it (e.g. `Castle Birthdays`), pick the workspace.
 3. **OAuth & Permissions → Bot Token Scopes** → add **`chat:write`**.
    - `chat:write.public` too, if you want it to post without being invited.
+   - `reactions:write` if you want the bot to add the first :tada: itself
+     (`add_reactions`).
    - `chat:write.customize` only if you set `bot_username`/`bot_icon_emoji`.
    - `users:read.email` only if you turn on `mention_by_email`.
+
+   The GIF needs **no** extra scope — it's posted as a Block Kit image block,
+   not an upload.
 4. **Install to Workspace**, then copy the **Bot User OAuth Token** (`xoxb-…`).
 5. In Slack, invite it: `/invite @Castle Birthdays`.
 6. Get the **channel ID** (channel name → *View channel details* → bottom of the
@@ -168,6 +175,9 @@ php birthdays/birthday_bot.php --dry-run
 
 # What about a day you know has a birthday on it?
 php birthdays/birthday_bot.php --date=2026-09-14 --dry-run
+
+# Do the GIF URLs still resolve?
+php birthdays/birthday_bot.php --test-gifs
 
 # Is the token good and the channel reachable? (posts one test message)
 php birthdays/birthday_bot.php --test-slack
@@ -205,6 +215,44 @@ Not on Fedora CoreOS? Plain cron works identically:
 ```
 
 ---
+
+## The fun bits
+
+**Rotating messages.** The bot ships a pool of birthday lines written around
+this venue's own attractions — the go-karts, Laser Tag, Free Fall, the skee-ball
+lanes, the redemption counter — plus a separate pool for days when more than one
+person is celebrating. It picks one per day. Write your own with
+`messages_single` / `messages_multi`, or pin a single fixed wording with
+`message_single` / `message_multi`.
+
+**Animated GIFs.** Attached as a Slack image block, which animates and needs no
+extra scope. Two sources:
+
+- **A free Giphy key** (`giphy_api_key`, ~2 minutes at developers.giphy.com) —
+  a fresh GIF every time, searched across rotating terms, locked to `rating=g`.
+  This is the one to use; a fixed list eventually gets boring.
+- **A curated list** (`gifs`) — the fallback, used when there's no key or Giphy
+  is down. Ships with a starter set.
+
+**Reactions.** Set `add_reactions` and the bot drops the first 🎉 🎂 on its own
+message so nobody has to break the ice. Needs `reactions:write`.
+
+**Everything random-looking is actually deterministic.** Which quip and which
+GIF you get is seeded from the date plus the people celebrating, so `--dry-run`
+shows *exactly* what will post, a re-run never silently swaps it, two people on
+the same day get one message, and the same person gets something different next
+year.
+
+**A dead GIF link can't break a birthday.** Hotlinked URLs rot. The bot HEAD-
+checks the GIF it's about to use, walks down the list if that one has gone, and
+posts the message without an image if none work — one request a day, and the
+greeting always goes out. `--test-gifs` checks the whole list up front, and if
+*nothing* resolves it probes slack.com before blaming the list, so a firewalled
+network doesn't get told to prune perfectly good URLs.
+
+**What it will never do:** publish an age, a birth year, or a milestone
+("21 today!"). The roster holds full dates of birth and about a fifth of this
+staff are minors. The message gets the name and nothing more.
 
 ## How it decides who to greet
 
@@ -246,8 +294,20 @@ annotated version.
 | `roster_sql` | see example | The one SELECT that defines "current employee" |
 | `name_style` | `full` | `full` / `first` / `first_initial` |
 | `venue_label` | The Castle Fun Center | Fills `{venue}` |
-| `message_single` / `message_multi` | see example | `{names}` `{count}` `{venue}` |
+| `messages_single` / `messages_multi` | built-in pools | Pools of templates; `{names}` `{count}` `{venue}` |
+| `message_single` / `message_multi` | unset | Pin ONE exact wording, overriding the pool |
+| `footer_text` | `null` | Context line under the message; `''` to drop it |
 | `post_separately` | `false` | One message each instead of one combined |
+| `gifs_enabled` | `true` | Attach an animated GIF |
+| `giphy_api_key` | `''` | Free key → a fresh GIF every time |
+| `giphy_rating` | `g` | `g` or `pg` only; anything else is forced to `g` |
+| `gif_search_terms` | built-in | Rotated through when searching Giphy |
+| `gifs` | built-in list | Fallback URLs when there's no Giphy key |
+| `gif_verify` | `true` | HEAD-check before posting; skip dead links |
+| `gif_timeout` | `6` | Seconds for the GIF check / Giphy search |
+| `gif_alt_text` | see example | What screen readers announce |
+| `add_reactions` | `false` | Bot adds the first reactions (`reactions:write`) |
+| `reactions` | `tada`, `birthday` | Which emoji it adds |
 | `mention_by_email` | `false` | Real @-mentions; needs `users:read.email` + an `email` column |
 | `leap_day_mode` | `feb28` | `feb28` / `mar1` / `skip` |
 | `exclude_emp_nos` / `exclude_names` | `[]` | Opt-outs |
@@ -271,6 +331,11 @@ annotated version.
 | `Refusing to post: N people share a birthday` | `roster_sql` is reading a hire date or similar — re-run `discover.php` |
 | It posted nothing and said "Already wished" | Working as intended; `--force` to repost |
 | Nothing at all in the channel at 09:00 | `systemctl status ceplay-birthdays.service` and `journalctl -u ceplay-birthdays` |
+| Message posts but no GIF | `--test-gifs`. If everything reads DEAD it also tells you whether that's link rot or no outbound network |
+| `--test-gifs` says all dead | Set `giphy_api_key`, or paste your own URLs into `gifs` |
+| `Giphy returned HTTP 401/403` | Wrong or unactivated `giphy_api_key` |
+| `invalid_blocks` from Slack | A GIF URL isn't `https://`, or isn't publicly reachable |
+| Reactions missing | Add `reactions:write` **and reinstall the app** |
 
 ## Development
 
@@ -278,7 +343,8 @@ The date, message and state logic has no database or network in it, so the
 tests run anywhere:
 
 ```bash
-php birthdays/tests/test_birthday_lib.php        # 91 assertions — matching, messages, state
+php birthdays/tests/test_birthday_lib.php        # 121 assertions — matching, messages, blocks, state
+php birthdays/tests/test_gif_source.php          # 30 assertions — GIF selection and Giphy parsing
 php birthdays/tests/test_discover_helpers.php    # 67 assertions — column/table/status-label classification
 ```
 
