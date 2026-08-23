@@ -230,11 +230,17 @@ SQL;
             $cfg[$key] = self::decode($stored, $spec);
         }
 
-        // state_file / log_file stay derived, never configurable from a form:
-        // pointing them anywhere else is a way to write files as the app user.
+        // These four stay derived, never configurable from a form: pointing
+        // them anywhere else is a way to write files as the app user.
+        //
+        // Derived HERE rather than in the bot so the Birthdays page reads the
+        // same heartbeat the timer writes — they run in different containers
+        // and only agree because this is the one place that names the paths.
         $root = dirname(__DIR__);
-        $cfg['state_file'] = $root . '/data/birthday_state.json';
-        $cfg['log_file']   = $root . '/data/birthdays.log';
+        $cfg['state_file']     = $root . '/data/birthday_state.json';
+        $cfg['log_file']       = $root . '/data/birthdays.log';
+        $cfg['heartbeat_file'] = $root . '/data/.heartbeat_birthdays';
+        $cfg['lock_file']      = $root . '/data/birthday.lock';
 
         if (!is_string($cfg['roster_sql']) || trim($cfg['roster_sql']) === '') {
             $cfg['roster_sql'] = self::DEFAULT_ROSTER_SQL;

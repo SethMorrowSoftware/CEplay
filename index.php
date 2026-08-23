@@ -387,6 +387,28 @@ function handleHealthCheck(): void {
         $status['status'] = 'degraded';
     }
 
+    // Birthday bot. Reported like the others, with one difference: a MISSING
+    // heartbeat is not degraded here, because the bot is optional and most of
+    // its life it has simply never been installed. A heartbeat that exists and
+    // has gone stale is a different matter — that is a timer that stopped, and
+    // the symptom is a birthday nobody gets wished.
+    $birthdayHeartbeat = $dataDir . '/.heartbeat_birthdays';
+    if (file_exists($birthdayHeartbeat)) {
+        $lastRun = file_get_contents($birthdayHeartbeat);
+        $ts = $lastRun !== false ? strtotime(trim($lastRun)) : false;
+        $age = $ts !== false ? time() - $ts : PHP_INT_MAX;
+        $status['birthdays'] = [
+            'last_run' => $lastRun,
+            'age_seconds' => $age,
+            'healthy' => $age < 93600, // 26 hours (the bot runs daily)
+        ];
+        if ($age >= 93600) {
+            $status['status'] = 'degraded';
+        }
+    } else {
+        $status['birthdays'] = ['last_run' => null, 'healthy' => null, 'installed' => false];
+    }
+
     // Security warnings for operators
     $warnings = [];
     // Transaction-feed backlog: set by pollGameTransactions when the per-cycle

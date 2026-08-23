@@ -22,7 +22,7 @@ birthdays/
 ├─ EXPLORER-QUERIES.md    The schema discovery, as Explorer copy/paste SQL
 ├─ lib/                   Date matching, message building, GIFs, Slack
 ├─ systemd/               Daily timer units
-└─ tests/                 244 assertions — run anywhere, no database needed
+└─ tests/                 310 assertions — run anywhere, no database needed
 ```
 
 ---
@@ -110,9 +110,14 @@ mark it done and the bot would say nothing on the real morning.
 sudo bash birthdays/run.sh --check
 ```
 
-One command, one checklist: config, MSSQL driver, database connection, roster
-query (with a headcount), Slack token, GIF source, today's birthdays and the
-next one coming up. Anything broken is listed with its fix. Posts nothing.
+One command, one checklist: config, whether posting is switched on, **when it
+last ran and what happened**, MSSQL driver, database connection, roster query
+(with a headcount), Slack token, GIF source, today's birthdays and the next one
+coming up. Anything broken is listed with its fix. Posts nothing.
+
+The **Last run** row is the one to read first when the channel has gone quiet —
+it is the only thing that separates "ran, and nobody had a birthday" from
+"never ran at all".
 
 ### If you'd rather do it by hand
 
@@ -144,8 +149,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ceplay-birthdays.timer
 ```
 
-Change the posting time by editing `OnCalendar` in the timer unit, then
-`sudo systemctl daemon-reload`.
+The timer carries three `OnCalendar` lines — the posting time plus two
+catch-up firings (see *Not failing quietly* below). Change them all together,
+then `sudo systemctl daemon-reload`. Or re-run `install.sh`, which works the
+catch-up times out for you.
 
 Not on Fedora CoreOS? Plain cron works identically:
 
@@ -170,6 +177,7 @@ sudo bash birthdays/install.sh --uninstall # stop it posting
 `Persistent=true` on the timer means a machine that was off at 09:00 runs the
 job when it boots, so an overnight outage doesn't cost anyone their message.
 That's safe because of the state file: it will not post twice for the same day.
+The same is what makes the catch-up firings free — see *Not failing quietly*.
 
 ---
 
@@ -225,6 +233,48 @@ about to use, walks down the list if it's gone, and posts without an image if
 none work. `--test-gifs` checks the whole list up front — and if nothing
 resolves, it probes slack.com first, so a firewalled network gets told to fix
 the firewall rather than to prune good URLs.
+
+## Not failing quietly
+
+A birthday greeting cannot be delivered late, and every way this bot can break
+looks exactly the same from the channel: nothing happens. A revoked token, a
+timer that never came back after a rebuild, MSSQL still starting up, a dropped
+connection at 09:00 — all of them are indistinguishable from a day when nobody
+had a birthday, and by the time somebody notices, the birthday it cost was last
+week's. Four things address that.
+
+**It retries.** Three firings a day — the posting time, then roughly 30 and 90
+minutes later. The extra two cost nothing and cannot double-post: the bot
+records who it has greeted, so a run that finds the job done exits without a
+word. If the first one worked, the others are no-ops. If it didn't, they are
+the reason somebody still gets wished a happy birthday.
+
+**Each Slack call retries too**, three attempts over a few seconds, honouring
+Slack's own `Retry-After` on a rate limit. Only failures that could pass on a
+second attempt are retried — a rate limit, a 5xx, a connection that never
+opened. A revoked token or a channel the bot isn't in will fail identically
+forever, so those are reported at once instead of three times more slowly.
+
+**Every run leaves a record**, and `--check` reads it back as a **Last run**
+row — as does the Birthdays page, from the same two files:
+
+```
+Last run           ok     posted 2 greetings at 09:00 today
+Last run           -      ran at 09:00 today — nobody had a birthday
+Last run           FAIL   today's run FAILED at 09:00: Could not read the roster
+Last run           FAIL   last ran 3 days ago (Thu 20 Aug) — the timer is not firing
+```
+
+That last line is the one that matters: it is the only way to tell "ran, and
+there was nobody" from "never ran", which are the same silence and completely
+different problems. The app's `/api/health` endpoint reports the same
+heartbeat beside cron's and the watchdog's, so external monitoring sees it too.
+A greeting that goes out is also written to the app's own audit log (Logs →
+source `birthdays`), as is a run that fails.
+
+**Two runs can't both post.** A non-blocking lock covers the whole posting
+path, so a hand-started run that overlaps a timer firing stands down instead of
+posting a second greeting.
 
 **What it will never do:** publish an age, a birth year, or a milestone
 ("21 today!"). The roster holds full dates of birth and about a fifth of this
@@ -318,13 +368,16 @@ the page wins. `config.example.php` is the annotated form of the file layer.
 
 | Key | Default | What it does |
 |---|---|---|
+| `enabled` | `true` | Master switch. `false` stops the greetings without touching the timer — `--list`, `--dry-run`, `--demo` and `--check` all still work, so you can see what it *would* post |
 | `slack_bot_token` | — | `xoxb-…` bot token |
 | `slack_channel` | — | `#birthday-test`, or a channel ID (an ID skips a lookup each run) |
 | `mention` | `''` | Prefix such as `<!here>` |
 | `roster_sql` | verified | The one SELECT defining "current employee" |
 | `name_style` | `full` | `full` / `first` / `first_initial` |
 | `venue_label` | The Castle Fun Center | Fills `{venue}` |
-| `messages_single` / `messages_multi` | built-in pools | Template pools; `{names}` `{count}` `{venue}` |
+| `greetings` / `flavors` | built-in pools | The two halves composed into a single-person message; `null` = built-ins, `[]` flavours = greeting only |
+| `multi_greetings` / `multi_flavors` | built-in pools | The same two halves for a shared birthday |
+| `messages_single` / `messages_multi` | unset | Whole-template pools, replacing composition; `{names}` `{count}` `{venue}` |
 | `message_single` / `message_multi` | unset | Pin ONE wording, overriding the pool |
 | `footer_text` | `null` | Context line; `''` to drop it |
 | `post_separately` | `false` | One message each instead of one combined |
@@ -366,7 +419,11 @@ the page wins. `config.example.php` is the annotated form of the file layer.
 | Reactions missing | Add `reactions:write` **and reinstall the app** |
 | Posts show the wrong bot name | Add `chat:write.customize` **and reinstall**, then set `bot_username`. The log says when the override was dropped |
 | Said "Already wished" and posted nothing | Working as intended; `--force` to repost |
-| Nothing at 09:00 | `systemctl status ceplay-birthdays.service`; `journalctl -u ceplay-birthdays` |
+| Nothing at 09:00 | Run `--check` first — the **Last run** row says whether the bot ran at all, which decides where to look next |
+| `Last run: the bot has never run here` | The timer isn't installed or isn't enabled: `systemctl status ceplay-birthdays.timer` |
+| `Last run: the timer is not firing` | It ran once and then stopped. `journalctl -u ceplay-birthdays` has the reason |
+| `Last run: today's run FAILED` | The run happened and the row says why — usually MSSQL or the Slack token |
+| `Another birthday-bot run is already in progress` | Two runs overlapped and the second stood down. Normal; nothing to fix |
 | Config vanished after an update | It was at `birthdays/config.php` — move it to `data/` (step 3) |
 
 ## Development
@@ -375,9 +432,9 @@ The date, message, GIF-selection and state logic has no database or network in
 it, so the tests run anywhere:
 
 ```bash
-php birthdays/tests/test_birthday_lib.php        # 121 — matching, messages, blocks, state
+php birthdays/tests/test_birthday_lib.php        # 165 — matching, messages, blocks, state, run record, lock
 php birthdays/tests/test_gif_source.php          #  30 — GIF selection, Giphy parsing
-php birthdays/tests/test_slack_channel.php       #  26 — channel name/ID/link resolution
+php birthdays/tests/test_slack_channel.php       #  48 — channel resolution, retry classification
 php birthdays/tests/test_discover_helpers.php    #  67 — column/table/status-label classification
 ```
 

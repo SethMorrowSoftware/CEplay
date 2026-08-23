@@ -16,6 +16,20 @@
 return [
 
     // -----------------------------------------------------------------------
+    // Master switch
+    // -----------------------------------------------------------------------
+
+    // false stops the greetings without disabling the systemd timer, which is
+    // what you want when something is wrong with a name, a person has just
+    // left, or the channel is being reorganised.
+    //
+    // Only the POSTING stops: --list, --dry-run, --demo and --check all still
+    // run, so you can see exactly what it would say before switching it back
+    // on. --check says so in its own row, and refuses to report "everything
+    // checks out" while it is off.
+    'enabled' => true,
+
+    // -----------------------------------------------------------------------
     // Slack
     // -----------------------------------------------------------------------
 

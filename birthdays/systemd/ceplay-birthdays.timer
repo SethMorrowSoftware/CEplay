@@ -1,17 +1,30 @@
-# Fires the birthday bot once a day.
+# Fires the birthday bot each morning, then twice more as a safety net.
 #
-# Persistent=true means a box that was powered off at 09:00 runs the job as
-# soon as it boots, so nobody's birthday is missed by an overnight outage. The
-# bot's state file makes that safe — it will not post twice for the same day.
+# WHY THREE FIRINGS. The bot gets one chance a day at something that cannot be
+# done late — a greeting that shows up tomorrow is not a birthday greeting. A
+# single blip at 09:00 (Slack having a bad minute, the venue's link flapping,
+# MSSQL still starting up) used to mean the message simply never happened, and
+# the only trace was a line in a log nobody reads.
 #
-# OnCalendar is in the SYSTEM timezone. Check it with `timedatectl`, and change
-# the time below to whenever the message should land (09:00 local by default).
+# The extra firings cost nothing and cannot double-post: the bot records who it
+# has greeted, so a run that finds the job already done exits without saying a
+# word. If 09:00 worked, 09:30 and 10:30 are no-ops. If it didn't, they are the
+# reason somebody still gets wished a happy birthday.
+#
+# Persistent=true covers the other half of the problem: a box that was powered
+# off at 09:00 runs the job as soon as it boots.
+#
+# OnCalendar is in the SYSTEM timezone. Check it with `timedatectl`. To change
+# the times, edit the lines below and `systemctl daemon-reload` — or just
+# re-run birthdays/install.sh, which writes them for whatever time you pick.
 
 [Unit]
-Description=CEplay birthday Slack bot — 09:00 daily
+Description=CEplay birthday Slack bot — daily greeting
 
 [Timer]
 OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 09:30:00
+OnCalendar=*-*-* 10:30:00
 Persistent=true
 RandomizedDelaySec=0
 

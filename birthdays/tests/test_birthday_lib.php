@@ -327,6 +327,169 @@ is_eq('custom template', $custom, 'HB *Alex Rivera* at Castle (1)');
 is_eq('empty celebrant list -> empty text', bdayBuildText([], []), '');
 
 // ---------------------------------------------------------------------------
+section('bdayMessageConfig — every wording setting reaches the message');
+
+// The regression this section exists for: the daily run assembled its own
+// message config by hand and left the four pool keys out of it, so custom
+// greetings saved on the Birthdays page were shown by the preview and by
+// --demo, and then not used by the post that actually went out. Each case
+// below sets one setting to something unmistakable in a FULL config array (the
+// shape BirthdayConfig::load returns) and checks it survives into the text.
+
+/** Build a single-person message the way birthday_bot.php does. */
+function msgFromFullCfg(array $cfg, array $people, string $seed = 'seed'): string
+{
+    return bdayBuildText($people, bdayMessageConfig($cfg), $seed);
+}
+
+$fullCfg = [
+    'name_style' => 'full', 'bold_names' => true, 'venue_label' => 'The Castle Fun Center',
+    'mention' => '', 'message_single' => '', 'message_multi' => '',
+    'messages_single' => null, 'messages_multi' => null,
+    'greetings' => null, 'flavors' => null,
+    'multi_greetings' => null, 'multi_flavors' => null,
+];
+
+$one  = [$p];
+$many = [$p, $p2, $p3];
+
+ok('custom greetings pool reaches a single-person post',
+    strpos(msgFromFullCfg(['greetings' => ['GREET-X {names}!']] + $fullCfg, $one), 'GREET-X') !== false);
+ok('custom flavours pool reaches a single-person post',
+    strpos(msgFromFullCfg(['flavors' => ['FLAVOUR-X.']] + $fullCfg, $one), 'FLAVOUR-X.') !== false);
+ok('custom multi greetings pool reaches a shared post',
+    strpos(msgFromFullCfg(['multi_greetings' => ['MGREET-X {names}!']] + $fullCfg, $many), 'MGREET-X') !== false);
+ok('custom multi flavours pool reaches a shared post',
+    strpos(msgFromFullCfg(['multi_flavors' => ['MFLAVOUR-X.']] + $fullCfg, $many), 'MFLAVOUR-X.') !== false);
+ok('whole-template pool reaches a single-person post',
+    strpos(msgFromFullCfg(['messages_single' => ['WHOLE-X {names}']] + $fullCfg, $one), 'WHOLE-X') !== false);
+ok('whole-template pool reaches a shared post',
+    strpos(msgFromFullCfg(['messages_multi' => ['WHOLEM-X {names}']] + $fullCfg, $many), 'WHOLEM-X') !== false);
+ok('pinned single wording reaches the post',
+    strpos(msgFromFullCfg(['message_single' => 'PINNED-X {names}'] + $fullCfg, $one), 'PINNED-X') !== false);
+ok('pinned shared wording reaches the post',
+    strpos(msgFromFullCfg(['message_multi' => 'PINNEDM-X {names}'] + $fullCfg, $many), 'PINNEDM-X') !== false);
+ok('venue label reaches the post',
+    strpos(msgFromFullCfg(['message_single' => '{venue}'] + $fullCfg, $one), 'The Castle Fun Center') !== false);
+ok('ping prefix reaches the post',
+    strpos(msgFromFullCfg(['mention' => '<!here>'] + $fullCfg, $one), '<!here>') === 0);
+
+// Absent vs empty is a real distinction, and the one most easily lost when
+// this subset is rebuilt: a stored NULL means "use the built-in pool", an
+// empty array means "the operator wants no flavour line".
+$defaults = bdayMessageConfig($fullCfg);
+ok('a null pool is omitted, so the built-in set is used',
+    !array_key_exists('flavors', $defaults) && !array_key_exists('greetings', $defaults));
+ok('an empty pool is passed through as empty',
+    bdayMessageConfig(['flavors' => []] + $fullCfg)['flavors'] === []);
+is_eq('empty flavour list really does mean greeting only',
+    substr_count(msgFromFullCfg(['flavors' => []] + $fullCfg, $one), "\n"), 0);
+ok('an unset pinned wording is omitted rather than passed as an empty string',
+    !array_key_exists('message_single', $defaults));
+
+// --demo blanks the ping so a sample announcement can never @-here a channel.
+is_eq('overrides win over the stored value',
+    bdayMessageConfig(['mention' => '<!channel>'] + $fullCfg, ['mention' => ''])['mention'], '');
+
+// ---------------------------------------------------------------------------
+section('run record — telling "nobody today" apart from "never ran"');
+
+// The bot's failure mode is silence, and every cause of it looks identical in
+// the channel. These are the readings that have to distinguish them.
+
+$hbNow  = date('c');
+$today  = date('Y-m-d');
+$mk = function (string $outcome, int $count = 0, string $detail = '', ?int $at = null) use ($today) {
+    return bdayStateRecordRun(['posted' => []], $today, $outcome, $detail, $count, $at);
+};
+
+$never = bdayRunHealth(['posted' => []], null);
+is_eq('never run -> fail', $never['status'], 'fail');
+ok('never run says how to check the timer', strpos($never['detail'], 'timer') !== false);
+is_eq('never run has no age', $never['age'], null);
+
+$posted = bdayRunHealth($mk('posted', 2, 'to C01'), $hbNow);
+is_eq('posted today -> ok', $posted['status'], 'ok');
+ok('posted today counts the greetings', strpos($posted['detail'], '2 greetings') !== false);
+ok('one greeting is singular',
+    strpos(bdayRunHealth($mk('posted', 1), $hbNow)['detail'], '1 greeting at') !== false);
+
+is_eq('nobody today -> idle', bdayRunHealth($mk('idle'), $hbNow)['status'], 'idle');
+is_eq('switched off -> off', bdayRunHealth($mk('disabled'), $hbNow)['status'], 'off');
+
+$failedRun = bdayRunHealth($mk('failed', 0, 'Could not read the roster'), $hbNow);
+is_eq('failed today -> fail', $failedRun['status'], 'fail');
+ok('failed today carries the reason',
+    strpos($failedRun['detail'], 'Could not read the roster') !== false);
+
+// A run earlier in the day is normal — the timer fires once, so for most of
+// the day the newest run is yesterday morning's.
+$yesterday = date('c', time() - 20 * 3600);
+is_eq('ran 20 hours ago -> still ok',
+    bdayRunHealth(['posted' => []], $yesterday)['status'], 'ok');
+
+$missed = bdayRunHealth(['posted' => []], date('c', time() - 30 * 3600));
+is_eq('30 hours -> warn (a firing was missed)', $missed['status'], 'warn');
+$dead = bdayRunHealth(['posted' => []], date('c', time() - 72 * 3600));
+is_eq('72 hours -> fail (the timer is not firing)', $dead['status'], 'fail');
+
+// An OLD success never colours the verdict green: a post three days ago says
+// nothing about this morning.
+$staleButHappy = bdayRunHealth(
+    bdayStateRecordRun(['posted' => []], date('Y-m-d', time() - 72 * 3600), 'posted', '', 3),
+    date('c', time() - 72 * 3600)
+);
+is_eq('an old success does not excuse a dead timer', $staleButHappy['status'], 'fail');
+
+// But TODAY's record does outrank the heartbeat, because the run writes it
+// itself. A heartbeat that could not be written (a permissions problem on the
+// data directory) must not be reported as a timer that stopped firing.
+is_eq('a missing heartbeat cannot override a run recorded today',
+    bdayRunHealth($mk('posted', 1), null)['status'], 'ok');
+is_eq('nor can a stale one',
+    bdayRunHealth($mk('idle'), date('c', time() - 80 * 3600))['status'], 'idle');
+
+// Upgrading an install that has a heartbeat but no last_run yet.
+is_eq('heartbeat without a run record still reads',
+    bdayRunHealth(['posted' => []], $hbNow)['status'], 'ok');
+is_eq('an outcome this version does not know falls back to the age reading',
+    bdayRunHealth($mk('something_new'), $hbNow)['status'], 'ok');
+
+$rec = bdayStateRecordRun(['posted' => ['2026-08-23' => ['e:1']]], '2026-08-23', 'posted', 'to C01', 2);
+is_eq('recording keeps the already-greeted list', $rec['posted'], ['2026-08-23' => ['e:1']]);
+is_eq('recording stores the outcome', $rec['last_run']['outcome'], 'posted');
+is_eq('recording stores the count', $rec['last_run']['count'], 2);
+
+is_eq('relative: minutes', bdayRelativeTime(1000000 - 600, 1000000), '10 minutes ago');
+is_eq('relative: one hour', bdayRelativeTime(1000000 - 3600, 1000000), '1 hour ago');
+is_eq('relative: hours', bdayRelativeTime(1000000 - 7200, 1000000), '2 hours ago');
+ok('relative: yesterday', strpos(bdayRelativeTime(1000000 - 86400, 1000000), 'yesterday at ') === 0);
+ok('relative: days', strpos(bdayRelativeTime(1000000 - 4 * 86400, 1000000), '4 days ago') === 0);
+
+// ---------------------------------------------------------------------------
+section('run lock — two runs must not both post');
+
+$lockPath = sys_get_temp_dir() . '/bday_lock_' . getmypid() . '.lock';
+@unlink($lockPath);
+
+$first = bdayLockAcquire($lockPath);
+ok('the first run takes the lock', is_resource($first));
+is_eq('a second run is turned away', bdayLockAcquire($lockPath), false);
+bdayLockRelease($first);
+$second = bdayLockAcquire($lockPath);
+ok('the lock is free once released', is_resource($second));
+bdayLockRelease($second);
+bdayLockRelease(null);   // must not blow up
+ok('releasing nothing is harmless', true);
+@unlink($lockPath);
+
+// A lock file that cannot be opened returns null, NOT false: the caller has to
+// tell "somebody else is posting" (stop) from "the lock is broken" (carry on,
+// because a permissions problem must not cost a birthday).
+is_eq('an unopenable lock path reports null',
+    bdayLockAcquire('/proc/nonexistent-dir-for-test/x.lock'), null);
+
+// ---------------------------------------------------------------------------
 section('state file');
 
 $statePath = sys_get_temp_dir() . '/bday_test_' . getmypid() . '.json';

@@ -578,6 +578,54 @@ function bdayCleanPool($pool): array
 }
 
 /**
+ * The subset of the configuration that shapes the message text.
+ *
+ * Every caller that builds a greeting goes through this — the daily run,
+ * --demo, and the Birthdays page's preview — so a preview can never show
+ * wording the real post won't use.
+ *
+ * That is the whole reason it exists. This subset used to be assembled by hand
+ * at each call site, and the DAILY RUN's copy left out the four pool keys: a
+ * custom greeting or flavour line saved on the Birthdays page was shown in the
+ * preview, shown by --demo, and then silently NOT used by the message that
+ * actually went out. Anything that shapes wording belongs here, in one place,
+ * or that drift comes straight back.
+ *
+ * Presence matters as much as value. A pool is passed on only when it is
+ * genuinely an array, because bdayPickTemplate() reads an ABSENT key as "use
+ * the built-in pool" and an EMPTY one as "the operator wants no flavour line
+ * at all" — and the stored default is null, which must land on the first
+ * reading rather than the second.
+ *
+ * @param array $cfg       the full BirthdayConfig::load() result
+ * @param array $overrides applied last (--demo blanks the ping prefix, so a
+ *                         sample announcement can never @-here a channel)
+ */
+function bdayMessageConfig(array $cfg, array $overrides = []): array
+{
+    $out = [
+        'name_style'  => (string)($cfg['name_style'] ?? 'full'),
+        'bold_names'  => (bool)($cfg['bold_names'] ?? true),
+        'venue_label' => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
+        'mention'     => (string)($cfg['mention'] ?? ''),
+    ];
+    // One pinned wording wins outright; an empty string means "not set".
+    foreach (['message_single', 'message_multi'] as $k) {
+        $v = trim((string)($cfg[$k] ?? ''));
+        if ($v !== '') {
+            $out[$k] = $v;
+        }
+    }
+    foreach (['messages_single', 'messages_multi', 'greetings', 'flavors',
+              'multi_greetings', 'multi_flavors'] as $k) {
+        if (isset($cfg[$k]) && is_array($cfg[$k])) {
+            $out[$k] = $cfg[$k];
+        }
+    }
+    return array_merge($out, $overrides);
+}
+
+/**
  * Build the message text.
  *
  * Templates support {names}, {count} and {venue}. Deliberately no {age} and no
@@ -727,4 +775,215 @@ function bdayStatePrune(array $state, string $today, int $keepDays = 45): array
         }
     }
     return $state;
+}
+
+// ---------------------------------------------------------------------------
+// Run record — "did this morning's greeting actually happen?"
+//
+// The bot's failure mode is SILENCE. A revoked token, a timer that never came
+// back after a rebuild, MSSQL down at 09:00, a host that was off past the
+// Persistent catch-up — every one of them looks exactly like a day when nobody
+// had a birthday, and the only trace was a line in a log file nobody reads.
+// By the time somebody notices, the birthday it cost is last week's.
+//
+// So every real run leaves two marks: a heartbeat file (the same convention
+// Scheduler::writeHeartbeat uses, so /health and any external monitor can read
+// it) saying the timer fired at all, and a last_run block in the state file
+// saying what happened when it did. The distinction matters — "ran, nobody
+// today" and "did not run" are the same silence in the channel and completely
+// different problems.
+// ---------------------------------------------------------------------------
+
+/** Older than this and the daily timer has plainly missed a firing. */
+const BDAY_RUN_STALE_WARN = 93600;    // 26 hours
+/** Older than this and it is not a blip — two firings have gone. */
+const BDAY_RUN_STALE_FAIL = 180000;   // 50 hours
+
+/** Stamp "the bot ran". Matches Scheduler::writeHeartbeat's plain-ISO format. */
+function bdayHeartbeatWrite(string $path, ?int $now = null): bool
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+        return false;
+    }
+    return @file_put_contents($path, date('c', $now ?? time()), LOCK_EX) !== false;
+}
+
+/** The last heartbeat, or null when the bot has never run here. */
+function bdayHeartbeatRead(string $path): ?string
+{
+    if (!is_file($path)) {
+        return null;
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return null;
+    }
+    return trim($raw);
+}
+
+/**
+ * Record what this run did, for the page and --check to report.
+ *
+ * $outcome is one of: posted | idle (nobody today) | disabled (the switch is
+ * off) | failed. Kept in the state file rather than a table of its own because
+ * the bot already writes that file atomically and the timer container may be
+ * the only thing running.
+ */
+function bdayStateRecordRun(array $state, string $date, string $outcome,
+                            string $detail = '', int $count = 0, ?int $now = null): array
+{
+    $state['last_run'] = [
+        'at'      => date('c', $now ?? time()),
+        'date'    => $date,
+        'outcome' => $outcome,
+        'count'   => $count,
+        'detail'  => mb_substr(trim($detail), 0, 300),
+    ];
+    return $state;
+}
+
+/**
+ * Turn the heartbeat and the last run into one verdict.
+ *
+ * Shared by the CLI's --check and the Birthdays page, so the two can never
+ * disagree about whether the bot is alive — the same reason bdayMessageConfig()
+ * exists.
+ *
+ * Precedence, and it matters:
+ *
+ *  1. A last_run stamped with TODAY'S date wins outright. The run writes it
+ *     itself, so it is proof the bot ran — including when the heartbeat is
+ *     missing or stale, which is exactly what a failed heartbeat write looks
+ *     like. Reporting "the timer is not firing" at a bot that plainly just ran
+ *     would send somebody to debug systemd over a file-permissions problem.
+ *  2. Otherwise the heartbeat's AGE decides. A successful post three days ago
+ *     is not evidence about this morning, so an old last_run never gets to
+ *     colour the verdict green.
+ *
+ * @return array{status: string, age: ?int, detail: string}
+ *         status: ok | idle | off | warn | fail
+ */
+function bdayRunHealth(array $state, ?string $heartbeat, ?int $now = null): array
+{
+    $now = $now ?? time();
+    $stamp = ($heartbeat !== null && trim($heartbeat) !== '') ? strtotime(trim($heartbeat)) : false;
+    $age = $stamp !== false ? max(0, $now - $stamp) : null;
+    $run = $state['last_run'] ?? null;
+
+    if (is_array($run) && ($run['date'] ?? '') === date('Y-m-d', $now)) {
+        $at     = !empty($run['at']) ? date('H:i', (int)strtotime((string)$run['at'])) : '?';
+        $n      = (int)($run['count'] ?? 0);
+        $detail = trim((string)($run['detail'] ?? ''));
+        switch ((string)($run['outcome'] ?? '')) {
+            case 'posted':
+                return ['status' => 'ok', 'age' => $age, 'detail' =>
+                    'posted ' . $n . ' greeting' . ($n === 1 ? '' : 's') . ' at ' . $at . ' today'
+                    . ($detail !== '' ? ' — ' . $detail : '')];
+            case 'idle':
+                return ['status' => 'idle', 'age' => $age, 'detail' =>
+                    'ran at ' . $at . ' today — nobody had a birthday'];
+            case 'disabled':
+                return ['status' => 'off', 'age' => $age, 'detail' =>
+                    'ran at ' . $at . ' today, but greetings are switched off'];
+            case 'failed':
+                return ['status' => 'fail', 'age' => $age, 'detail' =>
+                    "today's run FAILED at " . $at . ($detail !== '' ? ': ' . $detail : '')];
+        }
+        // An outcome this version doesn't know: fall through to the age
+        // reading rather than inventing a verdict for it.
+    }
+
+    if ($stamp === false) {
+        return ['status' => 'fail', 'age' => null, 'detail' =>
+            'the bot has never run here — check the timer is installed and enabled '
+            . '(systemctl status ceplay-birthdays.timer)'];
+    }
+    $when = bdayRelativeTime($stamp, $now);
+
+    if ($age <= BDAY_RUN_STALE_WARN) {
+        // Normal for most of the day: the timer fires once, so before this
+        // morning's firing the newest run is yesterday's.
+        return ['status' => 'ok', 'age' => $age, 'detail' => 'last ran ' . $when];
+    }
+    if ($age <= BDAY_RUN_STALE_FAIL) {
+        return ['status' => 'warn', 'age' => $age, 'detail' =>
+            'last ran ' . $when . ' — a daily firing has been missed'];
+    }
+    return ['status' => 'fail', 'age' => $age, 'detail' =>
+        'last ran ' . $when . ' — the timer is not firing '
+        . '(systemctl status ceplay-birthdays.timer)'];
+}
+
+/** "3 hours ago", "yesterday at 09:00", "6 days ago (Mon 17 Aug)". */
+function bdayRelativeTime(int $then, int $now): string
+{
+    $d = max(0, $now - $then);
+    if ($d < 90) {
+        return 'just now';
+    }
+    if ($d < 3600) {
+        $m = (int)round($d / 60);
+        return $m . ' minute' . ($m === 1 ? '' : 's') . ' ago';
+    }
+    if ($d < 86400) {
+        $h = (int)round($d / 3600);
+        return $h . ' hour' . ($h === 1 ? '' : 's') . ' ago';
+    }
+    $days = (int)floor($d / 86400);
+    if ($days === 1) {
+        return 'yesterday at ' . date('H:i', $then);
+    }
+    if ($days < 14) {
+        return $days . ' days ago (' . date('D j M', $then) . ')';
+    }
+    return 'on ' . date('j M Y', $then);
+}
+
+// ---------------------------------------------------------------------------
+// Run lock
+//
+// The timer is Persistent, install.sh can add catch-up firings, and somebody
+// can always run the bot by hand — so two runs CAN overlap. Both would read
+// the same "not yet greeted" state and both would post, which is a duplicate
+// greeting in a public channel.
+//
+// One non-blocking lock around the whole posting path fixes it. Non-blocking
+// because the second run has nothing useful to wait for: whoever holds the
+// lock is already doing the job.
+// ---------------------------------------------------------------------------
+
+/**
+ * Take the run lock.
+ *
+ * @return resource|false|null  resource = held; false = somebody else has it;
+ *         null = the lock file could not be opened at all. Null is
+ *         deliberately NOT the same as false: a permissions problem with a
+ *         lock file must not cost anybody their birthday, so the caller
+ *         carries on unlocked rather than skipping the post.
+ */
+function bdayLockAcquire(string $path)
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+        return null;
+    }
+    $fh = @fopen($path, 'c');
+    if ($fh === false) {
+        return null;
+    }
+    if (!@flock($fh, LOCK_EX | LOCK_NB)) {
+        @fclose($fh);
+        return false;
+    }
+    return $fh;
+}
+
+/** Release the run lock. Harmless if it was never held. */
+function bdayLockRelease($handle): void
+{
+    if (is_resource($handle)) {
+        @flock($handle, LOCK_UN);
+        @fclose($handle);
+    }
 }

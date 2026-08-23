@@ -303,12 +303,42 @@ if [[ "${tm,,}" != "n" ]]; then
     fi
 fi
 
+# The chosen time, plus two catch-up firings the same day.
+#
+# A greeting that arrives tomorrow is not a birthday greeting, so one shot a
+# day is not enough: a blip at the posting minute used to lose the message
+# outright. The retries cost nothing and cannot double-post — the bot records
+# who it greeted, so a run with nothing left to do exits silently.
+#
+# Catch-ups that would spill past midnight are dropped rather than wrapped: at
+# 23:45 they would land on the FOLLOWING day, which is a different day's
+# greeting, not a retry of this one.
+firing_times() {
+    local base=$((10#${PTIME%%:*} * 60 + 10#${PTIME##*:}))
+    local off t
+    printf '%s\n' "$PTIME"
+    for off in 30 90; do
+        t=$((base + off))
+        (( t < 1440 )) && printf '%02d:%02d\n' $((t / 60)) $((t % 60))
+    done
+}
+
+CAL_LINES=""
+while read -r t; do
+    CAL_LINES+="OnCalendar=*-*-* ${t}:00"$'\n'
+done < <(firing_times)
+RETRY_TIMES="$(firing_times | tail -n +2 | paste -sd' ' -)"
+
 echo
-info "Installing the daily timer for ${PTIME}"
+info "Installing the daily timer for ${PTIME}${RETRY_TIMES:+ (catch-up at ${RETRY_TIMES})}"
 install -m 0644 "${UNIT_SRC}/${SERVICE}" "${UNIT_DST}/${SERVICE}"
-sed -e "s|^OnCalendar=.*|OnCalendar=*-*-* ${PTIME}:00|" \
-    -e "s|— 09:00 daily|— ${PTIME} daily|" \
-    "${UNIT_SRC}/${TIMER}" > "${UNIT_DST}/${TIMER}"
+# Replace the whole shipped block of OnCalendar lines with the generated one,
+# rather than rewriting each in place — the unit ships with three of them, and
+# a per-line substitution would give three copies of the same time.
+awk -v cal="$CAL_LINES" '
+    /^OnCalendar=/ { if (!seen) { printf "%s", cal; seen = 1 } next }
+    { print }
+' "${UNIT_SRC}/${TIMER}" > "${UNIT_DST}/${TIMER}"
 chmod 0644 "${UNIT_DST}/${TIMER}"
 
 # The units ship with the default install path baked in; rewrite them if this
