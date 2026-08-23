@@ -268,7 +268,11 @@ Last run           FAIL   last ran 3 days ago (Thu 20 Aug) — the timer is not 
 That last line is the one that matters: it is the only way to tell "ran, and
 there was nobody" from "never ran", which are the same silence and completely
 different problems. The app's `/api/health` endpoint reports the same
-heartbeat beside cron's and the watchdog's, so external monitoring sees it too.
+heartbeat beside cron's and the watchdog's, under `birthdays`, so external
+monitoring sees it too — deliberately without moving the endpoint's top-level
+`status`, which is reserved for the pause-group system. A missed greeting is
+worth an alert of its own; it is not a reason to report the floor scheduler as
+degraded.
 A greeting that goes out is also written to the app's own audit log (Logs →
 source `birthdays`), as is a run that fails.
 

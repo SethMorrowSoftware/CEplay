@@ -912,8 +912,12 @@ before building.
     never disagree. Precedence: a `last_run` dated TODAY wins outright (the run
     writes it itself, so it survives a failed heartbeat write); otherwise the
     heartbeat's AGE decides (26h warn, 50h fail). `/api/health` reports the
-    heartbeat beside cron's — but a MISSING one is not degraded there, since
-    the bot is optional and usually just isn't installed. A dry run, a `--list`
+    heartbeat beside cron's under `birthdays`, but it NEVER moves the
+    top-level `status`: that field means "is the pause-group system working"
+    (the Electron remote surfaces it), and an optional accessory that pauses
+    nothing must not be able to report the scheduler as degraded. A MISSING
+    heartbeat is not unhealthy either — the bot is optional and usually just
+    isn't installed. A dry run, a `--list`
     and a rehearsal record NOTHING (`$willRecord`); a catch-up firing that
     finds the job already done moves the heartbeat but keeps the earlier
     `posted` outcome.
