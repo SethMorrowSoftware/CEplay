@@ -14,9 +14,25 @@
 # Persistent=true covers the other half of the problem: a box that was powered
 # off at 09:00 runs the job as soon as it boots.
 #
-# OnCalendar is in the SYSTEM timezone. Check it with `timedatectl`. To change
-# the times, edit the lines below and `systemctl daemon-reload` — or just
-# re-run birthdays/install.sh, which writes them for whatever time you pick.
+# TIMEZONE — read this before changing the times.
+#
+# systemd fires OnCalendar on the SYSTEM timezone (`timedatectl`), which is NOT
+# necessarily the app's (`--print-timezone`). Where they differ, a bare 09:00
+# means 09:00 on the MACHINE's clock: at a venue running the host on UTC and
+# the app on Eastern, this file posted the greeting at 05:00 local, and nothing
+# said so — the timer looked right, the bot looked right, and the message
+# landed before dawn.
+#
+# On systemd 252+ pin the zone onto each line so the time means what it says:
+#
+#     OnCalendar=*-*-* 09:00:00 America/New_York
+#
+# That is DST-safe, unlike converting to a fixed UTC offset. install.sh writes
+# this form automatically when the two zones differ; the plain form below is
+# the shipped default because it parses on every systemd version.
+#
+# After editing: `systemctl daemon-reload && systemctl restart ceplay-birthdays.timer`
+# then confirm with `systemctl list-timers ceplay-birthdays`.
 
 [Unit]
 Description=CEplay birthday Slack bot — daily greeting

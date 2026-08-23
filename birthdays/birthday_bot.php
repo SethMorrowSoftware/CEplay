@@ -60,6 +60,7 @@ Usage: php birthdays/birthday_bot.php [options]
   --test-gifs            Check every configured GIF URL resolves; exit.
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
+  --print-timezone       Print the timezone the bot treats as local; exit.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --config=PATH          Use a specific config file.
@@ -79,7 +80,8 @@ TXT;
  * the opposite of what was typed. A value-taking flag given none is rejected
  * too, rather than silently doing something else.
  */
-const BDAY_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help'];
+const BDAY_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help',
+                       'print-timezone'];
 const BDAY_OPTIONAL_VALUE = ['list', 'demo'];
 const BDAY_REQUIRES_VALUE = ['date', 'roster-file', 'config', 'resolve-channel'];
 
@@ -161,6 +163,23 @@ if ($tz === '' && defined('DEFAULT_TIMEZONE')) {
 }
 if ($tz !== '') {
     @date_default_timezone_set($tz);
+}
+
+/**
+ * --print-timezone: which clock does this bot call "local"?
+ *
+ * systemd fires OnCalendar on the SYSTEM timezone, which is not necessarily
+ * the app's. On this venue the host runs UTC and the app runs Eastern, so a
+ * timer written as 09:00 posted at 05:00 local for months without anything
+ * saying so. install.sh reads this to write the timer in the right zone, and
+ * it answers the same question by hand.
+ *
+ * Deliberately the FIRST thing after the timezone is resolved: it must work
+ * with no Slack token, no MSSQL and no channel configured.
+ */
+if (array_key_exists('print-timezone', $flags)) {
+    echo ($tz !== '' ? $tz : date_default_timezone_get()) . "\n";
+    exit(0);
 }
 
 $logFile = trim((string)($cfg['log_file'] ?? ''));
@@ -475,6 +494,12 @@ if ($doCheck) {
     };
     echo "\nBirthday bot health check\n" . str_repeat('=', 62) . "\n";
     $row('Config', 'ok', $configPath);
+    // The zone the bot calls local. systemd fires on the SYSTEM zone, which
+    // can be a different one — printing this is how the gap becomes visible
+    // when you put it beside `systemctl list-timers`.
+    $row('Clock', 'ok', ($tz !== '' ? $tz : date_default_timezone_get())
+        . ' — ' . date('H:i') . ' now (systemd fires on the system zone: '
+        . 'compare with systemctl list-timers)');
     // First row after the config, because when this is off nothing below it
     // matters — every other line can be green and the channel still silent.
     $row('Posting', $enabled ? 'ok' : 'OFF',
