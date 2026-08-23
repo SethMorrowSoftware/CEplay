@@ -112,7 +112,7 @@
             onChange: () => { filters.source = sourceSelect.value || undefined; currentPage = 1; debouncedLoadLogs(); }
         });
         sourceSelect.appendChild(App.el('option', { value: '', textContent: 'All Sources' }));
-        ['cron', 'manual', 'override', 'schedule', 'game-status'].forEach(s => {
+        ['cron', 'manual', 'override', 'schedule', 'game-status', 'birthdays'].forEach(s => {
             const opt = App.el('option', { value: s, textContent: s });
             if (filters.source === s) opt.selected = true;
             sourceSelect.appendChild(opt);
@@ -129,7 +129,7 @@
             onChange: () => { filters.action = actionSelect.value || undefined; currentPage = 1; debouncedLoadLogs(); }
         });
         actionSelect.appendChild(App.el('option', { value: '', textContent: 'All Actions' }));
-        ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'game_tagged_out', 'game_enabled', 'game_paused', 'unpause_all'].forEach(a => {
+        ['pause', 'unpause', 'skip', 'plan_day', 'execute_action', 'game_tagged_out', 'game_enabled', 'game_paused', 'unpause_all', 'birthday_posted', 'birthday_failed'].forEach(a => {
             const opt = App.el('option', { value: a, textContent: a });
             if (filters.action === a) opt.selected = true;
             actionSelect.appendChild(opt);

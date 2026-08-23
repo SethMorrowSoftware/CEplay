@@ -14,11 +14,31 @@ class SlackClient
 {
     private const API_BASE = 'https://slack.com/api/';
 
+    /**
+     * How many times to try a call that failed in a way that might pass on a
+     * second attempt.
+     *
+     * Kept small on purpose. The point is to survive a blip — a DNS hiccup, a
+     * rate limit, Slack having a bad thirty seconds — not to sit in a loop
+     * while a systemd job holds a lock. Three attempts with the backoff below
+     * spends at most about ten seconds before giving up and saying so.
+     */
+    private const MAX_ATTEMPTS = 3;
+
+    /** Seconds to wait before attempt 2 and attempt 3. */
+    private const BACKOFF = [2, 6];
+
+    /** Never sleep longer than this for a Retry-After Slack sends us. */
+    private const MAX_RETRY_AFTER = 30;
+
     /** @var string */
     private $token;
 
     /** @var int */
     private $timeout;
+
+    /** @var string[] What was retried and why, for the caller to log. */
+    private $retryNotes = [];
 
     /** @var string Channel ID Slack reported for the last postMessage. */
     private $lastChannelId = '';
@@ -300,55 +320,182 @@ class SlackClient
      */
     private function callGet(string $method, array $args): array
     {
-        $url = self::API_BASE . $method . '?' . http_build_query($args);
-
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL            => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => $this->timeout,
-            CURLOPT_CONNECTTIMEOUT => min(10, $this->timeout),
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/x-www-form-urlencoded; charset=utf-8',
-                'Authorization: Bearer ' . $this->token,
-            ],
-        ]);
-        $raw  = curl_exec($ch);
-        $err  = curl_error($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        return $this->decode($method, $raw, $err, $code);
+        return $this->request($method, null, $args);
     }
 
     /** POST to a Slack method and return the decoded payload, or throw. */
     private function call(string $method, array $payload): array
     {
-        $url = self::API_BASE . $method;
-        $body = json_encode($payload);
-        if ($body === false) {
-            throw new RuntimeException('Could not encode the Slack request payload.');
+        return $this->request($method, $payload, null);
+    }
+
+    /**
+     * Run one Slack call, retrying the failures that are worth retrying.
+     *
+     * This exists because the bot gets ONE shot a day at a thing that cannot
+     * be done late. A single dropped connection at 09:00 used to mean the
+     * greeting simply did not happen, and the only sign of it was a line in a
+     * log file. Three attempts over a few seconds turn the overwhelmingly
+     * common failures — a blip, a rate limit — into a delay nobody notices.
+     */
+    private function request(string $method, ?array $jsonPayload, ?array $queryArgs): array
+    {
+        $this->retryNotes = [];
+        $lastError = null;
+
+        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            [$raw, $err, $errno, $code, $retryAfter] =
+                $this->transport($method, $jsonPayload, $queryArgs);
+
+            // A Slack-level refusal arrives as HTTP 200 with ok:false, so the
+            // body has to be read before deciding whether this is retryable.
+            $slackError = '';
+            if ($raw !== false && $errno === 0) {
+                $data = json_decode((string)$raw, true);
+                if (is_array($data) && empty($data['ok'])) {
+                    $slackError = (string)($data['error'] ?? '');
+                }
+            }
+
+            $failed = ($raw === false || $errno !== 0 || $code < 200 || $code >= 300 || $slackError !== '');
+            if (!$failed) {
+                return $this->decode($method, $raw, $err, $code);
+            }
+
+            $why = $slackError !== '' ? $slackError : ($errno !== 0 ? $err : 'HTTP ' . $code);
+            $lastError = [$raw, $err, $code];
+
+            if ($attempt >= self::MAX_ATTEMPTS || !self::isRetryable($code, $errno, $slackError)) {
+                break;
+            }
+            $wait = self::backoffFor($attempt, $retryAfter);
+            $this->retryNotes[] = $method . ' failed (' . $why . '); retrying in '
+                . $wait . 's (attempt ' . ($attempt + 1) . ' of ' . self::MAX_ATTEMPTS . ')';
+            sleep($wait);
         }
 
-        $ch = curl_init();
-        curl_setopt_array($ch, [
+        // Out of attempts: hand the last response to decode(), which turns it
+        // into the same message — with the same fix-it hint — it always did.
+        return $this->decode($method, $lastError[0], (string)$lastError[1], (int)$lastError[2]);
+    }
+
+    /**
+     * One HTTP attempt.
+     *
+     * @return array{0: string|false, 1: string, 2: int, 3: int, 4: int}
+     *         [body, curl error, curl errno, http code, Retry-After seconds]
+     */
+    private function transport(string $method, ?array $jsonPayload, ?array $queryArgs): array
+    {
+        $isPost = $jsonPayload !== null;
+        $url = self::API_BASE . $method
+             . ($queryArgs !== null ? '?' . http_build_query($queryArgs) : '');
+
+        $opts = [
             CURLOPT_URL            => $url,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => $this->timeout,
             CURLOPT_CONNECTTIMEOUT => min(10, $this->timeout),
             CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json; charset=utf-8',
+                'Content-Type: ' . ($isPost
+                    ? 'application/json; charset=utf-8'
+                    : 'application/x-www-form-urlencoded; charset=utf-8'),
                 'Authorization: Bearer ' . $this->token,
             ],
-        ]);
-        $raw  = curl_exec($ch);
-        $err  = curl_error($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        ];
+        if ($isPost) {
+            $body = json_encode($jsonPayload);
+            if ($body === false) {
+                throw new RuntimeException('Could not encode the Slack request payload.');
+            }
+            $opts[CURLOPT_POST] = true;
+            $opts[CURLOPT_POSTFIELDS] = $body;
+        }
+
+        // Slack says how long a rate limit lasts; guessing is worse.
+        $retryAfter = 0;
+        $opts[CURLOPT_HEADERFUNCTION] = function ($ch, $header) use (&$retryAfter) {
+            if (stripos($header, 'retry-after:') === 0) {
+                $retryAfter = (int)trim(substr($header, 12));
+            }
+            return strlen($header);
+        };
+
+        $ch = curl_init();
+        curl_setopt_array($ch, $opts);
+        $raw   = curl_exec($ch);
+        $err   = curl_error($ch);
+        $errno = (int)curl_errno($ch);
+        $code  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        return $this->decode($method, $raw, $err, $code);
+        return [$raw, $err, $errno, $code, $retryAfter];
+    }
+
+    /**
+     * Is this failure worth another attempt?
+     *
+     * Pure and static so it can be unit-tested without a network — the
+     * classification is the whole substance of the retry, and getting it wrong
+     * in either direction is expensive: retrying a bad token wastes the
+     * window, and not retrying a rate limit costs the greeting.
+     *
+     * Retryable means "Slack demonstrably did not accept this": a rate limit,
+     * a 5xx, or a connection that never got established. Deterministic
+     * rejections — a revoked token, a channel the bot isn't in, a message over
+     * the length limit — will fail identically forever, so they are reported
+     * at once rather than three times more slowly.
+     *
+     * ON DUPLICATES: a read timeout after the request was sent is genuinely
+     * ambiguous — Slack may have posted the message and we simply never heard
+     * back. It is retried anyway, deliberately. This bot already accepts that
+     * trade in the same direction (a partial failure is retried on the next
+     * firing), and for a birthday greeting a rare double post is a much smaller
+     * failure than a silent miss.
+     *
+     * @param int    $code       HTTP status, 0 when the request never completed
+     * @param int    $errno      curl error number, 0 when curl was happy
+     * @param string $slackError the `error` field from an ok:false response
+     */
+    public static function isRetryable(int $code, int $errno, string $slackError = ''): bool
+    {
+        if ($errno !== 0) {
+            // Transport-level: DNS, connect, TLS, timeouts, dropped
+            // connections. All of these are "try again in a moment".
+            return true;
+        }
+        if ($code === 429 || $code >= 500) {
+            return true;
+        }
+        // Slack sometimes answers 200 with a transient error in the body.
+        return in_array($slackError, [
+            'ratelimited', 'rate_limited', 'service_unavailable',
+            'internal_error', 'fatal_error', 'request_timeout',
+        ], true);
+    }
+
+    /** How long to wait before the next attempt, honouring Retry-After. */
+    private static function backoffFor(int $attempt, int $retryAfter): int
+    {
+        // Copied to a local first: end() takes its argument by reference, so
+        // it cannot be handed a class constant.
+        $steps = self::BACKOFF;
+        $wait = $steps[$attempt - 1] ?? $steps[count($steps) - 1];
+        if ($retryAfter > 0) {
+            // Slack's own number wins when it gives one — it knows when the
+            // window reopens and guessing shorter just burns an attempt.
+            $wait = max($wait, min($retryAfter, self::MAX_RETRY_AFTER));
+        }
+        return $wait;
+    }
+
+    /**
+     * Anything that had to be retried on the last successful call, ready to
+     * log. Empty when everything worked first time.
+     */
+    public function retryNotes(): array
+    {
+        return $this->retryNotes;
     }
 
     /** Shared response handling for both transports. */

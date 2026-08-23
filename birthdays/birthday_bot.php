@@ -221,6 +221,22 @@ if (!empty($flags['date'])) {
     $target = $d;
 }
 
+/**
+ * A --date that isn't today is a REHEARSAL.
+ *
+ * It always posts and is deliberately not recorded — neither in the
+ * already-greeted list nor in the run record. Recording it would mark that
+ * date "already done", and on the real morning the bot would find the job
+ * finished and say nothing: the test would silently cancel the very greeting
+ * it was checking.
+ */
+$isRehearsal = ($target !== $today);
+
+/** Runs that put something in the channel, and so need the run lock. */
+$willPost = !$dryRun && !$doList;
+/** Runs that are today's real firing, and so leave a run record behind. */
+$willRecord = $willPost && !$isRehearsal;
+
 $leapMode = (string)($cfg['leap_day_mode'] ?? 'feb28');
 if (!in_array($leapMode, ['feb28', 'mar1', 'skip'], true)) {
     fwrite(STDERR, "leap_day_mode must be one of: feb28, mar1, skip.\n");
@@ -248,6 +264,79 @@ if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
  * running.
  */
 $enabled = !array_key_exists('enabled', $cfg) || (bool)$cfg['enabled'];
+
+// ---------------------------------------------------------------------------
+// Recording what this run did
+// ---------------------------------------------------------------------------
+
+$statePath     = (string)($cfg['state_file'] ?? ($root . '/data/birthday_state.json'));
+$heartbeatPath = (string)($cfg['heartbeat_file'] ?? ($root . '/data/.heartbeat_birthdays'));
+$lockPath      = (string)($cfg['lock_file'] ?? ($root . '/data/birthday.lock'));
+
+/**
+ * Leave the two marks that say this run happened, and what it did.
+ *
+ * Called from EVERY exit on the real path — including the failures that used
+ * to just write to stderr and quit. That is the point: a run that could not
+ * reach MSSQL is the run most worth reporting, and it is exactly the one that
+ * previously left nothing behind but a log line.
+ *
+ * The heartbeat is written even for a failure, because it answers a different
+ * question ("did the timer fire") from the outcome ("did it work"). Losing
+ * that distinction would make a broken token look identical to a dead timer.
+ *
+ * @param string $outcome posted | idle | disabled | failed
+ */
+function bdayRecordRun(string $outcome, string $detail = '', int $count = 0): void
+{
+    global $willRecord, $statePath, $heartbeatPath, $target;
+    if (!$willRecord) {
+        return;   // a dry run, a listing or a rehearsal is not this morning's firing
+    }
+    bdayHeartbeatWrite($heartbeatPath);
+    $state = bdayStateRecordRun(bdayStateLoad($statePath), $target, $outcome, $detail, $count);
+    if (!bdayStateSave($statePath, $state)) {
+        bdayLog('WARNING: could not write the run record at ' . $statePath . '.');
+    }
+}
+
+/**
+ * Put the run in the app's own audit trail, beside every other action.
+ *
+ * Only real events land here — a posted greeting or a failure. A row for each
+ * of the ~300 days a year when nobody has a birthday would bury them; the
+ * heartbeat already covers "it ran and there was nothing to do".
+ *
+ * Best-effort by design: the greeting has already gone out by the time this
+ * is called, and a locked database must not turn a delivered message into a
+ * failed run.
+ */
+function bdayAuditLog(string $action, bool $success, string $details, string $error = ''): void
+{
+    global $willRecord;
+    if (!$willRecord) {
+        return;
+    }
+    try {
+        DB::execute(
+            'INSERT INTO action_log (source, action, success, details, error_message)
+             VALUES (:p0, :p1, :p2, :p3, :p4)',
+            ['birthdays', $action, $success ? 1 : 0,
+             mb_substr($details, 0, 500), $error === '' ? null : mb_substr($error, 0, 500)]
+        );
+    } catch (Exception $e) {
+        bdayLog('NOTE: could not write the audit row (' . $e->getMessage() . ').');
+    }
+}
+
+/** Record a failure, say why on stderr, and stop. */
+function bdayFail(string $detail, int $code = 2): void
+{
+    bdayRecordRun('failed', $detail);
+    bdayAuditLog('birthday_failed', false, 'The daily run could not complete.', $detail);
+    fwrite(STDERR, $detail . "\n");
+    exit($code);
+}
 
 // ---------------------------------------------------------------------------
 // --demo: post a complete sample announcement
@@ -390,6 +479,19 @@ if ($doCheck) {
     // matters — every other line can be green and the channel still silent.
     $row('Posting', $enabled ? 'ok' : 'OFF',
         $enabled ? 'greetings are on' : 'greetings are switched off — nothing will post');
+
+    // Everything below this line checks whether the bot COULD work. This one
+    // checks whether it actually has been — the question the others can't
+    // answer, and the one that matters when a birthday has already been missed.
+    $health = bdayRunHealth(bdayStateLoad($statePath), bdayHeartbeatRead($heartbeatPath));
+    $row('Last run', in_array($health['status'], ['ok', 'idle', 'off'], true)
+        ? ($health['status'] === 'ok' ? 'ok' : '-') : strtoupper($health['status']),
+        $health['detail']);
+    if ($health['status'] === 'fail') {
+        $problems[] = 'Last run: ' . $health['detail'];
+    } elseif ($health['status'] === 'warn') {
+        $problems[] = 'The bot has missed a daily firing — ' . $health['detail'];
+    }
     foreach (BirthdayConfig::warnings() as $w) {
         $row('Stored value', 'FAIL', substr($w, 0, 70));
         $problems[] = $w;
@@ -634,11 +736,46 @@ if (!$enabled) {
     $why = 'Birthday greetings are turned OFF ("Post birthday greetings" on the '
          . 'Birthdays page, or `enabled` in the config file).';
     if (!$doList && !$dryRun) {
+        // Recorded, not silent: the page should say "ran, but posting is off"
+        // rather than leaving somebody to wonder whether the timer is dead.
+        bdayRecordRun('disabled', 'The greetings are switched off.');
         bdayLog($why . ' Nothing was posted.');
         exit(0);
     }
     bdayLog('NOTE: ' . $why . ' This run only reports — nothing would post.');
 }
+
+// ---------------------------------------------------------------------------
+// The run lock
+//
+// Taken before the roster read so two overlapping runs cannot both decide
+// nobody has been greeted yet and both post. The timer is Persistent, it can
+// carry catch-up firings, and somebody can always start a run by hand, so the
+// overlap is real rather than theoretical.
+//
+// A second run exits quietly and successfully: whoever holds the lock is
+// already doing this morning's job, and reporting a failure for that would be
+// a false alarm. It leaves no run record either — the holder writes it.
+// ---------------------------------------------------------------------------
+
+$lock = null;
+if ($willPost) {
+    $lock = bdayLockAcquire($lockPath);
+    if ($lock === false) {
+        bdayLog('Another birthday-bot run is already in progress — leaving it to that one.');
+        exit(0);
+    }
+    if ($lock === null) {
+        // Could not open the lock file at all. Carrying on unlocked risks a
+        // duplicate; stopping guarantees a missed birthday. Take the lesser.
+        bdayLog('WARNING: could not open the lock file at ' . $lockPath
+            . ' — continuing without a lock. Two runs at once could double-post.');
+    }
+}
+register_shutdown_function(function () {
+    global $lock;
+    bdayLockRelease($lock);
+});
 
 // ---------------------------------------------------------------------------
 // Roster
@@ -662,8 +799,7 @@ if ($rosterFile !== '') {
 } else {
     $rosterSql = trim((string)($cfg['roster_sql'] ?? ''));
     if ($rosterSql === '') {
-        fwrite(STDERR, "roster_sql is empty — run `php birthdays/discover.php` to generate one.\n");
-        exit(1);
+        bdayFail('roster_sql is empty — run `php birthdays/discover.php` to generate one.', 1);
     }
     // The shipped default deliberately carries a marker where the employment
     // filter belongs. Refusing to run while it is still there is the one check
@@ -671,12 +807,12 @@ if ($rosterFile !== '') {
     // left last year is worse than sending nothing at all.
     if (stripos($rosterSql, 'TODO_CONFIRM_EMPLOYMENT_FILTER') !== false) {
         fwrite(STDERR,
-            "roster_sql still contains TODO_CONFIRM_EMPLOYMENT_FILTER.\n\n"
-            . "That marker stands where the \"still employed\" filter belongs. Run\n"
+            "That marker stands where the \"still employed\" filter belongs. Run\n"
             . "`php birthdays/discover.php` (or the EmployeeStatus queries in\n"
             . "EXPLORER-QUERIES.md) to find which column and value mean current staff,\n"
-            . "then replace the marker line in birthdays/config.php.\n");
-        exit(1);
+            . "then replace the marker line in the roster query.\n");
+        bdayFail('roster_sql still contains TODO_CONFIRM_EMPLOYMENT_FILTER, '
+            . 'so the "still employed" filter has never been filled in.', 1);
     }
     if (stripos($rosterSql, 'where') === false) {
         bdayLog('WARNING: roster_sql has no WHERE clause, so it has no "still employed" filter. '
@@ -686,19 +822,15 @@ if ($rosterFile !== '') {
     try {
         MssqlClient::assertReadOnly($rosterSql);
     } catch (RuntimeException $e) {
-        fwrite(STDERR, 'roster_sql was rejected by the read-only guard: ' . $e->getMessage() . "\n");
-        exit(1);
+        bdayFail('roster_sql was rejected by the read-only guard: ' . $e->getMessage(), 1);
     }
 
     if (!MssqlClient::availableDrivers()) {
-        fwrite(STDERR,
-            "No MSSQL PDO driver in this PHP runtime. Run the bot inside the pdo_dblib\n"
-            . "overlay image the app already uses (see birthdays/README.md).\n");
-        exit(2);
+        bdayFail('No MSSQL PDO driver in this PHP runtime — run the bot inside the '
+            . 'pdo_dblib overlay image the app already uses (see birthdays/README.md).');
     }
     if (!MssqlClient::isConfigured()) {
-        fwrite(STDERR, "MSSQL is not configured in the app yet (Go-Kart Labor page -> Settings).\n");
-        exit(2);
+        bdayFail('MSSQL is not configured in the app yet (Go-Kart Labor page -> Settings).');
     }
 
     try {
@@ -706,8 +838,7 @@ if ($rosterFile !== '') {
         $client->setTimeout(max(5, (int)($cfg['query_timeout'] ?? 30)));
         $rows = $client->rows($rosterSql, max(1, (int)($cfg['roster_max_rows'] ?? 5000)));
     } catch (Exception $e) {
-        fwrite(STDERR, 'Could not read the roster: ' . $e->getMessage() . "\n");
-        exit(2);
+        bdayFail('Could not read the roster: ' . $e->getMessage());
     }
 }
 
@@ -728,10 +859,8 @@ bdayLog(sprintf(
 ));
 
 if ($rows && !$people) {
-    fwrite(STDERR,
-        "The roster query returned rows but none had a usable birth date.\n"
-        . "Check that roster_sql selects the birthday column and aliases it `birth_date`.\n");
-    exit(1);
+    bdayFail('The roster query returned ' . count($rows) . ' rows but none had a usable '
+        . 'birth date — check it selects the birthday column and aliases it `birth_date`.', 1);
 }
 if ($norm['sentinel_hits']) {
     $top = [];
@@ -773,34 +902,26 @@ if ($doList) {
 
 $celebrants = bdayCelebrants($people, $target, $leapMode);
 if (!$celebrants) {
+    // Recorded, because "ran and there was nobody" and "never ran" look
+    // identical in the channel and are completely different problems.
+    bdayRecordRun('idle', 'Nobody had a birthday.');
     bdayLog("No birthdays on {$target}. Nothing to post.");
     exit(0);
 }
 
 $max = max(1, (int)($cfg['max_celebrants'] ?? 12));
 if (count($celebrants) > $max) {
-    fwrite(STDERR, sprintf(
-        "Refusing to post: %d people share a birthday on %s, which is over the max_celebrants\n"
-        . "limit of %d. That usually means roster_sql is reading the wrong column (a hire date,\n"
-        . "say) rather than a genuine coincidence. Run `php birthdays/discover.php` to check.\n",
+    fwrite(STDERR,
+        "That usually means the roster query is reading the wrong column (a hire date,\n"
+        . "say) rather than a genuine coincidence. Run `php birthdays/discover.php`.\n");
+    bdayFail(sprintf(
+        'Refused to post: %d people share a birthday on %s, over the max_celebrants limit of %d.',
         count($celebrants), $target, $max
-    ));
-    exit(1);
+    ), 1);
 }
 
-$statePath = (string)($cfg['state_file'] ?? (__DIR__ . '/../data/birthday_state.json'));
 $state = bdayStateLoad($statePath);
 
-/**
- * A --date that isn't today is a REHEARSAL, and must not touch the record of
- * who has been greeted.
- *
- * Otherwise previewing a future birthday writes state for that date, and on the
- * real morning the bot finds it already "done" and says nothing — the test
- * silently cancels the very greeting it was checking. So a test date neither
- * reads state (it always posts, no --force needed) nor writes it.
- */
-$isRehearsal = ($target !== $today);
 if ($isRehearsal) {
     bdayLog('Rehearsing ' . $target . ' — this run will NOT be recorded, so the real '
         . 'greeting on that day still goes out.');
@@ -814,6 +935,14 @@ if (!$force && !$isRehearsal) {
         }
     }
     if (!$pending) {
+        // The heartbeat moves (a catch-up firing that found nothing to do is
+        // still the timer proving it is alive), but the OUTCOME deliberately
+        // does not: an earlier run today already recorded 'posted', and
+        // overwriting that would turn a delivered greeting into a blander
+        // record of the run that found it already done.
+        if ($willRecord) {
+            bdayHeartbeatWrite($heartbeatPath);
+        }
         bdayLog(sprintf('Already wished all %d birthday(s) on %s. Nothing to do (use --force to repost).',
             count($celebrants), $target));
         exit(0);
@@ -837,8 +966,7 @@ if (!$dryRun || !empty($cfg['mention_by_email'])) {
         $slack = new SlackClient((string)($cfg['slack_bot_token'] ?? ''));
     } catch (RuntimeException $e) {
         if (!$dryRun) {
-            fwrite(STDERR, $e->getMessage() . "\n");
-            exit(1);
+            bdayFail($e->getMessage(), 1);
         }
         bdayLog('Note: ' . $e->getMessage() . ' (dry run continues without Slack.)');
     }
@@ -921,13 +1049,13 @@ if ($dryRun) {
 try {
     [$channel, $chanNote] = bdayChannelFor($slack, (string)($cfg['slack_channel'] ?? ''));
 } catch (RuntimeException $e) {
-    fwrite(STDERR, $e->getMessage() . "\n");
-    exit(1);
+    bdayFail($e->getMessage(), 1);
 }
 if ($chanNote !== '') { bdayLog($chanNote); }
 
 $posted = [];
 $failed = 0;
+$errors = [];
 foreach ($messages as $idx => $m) {
     try {
         $ts = $slack->postMessage($channel, $m['text'], [
@@ -938,6 +1066,9 @@ foreach ($messages as $idx => $m) {
         $posted = array_merge($posted, $m['people']);
         bdayLog('Posted to ' . $channel . ' (ts ' . $ts . ')'
             . ($m['gif'] !== null ? ' with a GIF from ' . $m['gif']['source'] : ' without a GIF') . '.');
+        // A greeting that only landed on the second attempt still landed, but
+        // it says something about the network at 09:00 and is worth the line.
+        foreach ($slack->retryNotes() as $note) { bdayLog('NOTE: ' . $note); }
         if ($slack->customizeDropped() !== '') { bdayLog('WARNING: ' . $slack->customizeDropped()); }
 
         // Seed the reactions so nobody has to be first. Best-effort: a missing
@@ -956,11 +1087,18 @@ foreach ($messages as $idx => $m) {
         }
     } catch (Exception $e) {
         $failed++;
+        $errors[] = $e->getMessage();
+        foreach ($slack->retryNotes() as $note) { bdayLog('NOTE: ' . $note); }
         bdayLog('ERROR: ' . $e->getMessage());
     }
     if ($idx < count($messages) - 1) {
         usleep(1200000); // chat.postMessage is ~1/sec per channel
     }
+}
+
+$postedNames = [];
+foreach ($posted as $p) {
+    $postedNames[] = bdayDisplayName($p, $nameStyle);
 }
 
 // Record only the people whose message actually went out, so a partial
@@ -970,13 +1108,37 @@ if ($posted && $isRehearsal) {
 } elseif ($posted) {
     $state = bdayStateMark($state, $target, $posted);
     $state = bdayStatePrune($state, $today, 45);
+    $state = bdayStateRecordRun(
+        $state, $target,
+        $failed > 0 ? 'failed' : 'posted',
+        $failed > 0
+            ? sprintf('%d of %d message(s) failed: %s', $failed, count($messages),
+                      implode('; ', $errors))
+            : 'to ' . $channel,
+        count($posted)
+    );
     if (!bdayStateSave($statePath, $state)) {
         bdayLog('WARNING: could not write the state file at ' . $statePath
             . ' — a re-run today would post again.');
     }
+    // Unconditional: reaching here means something was delivered on the real
+    // path, which is by definition this morning's firing.
+    bdayHeartbeatWrite($heartbeatPath);
+    bdayAuditLog(
+        $failed > 0 ? 'birthday_failed' : 'birthday_posted',
+        $failed === 0,
+        'Greeted ' . count($posted) . ' in ' . $channel . ': ' . implode(', ', $postedNames),
+        $failed > 0 ? implode('; ', $errors) : ''
+    );
 }
 
 if ($failed > 0) {
+    // Nothing at all got through: the run record has to say so, since the
+    // branch above only fires when SOMETHING was delivered.
+    if (!$posted) {
+        bdayFail(sprintf('All %d birthday message(s) failed to post: %s',
+            $failed, implode('; ', $errors)));
+    }
     fwrite(STDERR, "{$failed} message(s) failed to post.\n");
     exit(2);
 }

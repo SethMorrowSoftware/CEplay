@@ -344,6 +344,18 @@ function bdayApiCheck(array $cfg): void
     $add('Posting', !empty($cfg['enabled']) ? 'ok' : 'off',
         !empty($cfg['enabled']) ? 'enabled' : 'greetings are turned off');
 
+    // The one check that looks BACKWARDS. Everything else here asks whether
+    // the bot could work if it ran; this asks whether it did. They are not the
+    // same question — a timer that stopped firing leaves every other row green
+    // while the channel goes quiet, and nobody finds out until a birthday has
+    // already been missed. The timer writes these two marks from its own
+    // container; the paths come from BirthdayConfig so both sides agree.
+    $health = bdayRunHealth(
+        bdayStateLoad((string)($cfg['state_file'] ?? '')),
+        bdayHeartbeatRead((string)($cfg['heartbeat_file'] ?? ''))
+    );
+    $add('Last run', $health['status'], $health['detail']);
+
     $drivers = MssqlClient::availableDrivers();
     if (!$drivers) {
         $add('MSSQL driver', 'fail', 'not installed in this PHP image');

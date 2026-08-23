@@ -856,7 +856,7 @@ before building.
   same single-SELECT guard the reports use) and it never writes back.
   `install.sh` is a one-command installer; `run.sh` wraps the podman/pdo_dblib
   invocation every CLI command needs; `discover.php` re-derives the roster
-  query. 257 assertions in `birthdays/tests/` run with no database or network.
+  query. 310 assertions in `birthdays/tests/` run with no database or network.
 - **Roster facts (verified August 2026):** the staff table is `dbo.Employees`
   (NOT `TimeClock_Employees`, which does not exist here), the birthday column is
   `DateOfBirth`, and `EmpStatus = 1` means employed — `dbo.EmployeeStatus`
@@ -902,6 +902,37 @@ before building.
 - **A `--date` other than today is a REHEARSAL:** it always posts and is
   deliberately NOT recorded. Recording it would mark the real morning "already
   done" and silently skip that person's actual greeting.
+- **The bot must never fail QUIETLY**, because every failure mode looks like a
+  day with no birthdays. Four mechanisms, added Aug 2026 — do not weaken them:
+  - **A run record.** Every real firing writes `data/.heartbeat_birthdays` (the
+    same convention as `Scheduler::writeHeartbeat`) AND a `last_run` block in
+    the state file (`at`/`date`/`outcome`/`count`/`detail`, outcome =
+    posted|idle|disabled|failed). `bdayRunHealth()` turns the pair into one
+    verdict, shared by the CLI `--check` and the page's check list so they can
+    never disagree. Precedence: a `last_run` dated TODAY wins outright (the run
+    writes it itself, so it survives a failed heartbeat write); otherwise the
+    heartbeat's AGE decides (26h warn, 50h fail). `/api/health` reports the
+    heartbeat beside cron's — but a MISSING one is not degraded there, since
+    the bot is optional and usually just isn't installed. A dry run, a `--list`
+    and a rehearsal record NOTHING (`$willRecord`); a catch-up firing that
+    finds the job already done moves the heartbeat but keeps the earlier
+    `posted` outcome.
+  - **Retries.** The timer fires three times a day (`install.sh` derives the
+    catch-ups from the chosen time, dropping any that would spill past
+    midnight); the state file makes repeats no-ops. `SlackClient` also retries
+    each call 3× with backoff, honouring `Retry-After`. `SlackClient::isRetryable()`
+    is the pure classifier: rate limits/5xx/connection failures yes, a revoked
+    token or a channel it isn't in no. A read timeout after the request was
+    sent IS retried — the duplicate risk is accepted deliberately, because a
+    rare double post beats a silent miss.
+  - **A run lock** (`bdayLockAcquire`, `data/birthday.lock`, non-blocking)
+    covers the whole posting path. `null` (unopenable) is deliberately NOT the
+    same as `false` (someone else holds it): a broken lock file must not cost
+    a birthday, so the run continues unlocked.
+  - **Audit rows.** Source `birthdays`, actions `birthday_posted` /
+    `birthday_failed` — only real events, never the ~300 idle days a year.
+    Keep both `api/logs.php` filter allowlists and the `public/js/logs.js`
+    dropdowns in sync.
 - Gates: `view_birthdays` (page, in `PAGE_PERMISSIONS`) and `birthdays_manage`
   (edit settings, post test messages). `migration_birthdays_v1` grants both to
   roles holding `settings`. Keep the key in sync across `Auth::PAGE_PERMISSIONS`,
