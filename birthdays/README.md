@@ -22,7 +22,7 @@ birthdays/
 ├─ EXPLORER-QUERIES.md    The schema discovery, as Explorer copy/paste SQL
 ├─ lib/                   Date matching, message building, GIFs, Slack
 ├─ systemd/               Daily timer units
-└─ tests/                 244 assertions — run anywhere, no database needed
+└─ tests/                 257 assertions — run anywhere, no database needed
 ```
 
 ---

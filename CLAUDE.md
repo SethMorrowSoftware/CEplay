@@ -856,7 +856,7 @@ before building.
   same single-SELECT guard the reports use) and it never writes back.
   `install.sh` is a one-command installer; `run.sh` wraps the podman/pdo_dblib
   invocation every CLI command needs; `discover.php` re-derives the roster
-  query. 244 assertions in `birthdays/tests/` run with no database or network.
+  query. 257 assertions in `birthdays/tests/` run with no database or network.
 - **Roster facts (verified August 2026):** the staff table is `dbo.Employees`
   (NOT `TimeClock_Employees`, which does not exist here), the birthday column is
   `DateOfBirth`, and `EmpStatus = 1` means employed — `dbo.EmployeeStatus`
