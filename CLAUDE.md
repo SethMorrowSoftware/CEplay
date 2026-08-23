@@ -875,6 +875,22 @@ before building.
   decrypts** — do not decrypt a `birthday_*` secret a second time, which throws
   and reads a good token back as "not set". A secret that genuinely can't be
   decrypted degrades to a warning rather than a fatal, so `--check` still runs.
+- **`bdayMessageConfig()` (`birthdays/lib/birthday_lib.php`) is the ONE place
+  that lists which settings shape a message.** The daily run, `--demo` and the
+  page's preview all build their `$msgCfg` through it. They each assembled that
+  subset by hand until Aug 2026, and the daily run's copy omitted the four pool
+  keys — so a custom greeting saved on the page was shown by the preview, shown
+  by `--demo`, and then NOT used by the post that went out. Add a wording
+  setting there, never at a call site. Absence is meaningful: a pool key is
+  passed on only when it is really an array, because `bdayPickTemplate()` reads
+  an absent key as "use the built-in pool" and an empty one as "no flavour line
+  at all" — the stored default is null and must land on the first reading.
+- **`enabled` ("Post birthday greetings") is honoured by the CLI**, checked
+  before the roster read so a switched-off bot needs neither MSSQL nor Slack.
+  It shipped as a page field the runner never read, so turning it off changed
+  nothing. `--list`/`--dry-run` still report while it is off (that is the point
+  of switching it back on), and `--check` prints its own row and will not say
+  "everything checks out" while nothing can post.
 - **Messages are COMPOSED**, not picked from whole templates: a greeting line
   and a flavour line are drawn from separate pools with independent seeds, so 65
   written lines make 714 messages. Every flavour line must stand alone after any

@@ -303,19 +303,16 @@ function bdayApiUpcoming(): void
     ]);
 }
 
-/** The subset of config bdayBuildText() reads. */
+/**
+ * The subset of config bdayBuildText() reads.
+ *
+ * Delegates to the shared builder rather than keeping its own list: this page
+ * exists to show what the timer will post, so the two must not be able to
+ * disagree about which settings shape a message.
+ */
 function bdayApiMsgCfg(array $cfg): array
 {
-    $m = [
-        'name_style'  => (string)($cfg['name_style'] ?? 'full'),
-        'bold_names'  => (bool)($cfg['bold_names'] ?? true),
-        'venue_label' => (string)($cfg['venue_label'] ?? ''),
-        'mention'     => (string)($cfg['mention'] ?? ''),
-    ];
-    foreach (['greetings', 'flavors', 'multi_greetings', 'multi_flavors'] as $k) {
-        if (!empty($cfg[$k]) && is_array($cfg[$k])) { $m[$k] = $cfg[$k]; }
-    }
-    return $m;
+    return bdayMessageConfig($cfg);
 }
 
 /** Health check, message preview, and the two live Slack tests. */

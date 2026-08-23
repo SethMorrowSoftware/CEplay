@@ -327,6 +327,71 @@ is_eq('custom template', $custom, 'HB *Alex Rivera* at Castle (1)');
 is_eq('empty celebrant list -> empty text', bdayBuildText([], []), '');
 
 // ---------------------------------------------------------------------------
+section('bdayMessageConfig — every wording setting reaches the message');
+
+// The regression this section exists for: the daily run assembled its own
+// message config by hand and left the four pool keys out of it, so custom
+// greetings saved on the Birthdays page were shown by the preview and by
+// --demo, and then not used by the post that actually went out. Each case
+// below sets one setting to something unmistakable in a FULL config array (the
+// shape BirthdayConfig::load returns) and checks it survives into the text.
+
+/** Build a single-person message the way birthday_bot.php does. */
+function msgFromFullCfg(array $cfg, array $people, string $seed = 'seed'): string
+{
+    return bdayBuildText($people, bdayMessageConfig($cfg), $seed);
+}
+
+$fullCfg = [
+    'name_style' => 'full', 'bold_names' => true, 'venue_label' => 'The Castle Fun Center',
+    'mention' => '', 'message_single' => '', 'message_multi' => '',
+    'messages_single' => null, 'messages_multi' => null,
+    'greetings' => null, 'flavors' => null,
+    'multi_greetings' => null, 'multi_flavors' => null,
+];
+
+$one  = [$p];
+$many = [$p, $p2, $p3];
+
+ok('custom greetings pool reaches a single-person post',
+    strpos(msgFromFullCfg(['greetings' => ['GREET-X {names}!']] + $fullCfg, $one), 'GREET-X') !== false);
+ok('custom flavours pool reaches a single-person post',
+    strpos(msgFromFullCfg(['flavors' => ['FLAVOUR-X.']] + $fullCfg, $one), 'FLAVOUR-X.') !== false);
+ok('custom multi greetings pool reaches a shared post',
+    strpos(msgFromFullCfg(['multi_greetings' => ['MGREET-X {names}!']] + $fullCfg, $many), 'MGREET-X') !== false);
+ok('custom multi flavours pool reaches a shared post',
+    strpos(msgFromFullCfg(['multi_flavors' => ['MFLAVOUR-X.']] + $fullCfg, $many), 'MFLAVOUR-X.') !== false);
+ok('whole-template pool reaches a single-person post',
+    strpos(msgFromFullCfg(['messages_single' => ['WHOLE-X {names}']] + $fullCfg, $one), 'WHOLE-X') !== false);
+ok('whole-template pool reaches a shared post',
+    strpos(msgFromFullCfg(['messages_multi' => ['WHOLEM-X {names}']] + $fullCfg, $many), 'WHOLEM-X') !== false);
+ok('pinned single wording reaches the post',
+    strpos(msgFromFullCfg(['message_single' => 'PINNED-X {names}'] + $fullCfg, $one), 'PINNED-X') !== false);
+ok('pinned shared wording reaches the post',
+    strpos(msgFromFullCfg(['message_multi' => 'PINNEDM-X {names}'] + $fullCfg, $many), 'PINNEDM-X') !== false);
+ok('venue label reaches the post',
+    strpos(msgFromFullCfg(['message_single' => '{venue}'] + $fullCfg, $one), 'The Castle Fun Center') !== false);
+ok('ping prefix reaches the post',
+    strpos(msgFromFullCfg(['mention' => '<!here>'] + $fullCfg, $one), '<!here>') === 0);
+
+// Absent vs empty is a real distinction, and the one most easily lost when
+// this subset is rebuilt: a stored NULL means "use the built-in pool", an
+// empty array means "the operator wants no flavour line".
+$defaults = bdayMessageConfig($fullCfg);
+ok('a null pool is omitted, so the built-in set is used',
+    !array_key_exists('flavors', $defaults) && !array_key_exists('greetings', $defaults));
+ok('an empty pool is passed through as empty',
+    bdayMessageConfig(['flavors' => []] + $fullCfg)['flavors'] === []);
+is_eq('empty flavour list really does mean greeting only',
+    substr_count(msgFromFullCfg(['flavors' => []] + $fullCfg, $one), "\n"), 0);
+ok('an unset pinned wording is omitted rather than passed as an empty string',
+    !array_key_exists('message_single', $defaults));
+
+// --demo blanks the ping so a sample announcement can never @-here a channel.
+is_eq('overrides win over the stored value',
+    bdayMessageConfig(['mention' => '<!channel>'] + $fullCfg, ['mention' => ''])['mention'], '');
+
+// ---------------------------------------------------------------------------
 section('state file');
 
 $statePath = sys_get_temp_dir() . '/bday_test_' . getmypid() . '.json';

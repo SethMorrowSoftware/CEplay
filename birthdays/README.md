@@ -318,13 +318,16 @@ the page wins. `config.example.php` is the annotated form of the file layer.
 
 | Key | Default | What it does |
 |---|---|---|
+| `enabled` | `true` | Master switch. `false` stops the greetings without touching the timer — `--list`, `--dry-run`, `--demo` and `--check` all still work, so you can see what it *would* post |
 | `slack_bot_token` | — | `xoxb-…` bot token |
 | `slack_channel` | — | `#birthday-test`, or a channel ID (an ID skips a lookup each run) |
 | `mention` | `''` | Prefix such as `<!here>` |
 | `roster_sql` | verified | The one SELECT defining "current employee" |
 | `name_style` | `full` | `full` / `first` / `first_initial` |
 | `venue_label` | The Castle Fun Center | Fills `{venue}` |
-| `messages_single` / `messages_multi` | built-in pools | Template pools; `{names}` `{count}` `{venue}` |
+| `greetings` / `flavors` | built-in pools | The two halves composed into a single-person message; `null` = built-ins, `[]` flavours = greeting only |
+| `multi_greetings` / `multi_flavors` | built-in pools | The same two halves for a shared birthday |
+| `messages_single` / `messages_multi` | unset | Whole-template pools, replacing composition; `{names}` `{count}` `{venue}` |
 | `message_single` / `message_multi` | unset | Pin ONE wording, overriding the pool |
 | `footer_text` | `null` | Context line; `''` to drop it |
 | `post_separately` | `false` | One message each instead of one combined |

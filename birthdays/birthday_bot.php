@@ -232,6 +232,23 @@ if (!in_array($nameStyle, ['full', 'first', 'first_initial'], true)) {
     exit(1);
 }
 
+/**
+ * The master switch: "Post birthday greetings" on the Birthdays page, or
+ * `enabled` in the config file.
+ *
+ * It is the one setting somebody reaches for in a hurry — a name is wrong, a
+ * person has just left, the channel is being reorganised — and the daily run
+ * never read it, so turning it off changed nothing and the greetings kept
+ * going out. Absent means on, so an install that predates the switch is
+ * unaffected.
+ *
+ * The guard itself sits before the roster read (below), not here, so --demo
+ * and --check still work with it off: --check is exactly how you find out WHY
+ * the channel went quiet, and it cannot answer that if the switch stops it
+ * running.
+ */
+$enabled = !array_key_exists('enabled', $cfg) || (bool)$cfg['enabled'];
+
 // ---------------------------------------------------------------------------
 // --demo: post a complete sample announcement
 //
@@ -269,27 +286,10 @@ if ($doDemo) {
             ];
         }
 
-        $msgCfg = [
-            'name_style'      => $nameStyle,
-            'bold_names'      => (bool)($cfg['bold_names'] ?? true),
-            'venue_label'     => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
-            'mention'         => '',   // never ping a channel for a preview
-            'message_single'  => (string)($cfg['message_single'] ?? ''),
-            'message_multi'   => (string)($cfg['message_multi'] ?? ''),
-            'messages_single' => $cfg['messages_single'] ?? null,
-            'messages_multi'  => $cfg['messages_multi'] ?? null,
-            'greetings'       => $cfg['greetings'] ?? null,
-            'flavors'         => $cfg['flavors'] ?? null,
-            'multi_greetings' => $cfg['multi_greetings'] ?? null,
-            'multi_flavors'   => $cfg['multi_flavors'] ?? null,
-        ];
-        foreach (['message_single', 'message_multi'] as $k) {
-            if ($msgCfg[$k] === '') { unset($msgCfg[$k]); }
-        }
-        foreach (['messages_single', 'messages_multi', 'greetings', 'flavors',
-                  'multi_greetings', 'multi_flavors'] as $k) {
-            if ($msgCfg[$k] === null) { unset($msgCfg[$k]); }
-        }
+        // Same wording rules as the real post — see bdayMessageConfig(). The
+        // ping prefix is the one deliberate difference: a sample must never
+        // @-here a channel.
+        $msgCfg = bdayMessageConfig($cfg, ['mention' => '']);
 
         // Vary the seed per run so repeated demos show different quips and GIFs.
         // Microtime plus randomness, not the second: two demos fired back to
@@ -386,6 +386,10 @@ if ($doCheck) {
     };
     echo "\nBirthday bot health check\n" . str_repeat('=', 62) . "\n";
     $row('Config', 'ok', $configPath);
+    // First row after the config, because when this is off nothing below it
+    // matters — every other line can be green and the channel still silent.
+    $row('Posting', $enabled ? 'ok' : 'OFF',
+        $enabled ? 'greetings are on' : 'greetings are switched off — nothing will post');
     foreach (BirthdayConfig::warnings() as $w) {
         $row('Stored value', 'FAIL', substr($w, 0, 70));
         $problems[] = $w;
@@ -499,7 +503,12 @@ if ($doCheck) {
 
     echo str_repeat('=', 62) . "\n";
     if (!$problems) {
-        echo "Everything checks out.\n\n";
+        // "Everything checks out" would be a wrong answer while the switch is
+        // off — nothing is broken, but nothing is going to post either.
+        echo $enabled
+            ? "Everything checks out.\n\n"
+            : "Everything is wired up correctly, BUT greetings are switched OFF, so\n"
+              . "nothing will post. Turn \"Post birthday greetings\" back on to resume.\n\n";
         exit(0);
     }
     echo count($problems) . " problem(s) to fix:\n";
@@ -606,6 +615,29 @@ if ($testSlack) {
         fwrite(STDERR, 'Slack test failed: ' . $e->getMessage() . "\n");
         exit(2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The master switch
+//
+// Checked BEFORE the roster is read, so a switched-off bot needs neither MSSQL
+// nor Slack to be working — someone who turned the greetings off because the
+// database was down should not get a database error out of the timer every
+// morning afterwards.
+//
+// --list and --dry-run deliberately still run: both only report, and being
+// shown what WOULD go out is precisely what somebody about to switch it back
+// on wants to see.
+// ---------------------------------------------------------------------------
+
+if (!$enabled) {
+    $why = 'Birthday greetings are turned OFF ("Post birthday greetings" on the '
+         . 'Birthdays page, or `enabled` in the config file).';
+    if (!$doList && !$dryRun) {
+        bdayLog($why . ' Nothing was posted.');
+        exit(0);
+    }
+    bdayLog('NOTE: ' . $why . ' This run only reports — nothing would post.');
 }
 
 // ---------------------------------------------------------------------------
@@ -840,22 +872,9 @@ if (!empty($cfg['mention_by_email']) && $slack !== null) {
 // Build and post
 // ---------------------------------------------------------------------------
 
-$msgCfg = [
-    'name_style'     => $nameStyle,
-    'bold_names'     => (bool)($cfg['bold_names'] ?? true),
-    'venue_label'    => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
-    'mention'        => (string)($cfg['mention'] ?? ''),
-    'message_single' => (string)($cfg['message_single'] ?? ''),
-    'message_multi'  => (string)($cfg['message_multi'] ?? ''),
-];
-foreach (['message_single', 'message_multi'] as $k) {
-    if ($msgCfg[$k] === '') {
-        unset($msgCfg[$k]); // fall back to the library defaults
-    }
-}
-
-$msgCfg['messages_single'] = $cfg['messages_single'] ?? null;
-$msgCfg['messages_multi']  = $cfg['messages_multi'] ?? null;
+// Every wording setting, assembled in the one place that knows the full list,
+// so what --demo and the Birthdays page preview show is what actually posts.
+$msgCfg = bdayMessageConfig($cfg);
 
 $batches = !empty($cfg['post_separately'])
     ? array_map(function ($p) { return [$p]; }, $celebrants)

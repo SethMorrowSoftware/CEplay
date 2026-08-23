@@ -578,6 +578,54 @@ function bdayCleanPool($pool): array
 }
 
 /**
+ * The subset of the configuration that shapes the message text.
+ *
+ * Every caller that builds a greeting goes through this — the daily run,
+ * --demo, and the Birthdays page's preview — so a preview can never show
+ * wording the real post won't use.
+ *
+ * That is the whole reason it exists. This subset used to be assembled by hand
+ * at each call site, and the DAILY RUN's copy left out the four pool keys: a
+ * custom greeting or flavour line saved on the Birthdays page was shown in the
+ * preview, shown by --demo, and then silently NOT used by the message that
+ * actually went out. Anything that shapes wording belongs here, in one place,
+ * or that drift comes straight back.
+ *
+ * Presence matters as much as value. A pool is passed on only when it is
+ * genuinely an array, because bdayPickTemplate() reads an ABSENT key as "use
+ * the built-in pool" and an EMPTY one as "the operator wants no flavour line
+ * at all" — and the stored default is null, which must land on the first
+ * reading rather than the second.
+ *
+ * @param array $cfg       the full BirthdayConfig::load() result
+ * @param array $overrides applied last (--demo blanks the ping prefix, so a
+ *                         sample announcement can never @-here a channel)
+ */
+function bdayMessageConfig(array $cfg, array $overrides = []): array
+{
+    $out = [
+        'name_style'  => (string)($cfg['name_style'] ?? 'full'),
+        'bold_names'  => (bool)($cfg['bold_names'] ?? true),
+        'venue_label' => (string)($cfg['venue_label'] ?? 'The Castle Fun Center'),
+        'mention'     => (string)($cfg['mention'] ?? ''),
+    ];
+    // One pinned wording wins outright; an empty string means "not set".
+    foreach (['message_single', 'message_multi'] as $k) {
+        $v = trim((string)($cfg[$k] ?? ''));
+        if ($v !== '') {
+            $out[$k] = $v;
+        }
+    }
+    foreach (['messages_single', 'messages_multi', 'greetings', 'flavors',
+              'multi_greetings', 'multi_flavors'] as $k) {
+        if (isset($cfg[$k]) && is_array($cfg[$k])) {
+            $out[$k] = $cfg[$k];
+        }
+    }
+    return array_merge($out, $overrides);
+}
+
+/**
  * Build the message text.
  *
  * Templates support {names}, {count} and {venue}. Deliberately no {age} and no
