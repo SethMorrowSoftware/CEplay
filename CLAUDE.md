@@ -929,6 +929,17 @@ before building.
     covers the whole posting path. `null` (unopenable) is deliberately NOT the
     same as `false` (someone else holds it): a broken lock file must not cost
     a birthday, so the run continues unlocked.
+  - **The timer's TIMEZONE is not the app's.** systemd fires `OnCalendar` on
+    the SYSTEM zone; the bot resolves its own (`--print-timezone`, the birthday
+    `timezone` setting else `DEFAULT_TIMEZONE`). MEASURED at the venue Aug 2026:
+    host UTC, app America/New_York, so a 09:00 timer had been posting at 05:00
+    local. `install.sh` now compares the two and emits
+    `OnCalendar=… America/New_York` when they differ AND systemd is 252+ (older
+    systemd cannot parse a zone in a calendar spec — emitting it there yields a
+    unit that never fires, so it warns and prompts instead). Never "fix" this by
+    converting to a fixed UTC offset: it breaks at every DST changeover.
+    `--check` prints a Clock row so the gap is visible beside
+    `systemctl list-timers`.
   - **Audit rows.** Source `birthdays`, actions `birthday_posted` /
     `birthday_failed` — only real events, never the ~300 idle days a year.
     Keep both `api/logs.php` filter allowlists and the `public/js/logs.js`
@@ -986,6 +997,20 @@ before building.
   of the same path. Do not add API caching to it.
 
 ### Scheduling Engine
+- **The host clock's TIMEZONE does not affect pause/unpause.** Verified on the
+  venue Aug 2026 when the birthday timer exposed a host-UTC / app-Eastern gap:
+  `pause-groups-watchdog.timer` is `OnCalendar=minutely` (no clock time, so the
+  system zone is irrelevant), and `Scheduler::enforceCurrentStates()` sets the
+  APP timezone then computes desired state live from the `schedules` table
+  (day-of-week + HH:MM vs start_time/end_time) every minute. So machine on/off
+  has never read the system zone. The `at`-job layer is INERT on this install —
+  `hasAtScheduler()` needs `at`+`atrm` on PATH and the php-fpm container ships
+  neither; measured 181 planned actions, 0 with an `at_job_id`, ever. Net: all
+  transitions come from the per-minute watchdog (so up to ~60s late, never
+  wrong). What the UTC host DOES cost: `pause-groups-daily.timer` fires 00:05
+  UTC = 20:05 Eastern the PREVIOUS day, so `cron.php` plans a day with 4 hours
+  left in it; harmless while `at` is absent, and the nightly rollup is
+  self-correcting (`rollupDailyStats()` recomputes a rolling 28 days).
 - Schedule windows = active (unpaused) hours. Outside windows = paused.
 - Priority: manual override > schedule override > recurring schedule
 - `planDay()` computes transition points, resolves conflicts, deduplicates

@@ -272,6 +272,16 @@ heartbeat beside cron's and the watchdog's, so external monitoring sees it too.
 A greeting that goes out is also written to the app's own audit log (Logs →
 source `birthdays`), as is a run that fails.
 
+**The timer knows which clock you meant.** systemd fires `OnCalendar` on the
+*system* timezone, which is not necessarily the app's — a host on UTC and an
+app on Eastern turn a 09:00 timer into a 05:00 greeting, and nothing says so.
+`install.sh` compares the two and, on systemd 252+, writes
+`OnCalendar=*-*-* 09:00:00 America/New_York` so the time means what you typed
+(DST-safe, unlike a fixed UTC offset). Where it can't, it says so loudly rather
+than installing a timer that quietly fires four hours early. `--check` prints
+the app's zone in a **Clock** row, so putting it beside `systemctl list-timers`
+shows any gap at a glance.
+
 **Two runs can't both post.** A non-blocking lock covers the whole posting
 path, so a hand-started run that overlaps a timer firing stands down instead of
 posting a second greeting.
@@ -352,6 +362,7 @@ probes as copy/paste SQL for the Database Explorer.
 | `--force` | Post even if today's greeting already went out |
 | `--config=PATH` | Use a specific config file |
 | `--roster-file=PATH` | Read the roster from JSON instead of MSSQL (testing) |
+| `--print-timezone` | Print the zone the bot treats as local |
 | `--help` | Show usage |
 
 ## Configuration
@@ -420,6 +431,7 @@ the page wins. `config.example.php` is the annotated form of the file layer.
 | Posts show the wrong bot name | Add `chat:write.customize` **and reinstall**, then set `bot_username`. The log says when the override was dropped |
 | Said "Already wished" and posted nothing | Working as intended; `--force` to repost |
 | Nothing at 09:00 | Run `--check` first — the **Last run** row says whether the bot ran at all, which decides where to look next |
+| It posts, but hours off the time you set | The machine's clock zone isn't the app's. Compare `--check`'s **Clock** row with `systemctl list-timers` — systemd fires on the SYSTEM zone. Fix by pinning the zone onto `OnCalendar` (systemd 252+), or re-run `install.sh` |
 | `Last run: the bot has never run here` | The timer isn't installed or isn't enabled: `systemctl status ceplay-birthdays.timer` |
 | `Last run: the timer is not firing` | It ran once and then stopped. `journalctl -u ceplay-birthdays` has the reason |
 | `Last run: today's run FAILED` | The run happened and the row says why — usually MSSQL or the Slack token |

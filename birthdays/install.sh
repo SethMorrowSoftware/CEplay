@@ -240,10 +240,47 @@ echo
 read -rp "  Should the bot add the first 🎉 reaction itself? [Y/n] " rx
 if [[ "${rx,,}" == "n" ]]; then ADD_REACTIONS="false"; else ADD_REACTIONS="true"; fi
 
+# Which clock does "09:00" mean?
+#
+# systemd fires OnCalendar on the SYSTEM timezone; the app runs on its own.
+# At this venue the host is UTC and the app is America/New_York, so a timer
+# written as 09:00 posted at 05:00 local — for months, with nothing saying so.
+# Resolve both and reconcile them, rather than leaving a four-hour trap in a
+# comment nobody reads.
+APP_TZ="$(run_bot --print-timezone 2>/dev/null | tr -d '[:space:]' || true)"
+HOST_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+HOST_TZ="${HOST_TZ:-UTC}"
+# "systemd 254 (254.5-1.fc39)" / "systemd 252 (v252.4-1.fc37)" -> 254 / 252
+SYSTEMD_VER="$(systemctl --version 2>/dev/null | head -1 | awk '{print $2}' | tr -cd '0-9')"
+
 echo
-read -rp "  What time should it post? [09:00] " PTIME
+if [[ -n "$APP_TZ" ]]; then
+    info "The app's clock is ${APP_TZ}; this machine's is ${HOST_TZ}."
+fi
+read -rp "  What time should it post${APP_TZ:+, ${APP_TZ} time}? [09:00] " PTIME
 PTIME="${PTIME:-09:00}"
 [[ "$PTIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "Time must be HH:MM in 24-hour form, e.g. 09:00 or 16:30."
+
+# Pin the zone onto the calendar spec so the posting time means what was just
+# typed. Only when the two zones actually differ (otherwise the plain form is
+# equivalent and reads better) and only on systemd 252+, which is where
+# calendar specs learned to carry a timezone — emitting it on an older systemd
+# would produce a unit that fails to parse and a timer that never fires at all.
+TZ_SUFFIX=""
+if [[ -n "$APP_TZ" && "$APP_TZ" != "$HOST_TZ" ]]; then
+    if [[ -n "$SYSTEMD_VER" ]] && (( SYSTEMD_VER >= 252 )); then
+        TZ_SUFFIX=" ${APP_TZ}"
+        ok "The timer will be written in ${APP_TZ}, so ${PTIME} means ${PTIME} at the venue."
+    else
+        warn "This machine's clock is ${HOST_TZ} but the app runs on ${APP_TZ}, and"
+        warn "systemd ${SYSTEMD_VER:-<unknown>} is too old (needs 252+) to put a zone in the"
+        warn "timer. The greeting will go out at ${PTIME} ${HOST_TZ}, NOT ${PTIME} at the venue."
+        warn "Either set the machine's zone (sudo timedatectl set-timezone ${APP_TZ})"
+        warn "or pick the ${HOST_TZ} time you actually want."
+        read -rp "  Continue anyway? [y/N] " tzok
+        [[ "${tzok,,}" == "y" ]] || die "Stopped. Fix the timezone, then re-run."
+    fi
+fi
 
 set_key name_style    "'${NAME_STYLE}'"
 set_key add_reactions "${ADD_REACTIONS}"
@@ -325,12 +362,12 @@ firing_times() {
 
 CAL_LINES=""
 while read -r t; do
-    CAL_LINES+="OnCalendar=*-*-* ${t}:00"$'\n'
+    CAL_LINES+="OnCalendar=*-*-* ${t}:00${TZ_SUFFIX}"$'\n'
 done < <(firing_times)
 RETRY_TIMES="$(firing_times | tail -n +2 | paste -sd' ' -)"
 
 echo
-info "Installing the daily timer for ${PTIME}${RETRY_TIMES:+ (catch-up at ${RETRY_TIMES})}"
+info "Installing the daily timer for ${PTIME}${TZ_SUFFIX:+ ${APP_TZ}}${RETRY_TIMES:+ (catch-up at ${RETRY_TIMES})}"
 install -m 0644 "${UNIT_SRC}/${SERVICE}" "${UNIT_DST}/${SERVICE}"
 # Replace the whole shipped block of OnCalendar lines with the generated one,
 # rather than rewriting each in place — the unit ships with three of them, and
@@ -360,7 +397,7 @@ NEXT="$(systemctl list-timers "$TIMER" --no-pager --no-legend 2>/dev/null | awk 
 
 hdr "Done"
 cat <<EOF
-  Posting to      ${CHAN} at ${PTIME} every day
+  Posting to      ${CHAN} at ${PTIME}${TZ_SUFFIX:+ ${APP_TZ}} every day
   Shows up as     ${BOTNAME:-your Slack app's own name}
   Next run        ${NEXT:-see: systemctl list-timers ${TIMER}}
   Config          ${CONFIG}
