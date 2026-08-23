@@ -387,11 +387,20 @@ function handleHealthCheck(): void {
         $status['status'] = 'degraded';
     }
 
-    // Birthday bot. Reported like the others, with one difference: a MISSING
-    // heartbeat is not degraded here, because the bot is optional and most of
-    // its life it has simply never been installed. A heartbeat that exists and
-    // has gone stale is a different matter — that is a timer that stopped, and
-    // the symptom is a birthday nobody gets wished.
+    // Birthday bot. Reported like the others, with one deliberate difference:
+    // it NEVER moves the top-level `status`.
+    //
+    // That field means "is the pause-group system working" — it is what the
+    // Electron remote surfaces, and what an operator reads when they want to
+    // know whether the floor is being controlled. The birthday bot is an
+    // optional accessory that pauses nothing; letting a missed greeting report
+    // the scheduler as degraded would put a false alarm on the one signal that
+    // has to stay trustworthy. Monitoring that wants to alert on the bot can
+    // read birthdays.healthy directly, which is precise about it.
+    //
+    // A MISSING heartbeat is not unhealthy either — the bot is optional and
+    // most installs have simply never had it. A heartbeat that exists and has
+    // gone stale is the real signal: a timer that stopped.
     $birthdayHeartbeat = $dataDir . '/.heartbeat_birthdays';
     if (file_exists($birthdayHeartbeat)) {
         $lastRun = file_get_contents($birthdayHeartbeat);
@@ -402,9 +411,6 @@ function handleHealthCheck(): void {
             'age_seconds' => $age,
             'healthy' => $age < 93600, // 26 hours (the bot runs daily)
         ];
-        if ($age >= 93600) {
-            $status['status'] = 'degraded';
-        }
     } else {
         $status['birthdays'] = ['last_run' => null, 'healthy' => null, 'installed' => false];
     }
