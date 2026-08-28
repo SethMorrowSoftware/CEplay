@@ -21,6 +21,16 @@ class Scheduler {
     const VENUE_DAILY_BACKFILL_VERSION = '2';
 
     /**
+     * How far back refreshVenueDailyStatsRecent() will reach to close a gap in
+     * venue_daily_stats. Generous enough to absorb any realistic outage of the
+     * nightly refresh (a whole season), bounded so a rollup that is YEARS stale
+     * can't turn a routine cron run into a two-decade MSSQL scan — that case
+     * wants a VENUE_DAILY_BACKFILL_VERSION bump, which rebuilds the table from
+     * scratch in monthly batches instead.
+     */
+    const VENUE_DAILY_CATCHUP_MAX_DAYS = 400;
+
+    /**
      * Set app timezone and return the previous timezone for restoration.
      */
     private static function setTimezone(): string {
@@ -2239,9 +2249,30 @@ class Scheduler {
     }
 
     /**
-     * Refresh the trailing window of venue_daily_stats from the POS ledger.
-     * Cheap (one bounded MSSQL query + a small batch of upserts) — run nightly
-     * from cron so complete recent days stay accurate as late transactions post.
+     * Refresh the trailing window of venue_daily_stats from the POS ledger —
+     * and, when the rollup has fallen further behind than that window, reach
+     * back to close the whole gap. Run nightly from cron so complete recent
+     * days stay accurate as late transactions post, and from run_backfills.php
+     * so a deploy leaves no hole.
+     *
+     * WHY IT REACHES BACK. A plain trailing window can only ever repair the
+     * last $days days, so any longer outage leaves a PERMANENT hole: the
+     * rollup stops on the day the refresh broke, resumes $days before the day
+     * it was fixed, and every window spanning the gap under-reports for good —
+     * silently, because the missing days simply aren't in the table to be
+     * counted. That is not hypothetical: this refresh was dead for six weeks on
+     * the venue (the nightly container had no MSSQL driver), so the first run
+     * after the fix would have skipped straight over mid-July.
+     *
+     * Starting AT the newest stored day rather than the day after it re-writes
+     * one day needlessly; the upsert is idempotent and it costs one day of a
+     * grouped query, which is cheaper than reasoning about an off-by-one.
+     *
+     * Monthly batches keep each MSSQL query bounded however long the gap is,
+     * exactly as the deep backfill does. VENUE_DAILY_CATCHUP_MAX_DAYS caps the
+     * reach so a rollup that is years stale can't turn a routine cron run into
+     * a two-decade scan — that case wants the version-stamped rebuild
+     * (VENUE_DAILY_BACKFILL_VERSION), and `clamped` in the return says so.
      */
     public static function refreshVenueDailyStatsRecent(int $days = 40, ?callable $log = null): array {
         require_once __DIR__ . '/mssql_client.php';
@@ -2252,10 +2283,36 @@ class Scheduler {
         try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
         $today = (new DateTime('now', $tz))->format('Y-m-d');
         $from  = (new DateTime('now', $tz))->modify('-' . max(1, $days) . ' days')->format('Y-m-d');
+
+        $clamped = false;
+        $row     = DB::queryOne('SELECT MAX(stat_date) AS d FROM venue_daily_stats');
+        $newest  = $row['d'] ?? null;
+        if (is_string($newest) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $newest) && $newest < $from) {
+            $floor = (new DateTime('now', $tz))
+                ->modify('-' . self::VENUE_DAILY_CATCHUP_MAX_DAYS . ' days')->format('Y-m-d');
+            $from = ($newest < $floor) ? $floor : $newest;
+            $clamped = ($newest < $floor);
+        }
+
         $client = new MssqlClient();
-        $written = self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $from, $today));
-        if ($log) $log("Venue daily refresh: {$written} recent day-rows.");
-        return ['days' => $written];
+        $client->setTimeout(180);
+
+        $written = 0;
+        $cursor  = $from;
+        while ($cursor < $today) {
+            $c = DateTime::createFromFormat('!Y-m-d', $cursor, new DateTimeZone('UTC'));
+            // Always strictly after $cursor, so the loop cannot spin.
+            $next  = $c ? $c->modify('first day of next month')->format('Y-m-d') : $today;
+            $upper = ($next > $today) ? $today : $next;
+            $written += self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $cursor, $upper));
+            $cursor = $upper;
+        }
+
+        if ($log) {
+            $log("Venue daily refresh: {$written} day-rows from {$from}"
+                . ($clamped ? ' (gap clamped — run the version-stamped rebuild for the rest)' : '') . '.');
+        }
+        return ['days' => $written, 'from' => $from, 'clamped' => $clamped];
     }
 
     /**

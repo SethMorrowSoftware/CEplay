@@ -35,7 +35,9 @@ $res = Scheduler::runPendingBackfills($log);
 // stock image, a driver that failed to build, the DB briefly unreachable), the
 // rollup freezes at the day the backfill wrote and the year-over-year card
 // reports that day as its newest actuals for as long as it takes anyone to
-// notice. A deploy is a cheap place to close that gap: one bounded query.
+// notice. A deploy is a cheap place to close that gap, and the refresh reaches
+// back to the rollup's newest stored day, so it closes the WHOLE gap rather
+// than leaving a hole between it and the trailing window.
 $refreshFailed = false;
 try {
     $refresh = Scheduler::refreshVenueDailyStatsRecent(40, $log);

@@ -132,7 +132,15 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   refreshed nightly for the trailing 40 days
   (`Scheduler::refreshVenueDailyStatsRecent`, cron Step 5c) — both cron-only,
   MSSQL-only (self-skip if unconfigured), and never touch today (today stays
-  live from the raw feed).
+  live from the raw feed). That refresh REACHES BACK to the rollup's newest
+  stored day when it is further behind than the trailing window, in monthly
+  batches, capped by `VENUE_DAILY_CATCHUP_MAX_DAYS` (400, `clamped` in the
+  return when it bites — that case wants a version bump instead). Do not
+  simplify it back to a fixed trailing window: after any outage longer than the
+  window, a trailing-only refresh resumes 40 days before the fix and leaves a
+  PERMANENT hole between there and where the rollup stopped, which no later run
+  ever repairs and which under-reports every window spanning it, silently,
+  because the missing days aren't in the table to be counted.
   **THE ROLLUP FROZE FOR SIX WEEKS ON THE VENUE (Jul 17 → Aug 28 2026) AND
   NOTHING SAID SO — the shape of this trap outlives the specific bug.** The
   one-time backfill is flag-guarded, so after it runs ONCE the refresh is the

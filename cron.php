@@ -129,7 +129,11 @@ try {
         if (!empty($venueRefresh['skipped'])) {
             echo "  Skipped: {$venueRefresh['reason']}.\n";
         } else {
-            echo "  Refreshed {$venueRefresh['days']} recent day-rows.\n";
+            echo "  Refreshed {$venueRefresh['days']} day-rows from {$venueRefresh['from']}"
+                . (!empty($venueRefresh['clamped'])
+                    ? " (gap clamped at " . Scheduler::VENUE_DAILY_CATCHUP_MAX_DAYS . " days —"
+                        . " bump VENUE_DAILY_BACKFILL_VERSION to rebuild the rest)"
+                    : '') . ".\n";
         }
     } catch (Exception $e) {
         echo "  WARNING: Venue daily rollup refresh failed: " . $e->getMessage() . "\n";
