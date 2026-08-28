@@ -28,11 +28,33 @@ $log = function (string $m) { echo '[' . date('c') . '] ' . $m . "\n"; };
 $log('Running pending MSSQL historical backfills...');
 $res = Scheduler::runPendingBackfills($log);
 
+// Then catch the venue-wide daily rollup up to yesterday. The one-time backfill
+// above is flag-guarded, so once it has run it never widens the rollup again —
+// only Scheduler::refreshVenueDailyStatsRecent() advances it, and that lives in
+// the nightly cron. If cron can't reach MSSQL (a daily unit still pinned to the
+// stock image, a driver that failed to build, the DB briefly unreachable), the
+// rollup freezes at the day the backfill wrote and the year-over-year card
+// reports that day as its newest actuals for as long as it takes anyone to
+// notice. A deploy is a cheap place to close that gap, and the refresh reaches
+// back to the rollup's newest stored day, so it closes the WHOLE gap rather
+// than leaving a hole between it and the trailing window.
+$refreshFailed = false;
+try {
+    $refresh = Scheduler::refreshVenueDailyStatsRecent(40, $log);
+    if (!empty($refresh['skipped'])) {
+        $log('Venue daily refresh skipped: ' . $refresh['reason'] . '.');
+    }
+} catch (Exception $e) {
+    $refreshFailed = true;
+    $log('Venue daily refresh failed (cron will retry): ' . $e->getMessage());
+}
+
 // Exit non-zero only if a backfill actively FAILED (so a caller can notice);
 // "skipped" (no MSSQL yet) and "already done" are both fine.
 $failed = ($res['card']['status'] ?? '') === 'failed'
     || ($res['game']['status'] ?? '') === 'failed'
-    || ($res['venue']['status'] ?? '') === 'failed';
+    || ($res['venue']['status'] ?? '') === 'failed'
+    || $refreshFailed;
 $log('Backfills: guest=' . ($res['card']['status'] ?? '?')
     . ', per-game=' . ($res['game']['status'] ?? '?')
     . ', venue-daily=' . ($res['venue']['status'] ?? '?') . '.');

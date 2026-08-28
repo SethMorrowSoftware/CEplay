@@ -722,6 +722,37 @@ function analyticsYoyThrough(string $source, string $today): ?string {
     return (is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) ? $d : null;
 }
 
+/**
+ * How many days BEHIND the rollup is: from its newest complete day to the day
+ * that should be its newest complete day (yesterday, venue-local).
+ *
+ * This exists because a frozen rollup is invisible otherwise. Every figure on
+ * the card is honestly labelled with the window it covers, so a source that
+ * stopped updating six weeks ago still renders a clean, plausible-looking
+ * "month to date" — of the wrong month. The refresh runs from cron and only
+ * from cron, so anything that breaks it (an MSSQL driver missing from the
+ * nightly container, the POS unreachable, a cron that stopped firing) fails
+ * exactly this quietly. Reporting the gap makes the card say so.
+ *
+ * 0 is normal: the nightly refresh can land while the venue-local day it would
+ * cover is still running, so being one day back is routine, not a fault — the
+ * UI only warns past a few days.
+ */
+function analyticsYoyStaleDays(?string $through, string $expected): ?int {
+    if ($through === null) return null;
+    if ($through >= $expected) return 0;
+    $a = DateTime::createFromFormat('!Y-m-d', $through, new DateTimeZone('UTC'));
+    $b = DateTime::createFromFormat('!Y-m-d', $expected, new DateTimeZone('UTC'));
+    if (!$a || !$b) return null;
+    return (int)$a->diff($b)->days;
+}
+
+/** "July" from a YYYY-MM stamp; the bare stamp back if it can't be parsed. */
+function analyticsYoyMonthName(string $ym): string {
+    $d = DateTime::createFromFormat('!Y-m-d', $ym . '-01', new DateTimeZone('UTC'));
+    return $d ? $d->format('F') : $ym;
+}
+
 /** Earliest day the source covers — lets the UI explain a thin prior year. */
 function analyticsYoyHistorySince(string $source): ?string {
     $row = DB::queryOne(
@@ -807,17 +838,23 @@ function analyticsYoy(bool $hideMoney = false): void {
     $source  = analyticsYoySource();
     $through = analyticsYoyThrough($source, $today);
 
+    // The newest day the source COULD have: yesterday, venue-local. Today is
+    // partial by definition and never counted.
+    $expected = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');
+
     $base = [
         'source'      => $source,
         'money_label' => $source === 'ledger' ? 'Play value' : 'Cash at readers',
         'money_hint'  => $source === 'ledger'
             ? 'Dollars spent at the readers (POS card ledger)'
             : 'Cash and card taken at the readers',
-        'timezone'      => $tzName,
-        'today'         => $today,
-        'through'       => $through,
-        'history_since' => analyticsYoyHistorySince($source),
-        'hide_money'    => $hideMoney,
+        'timezone'         => $tzName,
+        'today'            => $today,
+        'through'          => $through,
+        'expected_through' => $expected,
+        'stale_days'       => analyticsYoyStaleDays($through, $expected),
+        'history_since'    => analyticsYoyHistorySince($source),
+        'hide_money'       => $hideMoney,
     ];
 
     if ($through === null) {
@@ -828,14 +865,27 @@ function analyticsYoy(bool $hideMoney = false): void {
     $priorThrough = analyticsYoyPriorDate($through);
     $year         = (int)substr($through, 0, 4);
 
+    // Both windows are cut at $through, NOT at today — so when the source is
+    // behind, "Month to date" can mean a month that ended weeks ago. Name the
+    // month outright in that case ("July to date"): a card that reads "Month to
+    // date · Jul 1 – Jul 16" on August 26th is the single most misleading thing
+    // this widget can print, because every number under it is correct.
+    $mtd  = substr($through, 0, 7);
+    $mLbl = $mtd === substr($today, 0, 7)
+        ? 'Month to date'
+        : analyticsYoyMonthName($mtd) . ' to date';
+    $yLbl = $year === (int)substr($today, 0, 4)
+        ? 'Year to date'
+        : $year . ' to date';
+
     $defs = [
         'mtd' => [
-            'label'      => 'Month to date',
-            'from'       => substr($through, 0, 7) . '-01',
+            'label'      => $mLbl,
+            'from'       => $mtd . '-01',
             'prior_from' => substr($priorThrough, 0, 7) . '-01',
         ],
         'ytd' => [
-            'label'      => 'Year to date',
+            'label'      => $yLbl,
             'from'       => sprintf('%04d-01-01', $year),
             'prior_from' => sprintf('%04d-01-01', $year - 1),
         ],

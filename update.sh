@@ -232,6 +232,14 @@ hdr "6/7  MSSQL driver overlay + historical backfill"
 # works either way, only the Labor report needs the driver.
 MSSQL_IMAGE="localhost/pause-groups-fpm-mssql:latest"
 MSSQL_TAR="${INSTALL_DIR}/php-fpm-mssql.tar"
+#
+# The DAILY unit is rewritten alongside FPM. cron.php refreshes the venue-wide
+# daily rollup (venue_daily_stats — the year-over-year card and the Analytics
+# deep-history view) from MSSQL every night, so it needs the driver too. While
+# only FPM got the overlay, that refresh threw "No MSSQL PDO driver is
+# installed in this PHP runtime" every night and the rollup silently froze at
+# whatever day the last one-time backfill had written. The per-minute watchdog
+# stays on the stock image on purpose: it never touches MSSQL.
 if [[ -f "${SRC_DIR}/deploy/Containerfile.mssql" && -f "${SRC_DIR}/deploy/write-fpm-unit.sh" ]]; then
     info "Building the pdo_dblib overlay on ${PHP_IMAGE} (first run takes a minute or two)..."
     if podman build -f "${SRC_DIR}/deploy/Containerfile.mssql" \
@@ -242,6 +250,12 @@ if [[ -f "${SRC_DIR}/deploy/Containerfile.mssql" && -f "${SRC_DIR}/deploy/write-
             bash "${SRC_DIR}/deploy/write-fpm-unit.sh" \
                 "$ENV_FILE" "$INSTALL_DIR" "$MSSQL_IMAGE" "$PHP_IMAGE" "$MSSQL_TAR"
             ok "FPM unit points at the MSSQL-enabled image."
+            if [[ -f "${SRC_DIR}/deploy/write-daily-unit.sh" ]]; then
+                bash "${SRC_DIR}/deploy/write-daily-unit.sh" \
+                    "$ENV_FILE" "$INSTALL_DIR" "$DATA_DIR" "$MSSQL_IMAGE" "$MSSQL_TAR"
+                ok "Nightly planner unit points at the MSSQL-enabled image."
+                note "Tonight's cron can now refresh the venue daily rollup (year-over-year, deep history)."
+            fi
         else
             rm -f "${MSSQL_TAR}.tmp"
             warn "Overlay built but could not be saved to ${MSSQL_TAR} (disk space?)."

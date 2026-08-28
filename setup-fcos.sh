@@ -591,24 +591,13 @@ WantedBy=timers.target
 UNIT
 
 # ── daily planner service ─────────────────────────────────────────────────────
-cat > /etc/systemd/system/pause-groups-daily.service <<UNIT
-[Unit]
-Description=pause-groups daily planner (game sync, schedule planning)
-After=pause-groups-fpm.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/podman run --rm \\
-    --network host \\
-    --env-file ${ENV_FILE} \\
-    -v ${INSTALL_DIR}:${INSTALL_DIR}:z \\
-    -w ${INSTALL_DIR} \\
-    -u 33:33 \\
-    ${PHP_IMAGE} \\
-    php cron.php
-StandardOutput=append:${DATA_DIR}/cron.log
-StandardError=append:${DATA_DIR}/cron.log
-UNIT
+# The unit content lives in deploy/write-daily-unit.sh — shared with update.sh
+# so the fresh-install and routine-update paths can never drift apart. It runs
+# on the SAME image as FPM (the pdo_dblib overlay when one was built): cron.php
+# refreshes the venue-wide daily rollup from MSSQL every night, and the stock
+# php:fpm image has no MSSQL driver to do it with.
+bash "${SOURCE_DIR}/deploy/write-daily-unit.sh" \
+    "$ENV_FILE" "$INSTALL_DIR" "$DATA_DIR" "$RUNTIME_IMAGE" "$LOAD_TAR_ARG"
 
 cat > /etc/systemd/system/pause-groups-daily.timer <<UNIT
 [Unit]
