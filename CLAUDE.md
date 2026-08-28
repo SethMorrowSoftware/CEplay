@@ -333,12 +333,57 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   (revenue + discounts), flagged when >10%. One admin-editable range query
   (`revenue_range_sql`, required `:from`/`:to`, single-SELECT guarded via
   `MssqlClient::assertReadOnly`) returns per-(day, CatNo) buckets; PHP rolls up
-  the trend + breakdown in `revenueCompose` (pure/testable). CatNo→name is a
-  best-effort INFORMATION_SCHEMA lookup (like Labor/Tickets). Shares the Labor
+  the trend + breakdown in `revenueCompose` (pure/testable). Shares the Labor
   page's MSSQL connection; money-green `--revenue` theme. View gate: analytics +
-  view_revenue; config gate: settings. The Test button reconciles a probe day
-  and dumps that day's revenue-by-category breakdown. Venue server only (no
-  sandbox driver).
+  view_revenue; config gate: settings; Test gate: `data_explorer` (it returns
+  raw POS dollars). Venue server only (no sandbox driver).
+  **Accuracy properties, all fixed Aug 2026 — do not undo them:**
+  - **`share` divides by the POSITIVE revenue pool, not the net total.** A
+    category can net NEGATIVE (refunds/voids outrunning sales in the window),
+    which drags the net total toward zero while the positive categories keep
+    their full value: +$100 and −$80 nets $20, and dividing by that printed
+    **"500.0%" and "-400.0%"** on the category table and "500% of revenue" on
+    the top-category card. Against the positive pool every positive share is
+    ≤100% by construction. When nothing is negative the pool EQUALS the net
+    total, so ordinary periods are bit-identical.
+  - **The range query reports `truncated`.** `MssqlClient::rows()` stops
+    fetching at its limit and returns what it has, with no error — so before
+    this, a window over `REVENUE_MAX_ROWS` (40000) silently under-reported
+    revenue and looked completely normal. `prior_truncated` covers the
+    comparison query. Same contract as Item Watch's `ITEMS_MAX_ROWS`. NOTE
+    Ticket Trends and Card Loads still have this gap.
+  - **`window.in_progress` — NOT `prev_aligned` — drives the "through <date>"
+    note.** `prev_aligned` only means the PRIOR side got trimmed; the two come
+    apart whenever an in-progress long month outruns a shorter prior one (Mar 30
+    vs a 28-day Feb leaves `aligned` false), which is exactly when the reader
+    most needs telling that "March 2026" stops on the 30th. The delta card also
+    prints "30d vs 28d" whenever the two sides span different day counts.
+  - **`revenueCatNames()` scores candidates instead of taking the first.**
+    `LIKE '%Cat%'` is a case-insensitive SUBSTRING match, so `ApplicationInfo`,
+    `Allocations` and `Duplicates` all match — and first-match-wins in
+    alphabetical order meant any of them (all sort before `Categories`) starved
+    the real table and left every category reading "Category 108". Now: a bare
+    `No`/`ID` key is only trusted on a table whose NAME looks like a category
+    table (`revenueCatTableScore`), candidates are probed in score order, and
+    the winner is the one naming the most CatNos ACTUALLY IN THE WINDOW.
+    Bounded by `REVENUE_CAT_PROBE_MAX` with early exits, since it runs per
+    request. Same false-positive shape as the Explorer's cost probe.
+  - **`per_day` still averages over CALENDAR days** — the convention Card Loads
+    / Ticket Trends / Redemption share, deliberately left alone — but the
+    summary now also carries `days_with_sales`, and the UI prints "N of M days
+    with sales" whenever they differ, so a window spanning closed days explains
+    its own average instead of just reading low.
+  - **The prior-period sum is filtered to the prior window**, symmetric with
+    how `revenueCompose` filters the current side, so a customised query
+    returning extra days can't inflate one side of the comparison.
+  - **The Test button genuinely reconciles**: the saved query's total for the
+    probe day against a direct independent `SUM(AmtSold)` over the same day
+    (reports MATCH or the exact gap), and it settles the one thing that had
+    only ever been ASSUMED — whether `AmtSold` is NET of discounts. A fully
+    comped line decides it (net stores AmtSold 0 with the price in
+    `Discounts`; gross stores AmtSold == Discounts), counted over 30 days.
+    **If that probe ever reports "looks GROSS", the discount rate on this page
+    is understated and `discount_pct`'s formula must change.**
 - Redemption Economics (`#/redemption`, `/api/redemption/*`, `api/redemption.php`)
   is the redemption half of the ticket economy — Ticket Trends reports tickets
   EARNED, this reports tickets SPENT for prizes, so together they give the

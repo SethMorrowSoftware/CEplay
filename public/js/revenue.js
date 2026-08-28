@@ -226,14 +226,38 @@
         var days = data.days || [];
         var categories = data.categories || [];
 
+        // The range query stops fetching at a hard row cap. If it bit, these
+        // totals are INCOMPLETE — and every one of them still looks perfectly
+        // ordinary, so this has to be said out loud.
+        if (data.truncated || data.prior_truncated) {
+            box.appendChild(App.el('div', { className: 'card' }, [
+                App.el('div', { className: 'card-body' }, [
+                    App.el('p', { className: 'text-secondary', textContent:
+                        '⚠ This period returned more rows than the report will read, so the '
+                        + (data.truncated ? 'totals below are incomplete' : 'previous-period comparison is incomplete')
+                        + '. Pick a shorter period for exact figures.' })
+                ])
+            ]));
+        }
+
         // ---- Insight cards ----
         var cards = [];
         var win = data.window || {};
         var revSub = (s.per_day != null ? fmtMoney(s.per_day) + '/day' : '')
             + (s.num_cats ? ' · ' + fmtInt(s.num_cats) + ' categories' : '');
+        // per_day averages over calendar days, so name the actual number of
+        // days that carried sales whenever the period contains days with none —
+        // otherwise a window spanning closed days just reads low with no reason.
+        if (s.days_with_sales != null && s.num_days != null && s.days_with_sales < s.num_days) {
+            revSub += ' · ' + fmtInt(s.days_with_sales) + ' of ' + fmtInt(s.num_days) + ' days with sales';
+        }
         // The period is still running — say where the total stops, so it reads
-        // as year to date rather than as a whole year that came up short.
-        if (win.prev_aligned && win.to) revSub += ' · through ' + App.formatPlainDate(win.to);
+        // as month/year to date rather than a whole one that came up short.
+        // Keyed on in_progress, NOT prev_aligned: prev_aligned only means the
+        // PRIOR side got trimmed, and it comes back false exactly when an
+        // in-progress long month outruns a shorter prior one (Mar 30 vs Feb) —
+        // the case where this note matters most.
+        if (win.in_progress && win.to) revSub += ' · through ' + App.formatPlainDate(win.to);
         cards.push(insightCard('💰', 'insight-accent', 'Revenue this period', fmtMoney(s.revenue), revSub));
         if (s.delta_pct != null) {
             var up = s.delta_pct >= 0;
@@ -242,6 +266,13 @@
             // the span the prior figure actually covers.
             var sub = 'was ' + fmtMoney(s.prior_revenue);
             if (s.prior_from && s.prior_to) sub += ' · ' + rangeLabel(s.prior_from, s.prior_to);
+            // Calendar months differ in length, and an in-progress long month
+            // can't be cut to match a shorter prior one, so the two sides are
+            // sometimes measured over different numbers of days. Say so rather
+            // than presenting it as like-for-like.
+            if (s.num_days != null && s.prior_days != null && s.num_days !== s.prior_days) {
+                sub += ' · ' + fmtInt(s.num_days) + 'd vs ' + fmtInt(s.prior_days) + 'd';
+            }
             cards.push(insightCard(up ? '📈' : '📉', up ? 'insight-good' : 'insight-warn',
                 s.compare_label || 'vs previous period', fmtPct(s.delta_pct), sub));
         }
