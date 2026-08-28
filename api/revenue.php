@@ -7,7 +7,8 @@
  *
  *   GET  /api/revenue/settings — editable query (settings perm)
  *   PUT  /api/revenue/settings — save it (settings perm)
- *   POST /api/revenue/test     — run the query for a probe range + fingerprint (settings perm)
+ *   POST /api/revenue/test     — reconcile a probe day + fingerprint (data_explorer perm:
+ *          it returns raw POS dollars, so it rides the same gate as the Explorer)
  *   GET  /api/revenue/data?range=&offset=&from=&to= — per-day total + per-category
  *          breakdown + summary (analytics + view_revenue)
  *
@@ -36,6 +37,21 @@ require_once __DIR__ . '/analytics.php';
 // table (the Labor page's diagnostics sum them live). ShiftDate is a business
 // day at midnight, so CONVERT(...,120) yields the same local day the app bins.
 const REVENUE_DEFAULT_RANGE_SQL = "SELECT CONVERT(VARCHAR(10), ShiftDate, 120) AS day,\n       CatNo AS cat,\n       SUM(AmtSold) AS amount,\n       SUM(Discounts) AS discounts,\n       SUM(QtySold) AS qty\nFROM [CenterEdge].[dbo].[Sales]\nWHERE ShiftDate >= :from\n  AND ShiftDate < DATEADD(DAY, 1, :to)\nGROUP BY CONVERT(VARCHAR(10), ShiftDate, 120), CatNo";
+
+/**
+ * Hard row cap on the range query. MssqlClient::rows() STOPS FETCHING at its
+ * limit and returns what it has — no error — so a window that exceeds this
+ * would silently under-report revenue and look completely normal on screen.
+ * Hitting it sets `truncated` on the payload and the page says the totals are
+ * incomplete, the same contract Item Watch uses (ITEMS_MAX_ROWS).
+ *
+ * One row per (day, category-with-sales): a 380-day maximum window would need
+ * ~105 categories selling every single day to reach this.
+ */
+const REVENUE_MAX_ROWS = 40000;
+
+/** Most candidate lookup tables revenueCatNames() will read per request. */
+const REVENUE_CAT_PROBE_MAX = 12;
 
 function handleRevenue(string $method, array $parts, ?array $input): void {
     $action = $parts[0] ?? '';
@@ -135,25 +151,70 @@ function revenueBucketsFromRows(array $rows): array {
 }
 
 /**
- * Best-effort CatNo → name map. The category lookup table's name varies by
- * install, so discover it via INFORMATION_SCHEMA (an integer No/ID column + a
- * text Name/Desc column) — the same approach the Labor / Ticket Trends pages
- * use. Failure is harmless: the report just shows "Category N".
+ * How category-ish a table NAME looks. Used both to rank candidates and to
+ * decide whether a bare `No`/`ID` key column is trustworthy on that table.
+ */
+function revenueCatTableScore(string $table): int {
+    $l = strtolower($table);
+    if ($l === 'categories' || $l === 'category') return 4;
+    if (preg_match('/^[a-z]{0,6}cat(egory|egories|s)?$/', $l)) return 3;   // InvCategories, SubCategory…
+    if (preg_match('/cat(egory|egories|no)/', $l)) return 2;
+    return 1;                                                              // merely CONTAINS "cat"
+}
+
+/**
+ * Best-effort CatNo → name map, discovered via INFORMATION_SCHEMA because the
+ * lookup table's name varies by install. Failure is harmless: the report just
+ * shows "Category N".
  *
+ * PICKS THE BEST CANDIDATE, rather than the first one that parses. `LIKE
+ * '%Cat%'` is a case-insensitive SUBSTRING match, so it also catches
+ * ApplicationInfo, Allocations, Duplicates and friends — and the old code took
+ * the first match in alphabetical order and returned, so any of those sorting
+ * before "Categories" (they all do — 'A' < 'C') would starve the real table and
+ * leave every category rendering as "Category 108". CLAUDE.md documents the
+ * same false-positive shape in the Explorer's cost probe.
+ *
+ * Two defences: a bare `No`/`ID` key column is only accepted on a table whose
+ * NAME actually looks like a category table (a generic int id on a random
+ * table is not a category key), and every candidate is scored by how many of
+ * the CatNos ACTUALLY IN THIS WINDOW it can name — evidence beats heuristics.
+ * Ties break toward the more category-ish table name.
+ *
+ * @param int[] $wantedCats CatNos present in the data, for coverage scoring
  * @return array<string,string> CatNo (string) => name
  */
-function revenueCatNames(MssqlClient $client): array {
+function revenueCatNames(MssqlClient $client, array $wantedCats = []): array {
     $ident = function (string $n): string {
         return '[' . preg_replace('/[^A-Za-z0-9_ #\-]/', '', $n) . ']';
     };
     try {
         $tables = $client->rows(
-            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE '%Cat%' ORDER BY TABLE_NAME", 24);
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE '%Cat%' ORDER BY TABLE_NAME", 80);
     } catch (Exception $e) {
         return [];
     }
-    foreach ($tables as $t) {
-        $tbl = (string)$t['TABLE_NAME'];
+
+    // Most category-ish names first, so the early exit below lands on the real
+    // table and the generic "contains cat" matches are only reached if it fails.
+    $names = [];
+    foreach ($tables as $t) $names[] = (string)$t['TABLE_NAME'];
+    usort($names, function ($a, $b) {
+        $d = revenueCatTableScore($b) <=> revenueCatTableScore($a);
+        return $d !== 0 ? $d : strcasecmp($a, $b);
+    });
+
+    $wanted = [];
+    foreach ($wantedCats as $c) $wanted[(string)(int)$c] = true;
+
+    // Every probe costs a COLUMNS query plus a table read, and this runs on
+    // each page load, so bound the sweep. Score order means the real table is
+    // tried first and the early exits below almost always fire on it.
+    $best = []; $bestScore = -1; $bestTableScore = -1; $probes = 0;
+    foreach ($names as $tbl) {
+        if ($probes >= REVENUE_CAT_PROBE_MAX) break;
+        $probes++;
+        $tblScore = revenueCatTableScore($tbl);
         try {
             $cols = $client->rows(
                 "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" . str_replace("'", "''", $tbl) . "'", 64);
@@ -162,21 +223,42 @@ function revenueCatNames(MssqlClient $client): array {
                 $cn = (string)$c['COLUMN_NAME'];
                 $ct = strtolower((string)$c['DATA_TYPE']);
                 $isInt = in_array($ct, ['int', 'smallint', 'tinyint', 'bigint', 'numeric', 'decimal'], true);
-                if ($noCol === null && $isInt && preg_match('/^(CatNo|CategoryNo|CatID|CategoryID|No|ID)$/i', $cn)) $noCol = $cn;
+                // A bare No/ID only counts on a table that really looks like a
+                // category table; otherwise half the schema qualifies.
+                $keyOk = preg_match('/^(CatNo|CategoryNo|CatID|CategoryID)$/i', $cn)
+                    || ($tblScore >= 3 && preg_match('/^(No|ID)$/i', $cn));
+                if ($noCol === null && $isInt && $keyOk) $noCol = $cn;
                 if ($nameCol === null && in_array($ct, ['varchar', 'nvarchar', 'char', 'nchar'], true) && preg_match('/(Desc|Name|Title)/i', $cn)) $nameCol = $cn;
             }
-            if ($noCol && $nameCol) {
-                $map = [];
-                foreach ($client->rows('SELECT ' . $ident($noCol) . ' AS no, ' . $ident($nameCol) . ' AS name FROM dbo.' . $ident($tbl), 1000) as $r) {
-                    $map[(string)(int)$r['no']] = trim((string)$r['name']);
-                }
-                if ($map) return $map;
+            if (!$noCol || !$nameCol) continue;
+
+            $map = [];
+            foreach ($client->rows('SELECT ' . $ident($noCol) . ' AS no, ' . $ident($nameCol) . ' AS name FROM dbo.' . $ident($tbl), 1000) as $r) {
+                $nm = trim((string)$r['name']);
+                if ($nm !== '') $map[(string)(int)$r['no']] = $nm;
             }
+            if (!$map) continue;
+
+            // Score = how many of the categories on screen this table can name.
+            // With nothing to check against, fall back to the name heuristic.
+            $score = 0;
+            if ($wanted) {
+                foreach ($wanted as $k => $_) if (isset($map[$k])) $score++;
+            }
+            if ($score > $bestScore || ($score === $bestScore && $tblScore > $bestTableScore)) {
+                $best = $map; $bestScore = $score; $bestTableScore = $tblScore;
+            }
+            // Names every category we're showing — nothing can beat that.
+            if ($wanted && $score === count($wanted)) break;
+            // A table literally called "Categories" that names at least one of
+            // them is the lookup table; no point reading the rest of the schema
+            // for the handful of CatNos it happens to be missing.
+            if ($tblScore >= 4 && $score > 0) break;
         } catch (Exception $e) {
             continue;
         }
     }
-    return [];
+    return $best;
 }
 
 function revenueGetSettings(): void {
@@ -224,9 +306,9 @@ function revenueTest(?array $input = null): void {
         $client->connect();
         $buckets = revenueBucketsFromRows(
             $client->rows(MssqlClient::bindRange(revenueRangeSql(), $probeDate, $probeDate), 5000));
-        $total = 0.0; $discounts = 0.0;
-        foreach ($buckets as $b) { $total += $b['amount']; $discounts += $b['discounts']; }
-        $catNames = revenueCatNames($client);
+        $total = 0.0; $discounts = 0.0; $wantedCats = [];
+        foreach ($buckets as $b) { $total += $b['amount']; $discounts += $b['discounts']; $wantedCats[$b['cat']] = true; }
+        $catNames = revenueCatNames($client, array_keys($wantedCats));
 
         $diag = [];
         $probe = function (string $label, string $sql) use (&$diag, $client) {
@@ -235,6 +317,60 @@ function revenueTest(?array $input = null): void {
         };
         $probe('server',   'SELECT @@SERVERNAME');
         $probe('database', 'SELECT DB_NAME()');
+
+        // RECONCILE: the admin-editable query's total for the probe day against
+        // a direct, independent SUM over the same day. A customised query that
+        // filters, joins or groups differently shows up here as a gap instead
+        // of quietly shifting every figure on the page.
+        try {
+            $refSql = "SELECT SUM(AmtSold) AS amount, SUM(Discounts) AS disc, COUNT(*) AS lines"
+                . " FROM [CenterEdge].[dbo].[Sales]"
+                . " WHERE ShiftDate >= :date AND ShiftDate < DATEADD(DAY, 1, :date)";
+            $ref = $client->rows(MssqlClient::bindDate($refSql, $probeDate), 1);
+            $refAmt = (float)($ref[0]['amount'] ?? 0);
+            $gap = $total - $refAmt;
+            $diag['reconcile_' . $probeDate] =
+                'query $' . number_format($total, 2)
+                . ' vs direct Sales SUM $' . number_format($refAmt, 2)
+                . ' (' . (int)($ref[0]['lines'] ?? 0) . ' sale lines) — '
+                . (abs($gap) < 0.005
+                    ? 'MATCH to the penny.'
+                    : 'DIFFERS by $' . number_format($gap, 2) . ' — the saved query is not summing the same rows.');
+        } catch (Exception $e) {
+            $diag['reconcile_' . $probeDate] = 'could not reconcile: ' . $e->getMessage();
+        }
+
+        // Is AmtSold NET of discounts, or gross? The page's discount RATE is
+        // discounts / (AmtSold + discounts), which is only right if AmtSold is
+        // net. A fully comped line settles it: net stores AmtSold 0 with the
+        // price in Discounts; gross stores AmtSold == Discounts. Counted over a
+        // 30-day window so there are enough discounted lines to judge.
+        try {
+            $sFrom = revenueDateAdd($probeDate, -30);
+            $semSql = "SELECT"
+                . " SUM(CASE WHEN Discounts > 0 THEN 1 ELSE 0 END) AS discounted,"
+                . " SUM(CASE WHEN Discounts > 0 AND ABS(AmtSold) < 0.005 THEN 1 ELSE 0 END) AS net_like,"
+                . " SUM(CASE WHEN Discounts > 0 AND AmtSold > 0.005 AND ABS(AmtSold - Discounts) < 0.005 THEN 1 ELSE 0 END) AS gross_like"
+                . " FROM [CenterEdge].[dbo].[Sales]"
+                . " WHERE ShiftDate >= :from AND ShiftDate < DATEADD(DAY, 1, :to)";
+            $sem = $client->rows(MssqlClient::bindRange($semSql, $sFrom, $probeDate), 1);
+            $nDisc  = (int)($sem[0]['discounted'] ?? 0);
+            $nNet   = (int)($sem[0]['net_like'] ?? 0);
+            $nGross = (int)($sem[0]['gross_like'] ?? 0);
+            if ($nDisc === 0) {
+                $verdict = 'no discounted lines in ' . $sFrom . '..' . $probeDate . ' — cannot tell; discount rates will read 0 anyway.';
+            } elseif ($nNet > 0 && $nGross === 0) {
+                $verdict = 'AmtSold looks NET of discounts — the discount rate shown on this page is correct.';
+            } elseif ($nGross > 0 && $nNet === 0) {
+                $verdict = 'AmtSold looks GROSS (already includes the discount) — the discount rate shown on this page is UNDERSTATED and the formula needs changing.';
+            } else {
+                $verdict = 'inconclusive — both patterns present; inspect a few discounted lines by hand.';
+            }
+            $diag['discount_basis'] = $nDisc . ' discounted lines over ' . $sFrom . '..' . $probeDate
+                . ' (' . $nNet . ' fully-comped-at-zero, ' . $nGross . ' amount-equals-discount): ' . $verdict;
+        } catch (Exception $e) {
+            $diag['discount_basis'] = 'could not probe: ' . $e->getMessage();
+        }
         // Revenue by category for the probe day, names joined where found.
         $byCat = [];
         foreach ($buckets as $b) {
@@ -288,6 +424,13 @@ function revenueData(): void {
     $meta['prev_from']     = $priorWin['from'];
     $meta['prev_to']       = $priorWin['to'];
     $meta['prev_aligned']  = $priorWin['aligned'];
+    // Whether TODAY cut this period short of its calendar end. Distinct from
+    // prev_aligned, which only says the PRIOR side got trimmed: the two come
+    // apart whenever the elapsed-day cut overshoots a shorter prior month (a
+    // 30-day-elapsed March against a 28-day February leaves prev_aligned
+    // false), and that is exactly when the reader most needs to be told the
+    // period is still running. The label still says "August 2026" either way.
+    $meta['in_progress']   = ($to < (string)$win['to']);
     $meta['compare_label'] = revenueCompareLabel($win['range'], $priorWin['aligned']);
     $base = ['window' => $meta, 'configured' => MssqlClient::isConfigured(), 'generated_at' => gmdate('Y-m-d\TH:i:s\Z')];
 
@@ -300,15 +443,30 @@ function revenueData(): void {
     try {
         $client = new MssqlClient();
         // GROUP BY (day, CatNo): a Year is ~366 × (tens of categories) rows —
-        // comfortably under the cap; 40000 leaves generous headroom.
-        $buckets = revenueBucketsFromRows($client->rows(MssqlClient::bindRange($sql, $from, $to), 40000));
+        // comfortably under the cap. rows() truncates SILENTLY at its limit, so
+        // compare the count and flag it rather than quietly under-reporting.
+        $raw = $client->rows(MssqlClient::bindRange($sql, $from, $to), REVENUE_MAX_ROWS);
+        $base['truncated'] = count($raw) >= REVENUE_MAX_ROWS;
+        $buckets = revenueBucketsFromRows($raw);
+
         $prior = 0.0;
         if ($priorWin['from'] !== '' && $priorWin['to'] !== '' && $priorWin['days'] > 0) {
-            foreach (revenueBucketsFromRows($client->rows(MssqlClient::bindRange($sql, $priorWin['from'], $priorWin['to']), 40000)) as $b) {
+            $rawPrior = $client->rows(MssqlClient::bindRange($sql, $priorWin['from'], $priorWin['to']), REVENUE_MAX_ROWS);
+            $base['prior_truncated'] = count($rawPrior) >= REVENUE_MAX_ROWS;
+            foreach (revenueBucketsFromRows($rawPrior) as $b) {
+                // Same day-window filter revenueCompose applies to the current
+                // side. With the stock query the WHERE already bounds this, but
+                // a customised one returning extra days must not inflate ONE
+                // side of the comparison.
+                if ($b['day'] < $priorWin['from'] || $b['day'] > $priorWin['to']) continue;
                 $prior += $b['amount'];
             }
         }
-        $catNames = revenueCatNames($client);
+
+        $wantedCats = [];
+        foreach ($buckets as $b) $wantedCats[$b['cat']] = true;
+        // Nothing on screen to name — don't sweep the schema for it.
+        $catNames = $wantedCats ? revenueCatNames($client, array_keys($wantedCats)) : [];
     } catch (Exception $e) {
         echo json_encode($base + ['error' => $e->getMessage(), 'days' => [], 'categories' => [], 'summary' => null]);
         return;
@@ -360,9 +518,24 @@ function revenueCompose(array $dates, array $buckets, array $catNames, float $pr
     }
 
     $days = [];
+    $daysWithSales = 0;
     foreach ($dates as $d) {
-        $days[] = ['date' => $d, 'amount' => round($dayIndex[$d]['amount'], 2)];
+        $amt = round($dayIndex[$d]['amount'], 2);
+        if (abs($amt) > 0.005) $daysWithSales++;
+        $days[] = ['date' => $d, 'amount' => $amt];
     }
+
+    // Share is measured against the POSITIVE revenue pool, not the net total.
+    // A category can go negative (refunds/voids outstripping sales in the
+    // window), which drags the net total toward zero while the positive
+    // categories keep their full value — dividing by the net then produces
+    // shares like 500% and -400%. Against the positive pool every positive
+    // share is <= 100% by construction, and a refund-heavy category reads as a
+    // sane negative fraction of what the others took in. When nothing is
+    // negative the pool EQUALS the net total, so this is a no-op for every
+    // ordinary period.
+    $posPool = 0.0;
+    foreach ($byCat as $a) if ($a['amount'] > 0) $posPool += $a['amount'];
 
     $categories = [];
     foreach ($byCat as $dv => $a) {
@@ -376,7 +549,7 @@ function revenueCompose(array $dates, array $buckets, array $catNames, float $pr
             'discounts'    => round($a['discounts'], 2),
             'discount_pct' => $gross > 0 ? round($a['discounts'] / $gross, 4) : 0,
             'qty'          => round($a['qty'], 2),
-            'share'        => $tot > 0 ? round($a['amount'] / $tot, 4) : 0,
+            'share'        => $posPool > 0 ? round($a['amount'] / $posPool, 4) : 0,
         ];
     }
     usort($categories, function ($x, $y) { return $y['amount'] <=> $x['amount']; });
@@ -389,6 +562,11 @@ function revenueCompose(array $dates, array $buckets, array $catNames, float $pr
         'discount_pct'  => $grossTot > 0 ? round($totDiscounts / $grossTot, 4) : 0,
         'num_days'      => count($dates),
         'per_day'       => round($tot / $numDays, 2),
+        // per_day averages over CALENDAR days (the convention Card Loads /
+        // Ticket Trends / Redemption share). days_with_sales is the ACTUAL
+        // count behind it, so a period containing days the venue was closed
+        // explains its own average instead of just reading low.
+        'days_with_sales' => $daysWithSales,
         'num_cats'      => count($categories),
         'top_cat'       => $top['cat'] ?? null,
         'top_cat_name'  => $top['name'] ?? null,
