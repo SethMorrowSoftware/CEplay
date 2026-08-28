@@ -75,6 +75,19 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   `ledger`|`app`. `prior_has_data` is false when the prior year has no covered
   days, so the UI says "no 2025 history" instead of a fake +100%. Money is
   scrubbed to 0 for roles without `view_revenue` like every other dollar.
+  **Both windows are cut at `through`, not at today, so a source that stops
+  advancing renders a perfectly clean card of the wrong month** — this is how
+  the venue dashboard sat on "Month to date · Jul 1 – Jul 16" through late
+  August 2026 (see the frozen-rollup entry below). Two guards, do not remove
+  them: the MTD label names its month outright ("July to date") whenever
+  `through`'s month isn't the current one (same for the year), and the payload
+  carries `expected_through` (yesterday, venue-local) + `stale_days`, which the
+  widget turns into a warning banner past 3 days. **`stale_days` 1 is NORMAL**
+  and must not warn: the nightly refresh runs at 00:05 UTC = 20:05 the previous
+  day Eastern, so it writes days `< ` a local date that hasn't ended yet.
+  `days` on each window counts days that CARRY ROWS, not calendar days — a
+  YTD reading "Jan 1 – Jul 16 · 185 days" against 197 calendar days means 12
+  closed days, not a gap.
 - Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
   for the live feed, per-game drill-downs, and hourly reporting.
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
@@ -119,7 +132,27 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   refreshed nightly for the trailing 40 days
   (`Scheduler::refreshVenueDailyStatsRecent`, cron Step 5c) — both cron-only,
   MSSQL-only (self-skip if unconfigured), and never touch today (today stays
-  live from the raw feed). `GET /api/analytics/overview` activates deep mode
+  live from the raw feed).
+  **THE ROLLUP FROZE FOR SIX WEEKS ON THE VENUE (Jul 17 → Aug 28 2026) AND
+  NOTHING SAID SO — the shape of this trap outlives the specific bug.** The
+  one-time backfill is flag-guarded, so after it runs ONCE the refresh is the
+  only thing that ever advances this table; and the refresh runs only from
+  `cron.php`, in `pause-groups-daily.service`. That unit was pinned to the
+  STOCK `php:fpm` image, which has no MSSQL driver — `update.sh` rewrote only
+  the FPM unit with the pdo_dblib overlay (`deploy/write-fpm-unit.sh`). So the
+  web tier could query MSSQL all day (Labor/Card Loads/Item Watch worked fine,
+  which is what made it invisible) while every nightly `new MssqlClient()`
+  threw "No MSSQL PDO driver is installed in this PHP runtime" into
+  `data/cron.log`. The rollup stayed at 2026-07-16: the day before the deploy
+  that ran the v2 backfill. Fixed three ways — `deploy/write-daily-unit.sh`
+  now writes the daily unit on the same image as FPM (called by both
+  `setup-fcos.sh` and `update.sh`); `run_backfills.php` also runs the trailing
+  refresh, so a deploy can never leave the rollup older than the deploy; and
+  the year-over-year card reports `stale_days` (above). **The per-minute
+  watchdog deliberately stays on the stock image** — it never touches MSSQL and
+  it is the safety-critical pause/unpause path. When adding any cron-only MSSQL
+  step, check the daily unit's image first, and give the reader of the number a
+  way to see that it stopped moving. `GET /api/analytics/overview` activates deep mode
   ONLY when the requested range starts before the raw feed's earliest day
   (`analyticsRawFloorDate`); it is SINGLE-SOURCE (`analyticsVenueDaily`, the
   rollup only — never mixed with the raw feed, so no definitional seam), swaps

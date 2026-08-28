@@ -1270,6 +1270,24 @@ const App = {
         body.appendChild(this.el('p', { className: 'text-sm text-secondary yoy-coverage',
             textContent: coverage }));
 
+        // A rollup that stopped updating still renders a clean card — every
+        // window is honestly labelled, just cut at a day that drifts further
+        // into the past each night. Say so once it's more than a couple of days
+        // back; one day behind is routine (the nightly refresh can land while
+        // the day it would cover is still running).
+        const stale = Number(data.stale_days);
+        if (Number.isFinite(stale) && stale >= 3) {
+            const src = data.source === 'app' ? 'play rollup' : 'POS ledger rollup';
+            body.appendChild(this.el('p', {
+                className: 'yoy-stale',
+                role: 'status',
+                textContent: 'The ' + src + ' is ' + stale + ' days behind: its newest complete day is '
+                    + this.formatPlainDate(data.through) + ', not '
+                    + this.formatPlainDate(data.expected_through)
+                    + '. These totals stop there — the nightly refresh has not advanced them.'
+            }));
+        }
+
         const grid = this.el('div', { className: 'yoy-grid' });
         periods.forEach((p) => grid.appendChild(this._yoyPeriod(p, data, canSeeMoney)));
         body.appendChild(grid);

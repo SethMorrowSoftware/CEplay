@@ -11,6 +11,21 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* Shown only when the backing rollup has stopped advancing. Every number on
+   the card stays correct and correctly labelled — this says how old they are,
+   which nothing else on the card can reveal. */
+.yoy-stale {
+    margin: 0 0 0.85rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+}
+
 .yoy-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
