@@ -37,6 +37,7 @@ require_once $root . '/config.php';
 require_once $root . '/lib/db.php';
 require_once $root . '/lib/crypto.php';
 require_once $root . '/lib/mssql_client.php';
+require_once $root . '/lib/roster_guard.php';
 require_once $root . '/lib/birthday_config.php';
 require_once __DIR__ . '/lib/birthday_lib.php';
 require_once __DIR__ . '/lib/slack_client.php';
@@ -579,6 +580,14 @@ if ($doCheck) {
                         $problems[] = 'The roster query returns rows but no usable birth dates — check the birth_date alias.';
                     } else {
                         $row('Roster query', 'ok', $n . ' current employees with a birthday (' . $ms . 'ms)');
+                        // The headcount above only means something if you can see WHAT made
+                        // those people 'current'. Without this row an operator has to read
+                        // the SQL to find out whether leavers are excluded at all.
+                        $emp = RosterGuard::employmentFilter($rosterSql);
+                        $row('Still employed', $emp['ok'] ? 'ok' : 'WARN', $emp['summary']);
+                        if (!$emp['ok']) {
+                            $problems[] = 'Roster query: ' . $emp['summary'] . '.';
+                        }
                         $up = bdayUpcoming($nn['people'], $today, 60, $leapMode);
                         $next = $up ? array_key_first($up) : null;
                         $today_hits = bdayCelebrants($nn['people'], $today, $leapMode);
@@ -860,9 +869,14 @@ if ($rosterFile !== '') {
         bdayFail('roster_sql still contains TODO_CONFIRM_EMPLOYMENT_FILTER, '
             . 'so the "still employed" filter has never been filled in.', 1);
     }
-    if (stripos($rosterSql, 'where') === false) {
-        bdayLog('WARNING: roster_sql has no WHERE clause, so it has no "still employed" filter. '
-            . 'Everyone who ever worked here will be wished a happy birthday.');
+    // The employment filter is the only thing between "today's celebrants" and
+    // "everyone who ever worked here", and it lives in an editable query — so
+    // say out loud, every run, what is actually enforcing it.
+    $employment = RosterGuard::employmentFilter($rosterSql);
+    if ($employment['ok']) {
+        bdayLog('Employment filter: ' . $employment['summary'] . '.');
+    } else {
+        bdayLog('WARNING: ' . $employment['summary'] . '. People who have left may be wished a happy birthday.');
     }
 
     try {
