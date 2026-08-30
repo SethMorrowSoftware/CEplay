@@ -1130,6 +1130,23 @@ before building.
   `birthdays` it NEVER moves the top-level `status` — an optional accessory
   that pauses nothing must not be able to report the scheduler as degraded. A
   missing heartbeat means "not installed", not "unhealthy".
+- **Both bots' systemd units are written by `deploy/write-bot-units.sh`**, called
+  by `update.sh` (every deploy) AND by `anniversaries/install.sh` — the same
+  single-writer arrangement as `write-fpm-unit.sh` / `write-daily-unit.sh`, and
+  for the same reason. Two rules it exists to enforce: (1) the SERVICE unit is
+  rewritten every deploy because it carries the install path and the container
+  image — which must be the **pdo_dblib overlay**, since both bots read the
+  roster from MSSQL (the stock `php:fpm` trap that froze the daily rollup for
+  six weeks); (2) the TIMER is **never overwritten once it exists**, because it
+  carries only the schedule, and rewriting it would silently move a posting
+  time the operator chose back to a default. Passing an `HH:MM` argument is the
+  only thing that rewrites a timer. The writer also pins the APP's timezone
+  onto each `OnCalendar` line when the host zone differs and systemd is 252+ —
+  never convert to a fixed UTC offset, it breaks at every DST changeover.
+  `update.sh` enables a bot's timer only when `--is-configured` says a Slack
+  token AND channel exist (a silent, network-free probe on both bots); enabling
+  one for an unconfigured bot would post a failed run and an audit row every
+  morning. `anniversaries/systemd/` no longer exists — the writer IS the source.
 - **The Command Center strip** (`#dash-celebrations` in `public/js/dashboard.js`,
   `public/css/components/celebrate-strip.css`) puts today's BIRTHDAYS and today's
   ANNIVERSARIES under the dashboard header as one row: a group per kind, a chip

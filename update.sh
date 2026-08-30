@@ -98,7 +98,7 @@ FROM_SHA="$(git -C "$SRC_DIR" rev-parse HEAD)"
 # =============================================================================
 #  1. Backup (BEFORE anything changes)
 # =============================================================================
-hdr "1/7  Backup database + key"
+hdr "1/8  Backup database + key"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BK="${BACKUP_ROOT}/update-${STAMP}"
 mkdir -p "$BK"
@@ -148,7 +148,7 @@ fi
 # =============================================================================
 #  2. Pull
 # =============================================================================
-hdr "2/7  git pull (${BRANCH})"
+hdr "2/8  git pull (${BRANCH})"
 pulled=0
 for attempt in 1 2 3 4; do
     if git -C "$SRC_DIR" pull --ff-only 2>&1; then pulled=1; break; fi
@@ -183,7 +183,7 @@ fi
 # =============================================================================
 #  3. Sync code into the live app dir (preserving data/ and .env)
 # =============================================================================
-hdr "3/7  Sync app files"
+hdr "3/8  Sync app files"
 if command -v rsync &>/dev/null; then
     rsync -a --delete --exclude='.git/' --exclude='data/' --exclude='.env' \
         "${SRC_DIR}/" "${INSTALL_DIR}/"
@@ -196,7 +196,7 @@ ok "App files synced (data/ and .env untouched)."
 # =============================================================================
 #  4. Security cleanup — never leave installers in the web root
 # =============================================================================
-hdr "4/7  Remove installers from web root"
+hdr "4/8  Remove installers from web root"
 for f in install.php fresh_install.php; do
     if [[ -f "${INSTALL_DIR}/${f}" ]]; then rm -f "${INSTALL_DIR}/${f}"; ok "Removed ${f}"; fi
 done
@@ -209,7 +209,7 @@ chmod -R o+rX "$INSTALL_DIR"
 # =============================================================================
 #  5. Run database migrations (idempotent, non-destructive)
 # =============================================================================
-hdr "5/7  Migrate database"
+hdr "5/8  Migrate database"
 # DB::getInstance() runs CREATE TABLE IF NOT EXISTS + the ALTER/data migrations.
 podman run --rm --network host \
     --env-file "$ENV_FILE" \
@@ -222,7 +222,7 @@ podman run --rm --network host \
 # =============================================================================
 #  6. MSSQL driver overlay (Go-Kart Labor report)
 # =============================================================================
-hdr "6/7  MSSQL driver overlay + historical backfill"
+hdr "6/8  MSSQL driver overlay + historical backfill"
 # Rebuild the pdo_dblib overlay on the operator's PHP base so the Go-Kart
 # Labor report can reach the CenterEdge MSSQL database. The built image is
 # persisted to /var/persist (podman's cache does NOT survive FCOS OS
@@ -296,9 +296,90 @@ else
 fi
 
 # =============================================================================
-#  7. Restart + health check
+#  7. Slack bot timers (birthdays, work anniversaries)
 # =============================================================================
-hdr "7/7  Restart + verify"
+hdr "7/8  Slack bot timers"
+#
+# Both bots read the employee roster out of MSSQL, so their units have to point
+# at the pdo_dblib overlay — the same lesson as the daily planner unit above,
+# which spent six weeks pinned to the stock image and silently failing.
+#
+# THE SERVICE UNIT IS REFRESHED EVERY DEPLOY; THE TIMER IS NOT TOUCHED once it
+# exists. The service carries the install path and the image, so it goes stale.
+# The timer carries only the schedule — the time an operator chose during
+# install.sh — and rewriting that on every update would quietly move the
+# posting time back to a default. See deploy/write-bot-units.sh.
+#
+# A timer is only ENABLED for a bot that is actually set up (a Slack token and
+# a channel, checked with --is-configured, which touches no network). Enabling
+# one for a bot nobody configured would put a failed run and an audit row in
+# front of the operator every morning.
+BOT_IMAGE="$PHP_IMAGE"
+if podman image exists "$MSSQL_IMAGE" 2>/dev/null; then
+    BOT_IMAGE="$MSSQL_IMAGE"
+elif [[ -f "$MSSQL_TAR" ]] && podman load -i "$MSSQL_TAR" &>/dev/null; then
+    BOT_IMAGE="$MSSQL_IMAGE"
+fi
+
+if [[ ! -f "${SRC_DIR}/deploy/write-bot-units.sh" ]]; then
+    note "deploy/write-bot-units.sh not in source tree — skipping bot timers."
+elif [[ "$BOT_IMAGE" != "$MSSQL_IMAGE" ]]; then
+    warn "The pdo_dblib overlay isn't available, and the bots need it to read the"
+    warn "roster. Leaving their units alone — re-run update.sh once the overlay builds."
+else
+    for bot in birthdays anniversaries; do
+        case "$bot" in
+            birthdays)     bot_script="birthdays/birthday_bot.php";        bot_label="Birthdays" ;;
+            anniversaries) bot_script="anniversaries/anniversary_bot.php"; bot_label="Work Anniversaries" ;;
+        esac
+        [[ -f "${INSTALL_DIR}/${bot_script}" ]] || continue
+
+        timer="ceplay-${bot}.timer"
+        had_timer=no
+        [[ -f "/etc/systemd/system/${timer}" ]] && had_timer=yes
+
+        configured=no
+        if podman run --rm --network host --env-file "$ENV_FILE" \
+                -v "${INSTALL_DIR}:${INSTALL_DIR}:z" -w "$INSTALL_DIR" -u 33:33 \
+                "$BOT_IMAGE" php "$bot_script" --is-configured &>/dev/null; then
+            configured=yes
+        fi
+
+        # Nothing set up and no timer installed: say how, and move on. Writing
+        # units for a bot the venue may not want is noise at best.
+        if [[ "$configured" == "no" && "$had_timer" == "no" ]]; then
+            note "${bot_label} bot: not configured — add a Slack token and channel on the"
+            note "  ${bot_label} page, then re-run this script (or sudo bash ${bot}/install.sh)."
+            continue
+        fi
+
+        bash "${SRC_DIR}/deploy/write-bot-units.sh" \
+            "$bot" "$ENV_FILE" "$INSTALL_DIR" "$DATA_DIR" "$MSSQL_IMAGE" "$MSSQL_TAR" >/dev/null \
+            && ok "${bot_label} bot units refreshed." \
+            || warn "${bot_label} bot units could not be written."
+
+        if [[ "$configured" == "yes" ]]; then
+            if systemctl is-enabled --quiet "$timer" 2>/dev/null; then
+                systemctl restart "$timer" 2>/dev/null || true
+                ok "  ${timer} already enabled — schedule preserved."
+            else
+                if systemctl enable --now "$timer" >/dev/null 2>&1; then
+                    ok "  ${timer} enabled."
+                    note "  Posting time is the default; change it with: sudo bash ${bot}/install.sh"
+                else
+                    warn "  Could not enable ${timer} — check: systemctl status ${timer}"
+                fi
+            fi
+        else
+            note "  ${bot_label} bot has a timer but no Slack token/channel — left as-is."
+        fi
+    done
+fi
+
+# =============================================================================
+#  8. Restart + health check
+# =============================================================================
+hdr "8/8  Restart + verify"
 systemctl restart "$FPM_SERVICE"
 sleep 4
 if systemctl is-active --quiet "$FPM_SERVICE"; then ok "${FPM_SERVICE} is active."; else warn "${FPM_SERVICE} not active — check: journalctl -eu ${FPM_SERVICE}"; fi

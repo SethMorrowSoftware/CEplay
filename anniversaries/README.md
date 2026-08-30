@@ -27,7 +27,6 @@ anniversaries/
 ├─ discover.php           Re-derive the roster query from the live database
 ├─ config.example.php     Copy to data/anniversary_config.php (or use the page)
 ├─ lib/anniv_lib.php      Date matching, years of service, message building
-├─ systemd/               Daily timer units
 └─ tests/                 225 assertions — run anywhere, no database needed
 ```
 
@@ -84,34 +83,69 @@ cohort and recommends a number, so you can set it from evidence.
 
 ## Installing
 
-### 1. Put the code on the server
+### The normal deploy does it
 
-Deploy the branch the normal way (`sudo bash update.sh`).
+```bash
+sudo bash /var/persist/pause-groups/update.sh
+```
 
-### 2. Run the installer
+`update.sh` writes and refreshes both bots' systemd units on every deploy, and
+enables a bot's timer once that bot has a Slack token and a channel. So the
+order is:
+
+1. **Deploy.** `update.sh` lands the code. The anniversary bot isn't configured
+   yet, so it says so and enables nothing.
+2. **Configure on the Work Anniversaries page** (`#/anniversaries`) — paste a
+   Slack token (the birthday bot's works; the two want the same scopes) and a
+   channel, and save. Everything else has a working default.
+3. **Deploy again**, or just `sudo systemctl enable --now ceplay-anniversaries.timer`.
+   The timer starts on the default schedule.
+
+Nothing in that path can lose a setting. `update.sh` syncs the code with
+`rsync --delete --exclude data/`, so the app database, both bots' config files
+and `.env` are untouched; and the unit writer **never overwrites an existing
+timer** — see below.
+
+### What a deploy touches, and what it leaves alone
+
+| | |
+|---|---|
+| `ceplay-anniversaries.service` | **rewritten every deploy** — it carries the install path and the container image, so it goes stale |
+| `ceplay-anniversaries.timer` | **never touched once it exists** — it carries only the schedule, which is your choice |
+| `data/anniversary_config.php` | never touched by `update.sh` |
+| Settings saved on the page | in the app database, never touched |
+
+That split matters. Rewriting the timer on every update would quietly move your
+posting time back to the shipped default, which is exactly the kind of silent
+settings loss this codebase has been bitten by before.
+
+### install.sh — the guided route, and how to change the time
 
 ```bash
 sudo bash /var/persist/pause-groups/anniversaries/install.sh
 ```
 
-It asks a handful of questions, then does everything else:
+Use it when you want to be walked through Slack setup, or when you want to
+**change the posting time** — that is the one thing the page cannot do, because
+it lives in a systemd unit. It asks a handful of questions, then:
 
 - checks podman, the MSSQL driver image and the app's database connection, and
   stops with the exact fix if any are missing;
 - offers the birthday bot's Slack token if one is already configured, and
   otherwise takes a new one — **verifying it and the channel before writing
   anything**;
-- writes the config to the right place with the right owner and permissions;
+- writes `data/anniversary_config.php` (backing up any existing one) with the
+  right owner and permissions;
 - runs a full health check and offers a test post;
-- installs and starts the daily timer at whatever time you choose, in the
-  **app's** timezone rather than the machine's (see below).
+- installs the timer at the time you choose, **in the app's timezone rather
+  than the machine's** (see below).
 
-It is safe to re-run — use it later to change the channel, the posting time or
-the name style. `--uninstall` removes the timer and leaves your config alone.
+It is safe to re-run, and it touches nothing belonging to the app or the
+birthday bot. `--uninstall` removes the timer and leaves your config alone.
 
-Everything it sets is also editable, more comfortably, on the **Work
-Anniversaries** page in CEplay (`#/anniversaries`), which is where the wording
-belongs. Page settings win over the config file.
+Both routes write the units through the same script — `deploy/write-bot-units.sh`
+— so the unit this installer produces and the one a later deploy refreshes
+cannot drift apart.
 
 ---
 
