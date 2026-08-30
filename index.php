@@ -299,6 +299,10 @@ if ($path === 'api' || strpos($path, 'api/') === 0) {
                 require_once __DIR__ . '/api/birthdays.php';
                 handleBirthdays($method, $parts, $input);
                 break;
+            case 'anniversaries':
+                require_once __DIR__ . '/api/anniversaries.php';
+                handleAnniversaries($method, $parts, $input);
+                break;
 
             case 'explorer':
                 require_once __DIR__ . '/api/explorer.php';
@@ -413,6 +417,26 @@ function handleHealthCheck(): void {
         ];
     } else {
         $status['birthdays'] = ['last_run' => null, 'healthy' => null, 'installed' => false];
+    }
+
+    // Work-anniversary bot. Same rules as the birthday bot above, for the same
+    // reasons: it never moves the top-level `status` (it pauses nothing, so a
+    // missed message must not report the scheduler as degraded), and a MISSING
+    // heartbeat means "not installed", not "unhealthy". Its own heartbeat file,
+    // because the two bots run from two timers and either one can be installed
+    // without the other.
+    $annivHeartbeat = $dataDir . '/.heartbeat_anniversaries';
+    if (file_exists($annivHeartbeat)) {
+        $lastRun = file_get_contents($annivHeartbeat);
+        $ts = $lastRun !== false ? strtotime(trim($lastRun)) : false;
+        $age = $ts !== false ? time() - $ts : PHP_INT_MAX;
+        $status['anniversaries'] = [
+            'last_run' => $lastRun,
+            'age_seconds' => $age,
+            'healthy' => $age < 93600, // 26 hours (the bot runs daily)
+        ];
+    } else {
+        $status['anniversaries'] = ['last_run' => null, 'healthy' => null, 'installed' => false];
     }
 
     // Security warnings for operators
@@ -617,5 +641,6 @@ $appTimezoneJson = json_encode($appTimezone);
     <script defer src="<?= assetUrl($basePath, '/public/js/items.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/explorer.js') ?>"></script>
     <script defer src="<?= assetUrl($basePath, '/public/js/birthdays.js') ?>"></script>
+    <script defer src="<?= assetUrl($basePath, '/public/js/anniversaries.js') ?>"></script>
 </body>
 </html>

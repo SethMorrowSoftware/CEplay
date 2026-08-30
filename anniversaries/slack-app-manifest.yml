@@ -1,0 +1,69 @@
+# Slack app manifest for the work-anniversary bot.
+#
+# You do NOT need this if you already installed the birthday bot's app: the two
+# bots want the same scopes, so the same xoxb- token works for both, and
+# anniversaries/install.sh will happily take it. Use this file when you want the
+# anniversary posts to come from their own app (their own name and icon in
+# Slack, and their own token to revoke).
+#
+#   1. https://api.slack.com/apps  ->  Create New App  ->  From an app manifest
+#   2. Pick your workspace, choose YAML, paste this whole file, Next, Create.
+#   3. Install to Workspace -> Allow.
+#   4. OAuth & Permissions -> copy the "Bot User OAuth Token" (starts xoxb-).
+#
+# That token is what anniversaries/install.sh asks you for.
+#
+# Change `name` and `display_name` to whatever you want the bot called in
+# Slack — everything else can stay as it is.
+display_information:
+  name: Castle Anniversaries
+  description: Celebrates the team's work anniversaries each morning.
+  long_description: >-
+    Posts a message each morning for anyone on the employee roster whose hire
+    date anniversary is today and who is still employed, saying how many years
+    they have been here. Reads the roster from the CenterEdge POS database; it
+    does not read any Slack messages, and it only ever posts to the one channel
+    it is configured for.
+  background_color: "#2f4a1c"
+
+features:
+  bot_user:
+    display_name: Castle Anniversaries
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Post the anniversary message. The only scope that is strictly required.
+      - chat:write
+      # Post without being invited to the channel first. Convenient; drop it
+      # if you would rather explicitly /invite the bot.
+      - chat:write.public
+      # Let the bot add the first :tada: to its own message, so nobody has to
+      # break the ice. Only used when add_reactions is on.
+      - reactions:write
+      # Look a channel up by NAME, so you can configure "#general" instead of
+      # hunting for a C0123456789 ID. Grants the channel LIST (names, topics,
+      # member counts) — not the ability to read any messages.
+      - channels:read
+      # The same, for a private channel — and only for private channels the
+      # bot has actually been invited to.
+      - groups:read
+      # Post under a custom display name and icon, so anniversary messages can
+      # show as "Anniversary Bot" even when the app itself is a shared one used
+      # for other things. Only used when bot_username is set.
+      - chat:write.customize
+      #
+      # NOT requested, on purpose:
+      #   users:read.email  — only needed to turn names into real @-mentions
+      #                       (mention_by_email). It grants read access to every
+      #                       member's email address, so it is left out unless
+      #                       you actually want that feature. Adding it later
+      #                       means reinstalling the app.
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+  # The bot never reads anything from Slack, so there are no event
+  # subscriptions, no slash commands and no interactivity to configure.

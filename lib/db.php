@@ -383,6 +383,59 @@ class DB {
             error_log('birthdays migration skipped: ' . $e->getMessage());
         }
 
+        // One-time migration: the Work Anniversaries page gets its own keys.
+        // Granted to every role that already holds 'birthdays_manage' rather
+        // than 'settings' — the people who configure one Slack bot are exactly
+        // the people who would configure the other, and that key is itself
+        // already scoped to whoever configures this system. Deliberately runs
+        // AFTER the birthdays migration above, so on a fresh install the source
+        // key exists before this reads it. Flagged so it runs once and never
+        // overrides later edits.
+        try {
+            $flag = self::queryOne("SELECT value FROM api_config WHERE key = 'migration_anniversaries_v1'");
+            if (!$flag) {
+                foreach (self::query('SELECT slug, permissions FROM roles') as $rr) {
+                    $perms = json_decode((string)$rr['permissions'], true);
+                    if (!is_array($perms) || in_array('*', $perms, true)) {
+                        continue;
+                    }
+                    if (!in_array('birthdays_manage', $perms, true)) {
+                        continue;
+                    }
+                    $before = $perms;
+                    foreach (['view_anniversaries', 'anniversaries_manage'] as $key) {
+                        if (!in_array($key, $perms, true)) {
+                            $perms[] = $key;
+                        }
+                    }
+                    if ($perms !== $before) {
+                        self::execute(
+                            "UPDATE roles SET permissions = :p0, updated_at = datetime('now') WHERE slug = :p1",
+                            [json_encode(array_values($perms)), (string)$rr['slug']]
+                        );
+                    }
+                }
+                // Mirror per-user overrides in both directions, as above: a user
+                // explicitly denied the birthday bot must not gain the
+                // anniversary bot's Slack token through a key their role just
+                // picked up.
+                foreach (['view_anniversaries', 'anniversaries_manage'] as $key) {
+                    self::execute(
+                        "INSERT OR IGNORE INTO user_permission_overrides (user_id, permission_key, effect)
+                         SELECT user_id, :p0, effect FROM user_permission_overrides
+                         WHERE permission_key = 'birthdays_manage'",
+                        [$key]
+                    );
+                }
+                self::execute(
+                    "INSERT OR IGNORE INTO api_config (key, value, encrypted) VALUES ('migration_anniversaries_v1', :p0, 0)",
+                    [gmdate('c')]
+                );
+            }
+        } catch (Exception $e) {
+            error_log('anniversaries migration skipped: ' . $e->getMessage());
+        }
+
         // One-time: stamp the Go-Kart Labor queries with the venue's
         // confirmed-working Grafana query (CatNo 108 sales, 'Go-Karts' job
         // join for labor). While the filters were being pinned down, interim

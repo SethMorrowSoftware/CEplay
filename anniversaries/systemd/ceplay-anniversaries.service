@@ -1,0 +1,38 @@
+# Work-anniversary Slack bot — one-shot, fired by ceplay-anniversaries.timer.
+#
+# Mirrors ceplay-birthdays.service exactly, pointed at the other bot: it needs
+# the MSSQL driver to read the roster, so it runs the pdo_dblib OVERLAY image
+# (the same one setup-fcos.sh builds and the FPM service uses), not the stock
+# PHP image.
+#
+# Install:
+#   sudo install -m 0644 anniversaries/systemd/ceplay-anniversaries.service \
+#       /etc/systemd/system/ceplay-anniversaries.service
+#   sudo install -m 0644 anniversaries/systemd/ceplay-anniversaries.timer \
+#       /etc/systemd/system/ceplay-anniversaries.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ceplay-anniversaries.timer
+#
+# (anniversaries/install.sh does all of that for you, and picks the posting
+# time and timezone correctly — prefer it.)
+#
+# Paths below are the defaults from setup-fcos.sh. If your install lives
+# somewhere else, change INSTALL_DIR (/var/persist/pause-groups) throughout and
+# check the image name with: podman images | grep mssql
+
+[Unit]
+Description=CEplay work-anniversary Slack bot
+After=pause-groups-fpm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman run --rm \
+    --network host \
+    --env-file /var/persist/pause-groups/.env \
+    -v /var/persist/pause-groups:/var/persist/pause-groups:z \
+    -w /var/persist/pause-groups \
+    -u 33:33 \
+    localhost/pause-groups-fpm-mssql:latest \
+    php anniversaries/anniversary_bot.php
+StandardOutput=append:/var/persist/pause-groups/data/anniversaries.log
+StandardError=append:/var/persist/pause-groups/data/anniversaries.log

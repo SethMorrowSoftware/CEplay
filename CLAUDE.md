@@ -28,13 +28,14 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 
 ## Directory Layout
 ```
-api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, logs, users, roles, capabilities)
-lib/          — 10 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config)
-public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, logs, settings)
+api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, users, roles, capabilities)
+lib/          — 11 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config, anniversary_config)
+public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, settings)
 public/       — Also: manifest.webmanifest + sw.js + icons/ (the PWA layer; index.php serves sw.js/manifest at the app ROOT so the worker scope covers the whole app)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
 data/         — Runtime: SQLite DB, locks, heartbeats, logs, nightly backups (gitignored)
 birthdays/    — Staff birthday Slack bot: CLI runner + installer + systemd timer (runs from a timer, configured from the Birthdays page)
+anniversaries/ — Staff WORK-ANNIVERSARY Slack bot: the same shape, keyed off hire date instead of birth date (configured from the Work Anniversaries page). Shares birthdays/lib/slack_client.php + gif_source.php
 docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API reference (CENTEREDGE_API.md + api-reference/ OpenAPI), MSSQL driver setup (MSSQL_DRIVER.md), incident write-ups
 ```
 
@@ -1040,6 +1041,80 @@ before building.
   settings.js `pagePermissionKeys`, and app.js `PERMISSION_AREAS` /
   `SECTION_AREAS` / `LEGACY_ACCESS`.
 
+### Staff Work Anniversaries
+- **A clone of the birthday bot, keyed off HIRE DATE instead of birth date.**
+  `anniversaries/` mirrors `birthdays/` file for file (CLI runner, `run.sh`,
+  `install.sh`, systemd timer, `discover.php`, `config.example.php`, tests) with
+  its own config keys, state file, heartbeat, lock, log and timer — the two
+  timers can fire in the same minute, and a shared JSON state file would mean
+  each read-modify-write could drop the other's record. Page `#/anniversaries`
+  (`api/anniversaries.php`, `public/js/anniversaries.js`, laurel-green
+  `--anniversary` theme); settings resolve through `lib/anniversary_config.php`
+  in the same three layers as the birthday bot (defaults ← `data/
+  anniversary_config.php` ← `api_config` rows keyed `anniversary_*`).
+- **SHARED with the birthday bot on purpose: `birthdays/lib/slack_client.php`
+  and `birthdays/lib/gif_source.php`.** Neither contains anything
+  birthday-specific — one is Slack transport, the other a seeded GIF picker — so
+  one copy means a fix to the retry classifier or the customize fallback lands
+  in both. `SlackClient`'s constructor takes a `$configHint` so its "no token"
+  error names the right page. `GifSource`'s own `DEFAULT_GIFS`/
+  `DEFAULT_SEARCH_TERMS` are birthday ones, so `AnniversaryConfig::load()` fills
+  BOTH keys with `ANNIV_DEFAULT_*` — a birthday GIF must never turn up on an
+  anniversary post.
+- **THE HIRE-DATE COLUMN IS THE ONE UNVERIFIED THING.** Everything else in the
+  roster query is the birthday bot's verified query (`dbo.Employees`,
+  `EmpStatus = 1`, `DateOfTerminate IS NULL`); `DateOfHire` is a guess from the
+  naming of its neighbours and has never been run against the live schema. A
+  wrong guess fails loudly ("Invalid column name") rather than posting anything
+  incorrect, and `annivColumnHint()` turns that error into a pointer to
+  `anniversaries/discover.php`. That probe MEASURES each candidate column —
+  population, year range, future-dated rows — and above all **cross-checks it
+  against the birth-date column**: a hire date and a date of birth are both
+  dates on the same table, and picking the wrong one would post "Happy 41st
+  anniversary" to a public channel, so any column whose values agree with the
+  birth date is rejected outright.
+- **Year zero is not an anniversary.** Somebody hired this morning matches
+  today's month and day exactly; `min_years` floors at 1 and the UI will not go
+  below it. This is the anniversary equivalent of the birthday bot's sentinel
+  guard, and for the same reason — a 1900-01-01 placeholder here would post
+  "126 years", not just the wrong day.
+- **Years of service ARE the message**, unlike the birthday bot where an age or
+  a birth year is forbidden. Placeholders: `{names} {count} {venue} {years}
+  {year_label} {ordinal} {s}`. On a SHARED day the people have different
+  numbers, so `{names}` carries each person's count inline ("Robin (7 years) and
+  Casey (1 year)"), `{years}` becomes the COMBINED total, and `{ordinal}`
+  resolves to nothing — the API rejects `{ordinal}` in the multi pools rather
+  than letting a message silently lose a word.
+- **Milestone years get their own pools** (`milestone_greetings` /
+  `milestone_flavors`, default years 1/5/10/…/50), applied ONLY when a single
+  person is being congratulated — with several celebrants a milestone template
+  would be shouting on behalf of whoever is listed first. `post_separately`
+  therefore also turns milestone wording on for everybody. Every milestone
+  flavour line must be true at the SMALLEST milestone as well as the largest:
+  "that predates half the games on this floor" reads well at 20 years and
+  absurdly at 1, and the pool is picked by milestone-ness, not by size.
+  `celebrate_years = milestones` posts ONLY those years; an EMPTY
+  `milestone_years` list is honoured as "no milestones" rather than silently
+  substituting the defaults, so `--check` and the page both call out the
+  milestone-only + empty-list combination that can never post.
+- `annivMessageConfig()` is the single place that lists which settings shape a
+  message — same rule and same reason as `bdayMessageConfig()`. Add a wording
+  setting there, never at a call site.
+- Audit rows: source `anniversaries`, actions `anniversary_posted` /
+  `anniversary_failed`. Keep both `api/logs.php` filter allowlists and the
+  `public/js/logs.js` dropdowns in sync.
+- Gates: `view_anniversaries` (page, in `PAGE_PERMISSIONS`) and
+  `anniversaries_manage`. `migration_anniversaries_v1` grants both to roles
+  holding `birthdays_manage` (the people who configure one Slack bot are the
+  people who configure the other) and runs AFTER `migration_birthdays_v1` so
+  that source key exists on a fresh install. Keep the keys in sync across
+  `Auth::PAGE_PERMISSIONS`, settings.js `pagePermissionKeys`, and app.js
+  `PERMISSION_AREAS` / `SECTION_AREAS` / `LEGACY_ACCESS`.
+- `/api/health` reports the heartbeat under `anniversaries`, and like
+  `birthdays` it NEVER moves the top-level `status` — an optional accessory
+  that pauses nothing must not be able to report the scheduler as degraded. A
+  missing heartbeat means "not installed", not "unhealthy".
+
 ### Tag Board & PWA
 - Tag Board (`#/tags`, `public/js/tags.js`, `public/css/pages/tags.css`) is the
   phone-first page for floor staff to tag games OUT of service / back IN
@@ -1123,9 +1198,10 @@ before building.
 - CLI-only guards on cron scripts
 - Input validation via Validator class (throws RuntimeException)
 - Roles are DATA (the `roles` table, edited via /api/roles + Settings UI);
-  permissions are CODE (`Auth::PERMISSIONS` catalog — 23 keys incl.
+  permissions are CODE (`Auth::PERMISSIONS` catalog — 25 keys incl.
   view_revenue, manual_control, reader_groups_manage, promotions_manage,
-  items_manage, view_tags, data_explorer, view_birthdays, birthdays_manage). A
+  items_manage, view_tags, data_explorer, view_birthdays, birthdays_manage,
+  view_anniversaries, anniversaries_manage). A
   read-only "Viewer"
   role (all pages + analytics + view_revenue + cards + view_logs) is seeded
   once as a normal custom role — fully editable/deletable in Settings.
