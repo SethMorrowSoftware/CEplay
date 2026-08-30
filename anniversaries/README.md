@@ -27,7 +27,7 @@ anniversaries/
 ├─ discover.php           Re-derive the roster query from the live database
 ├─ config.example.php     Copy to data/anniversary_config.php (or use the page)
 ├─ lib/anniv_lib.php      Date matching, years of service, message building
-└─ tests/                 225 assertions — run anywhere, no database needed
+└─ tests/                 251 assertions — run anywhere, no database needed
 ```
 
 It also puts today's anniversaries — alongside today's birthdays — on the
@@ -65,6 +65,38 @@ sudo bash /var/persist/pause-groups/anniversaries/run.sh discover
 A wrong column fails loudly (`Invalid column name`) rather than posting
 anything incorrect, and both the CLI and the page turn that error into a
 pointer at the probe.
+
+### How you know they still work here
+
+The employment filter is the whole of the answer, and it is identical to the
+birthday bot's — the two default queries are byte-for-byte the same apart from
+the date column:
+
+```sql
+WHERE EmpStatus = 1            -- 'Active', decoded from dbo.EmployeeStatus
+  AND DateOfTerminate IS NULL  -- and the two agree: no active row carries one
+```
+
+On this venue that is 193 people out of 1,547 rows. The other 1,354 — 1,350
+terminated and 4 suspended — never reach the bot. Neither bot caches the roster
+for its daily run, so every morning re-reads the live table; somebody
+terminated yesterday is gone from today's post.
+
+Because that filter lives in an editable query, both bots now **say what is
+enforcing it**. Every run logs it, and `--check` and both pages carry a
+**Still employed** row:
+
+```
+  Still employed     ok     filtered on EmpStatus, DateOfTerminate
+```
+
+If the query is ever edited into something with no employment filter, that row
+turns to a warning and the run logs one too. It is a warning rather than a
+refusal because the check is a heuristic — a venue could filter through a join
+no word list would recognise — and a false alarm should cost a log line, not a
+real greeting. The one thing that IS refused outright is `discover.php`'s
+`TODO_CONFIRM_EMPLOYMENT_FILTER` marker, which is the probe stating plainly
+that it could not find a filter.
 
 ### Set "Refuse to post above" from the cohort size
 
@@ -330,6 +362,7 @@ Two keys, both granted once by a migration to every role that already holds
 ```bash
 php anniversaries/tests/test_anniv_lib.php     # 186 — the bot's own logic
 php anniversaries/tests/test_today_cache.php   # 39  — the dashboard strip's cache
+php anniversaries/tests/test_roster_guard.php  # 26  — the "still employed" filter
 ```
 
 186 assertions, no database and no network — the date matching, the

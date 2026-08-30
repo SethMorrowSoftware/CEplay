@@ -29,7 +29,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Directory Layout
 ```
 api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, users, roles, capabilities)
-lib/          — 12 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config, anniversary_config, today_cache)
+lib/          — 13 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config, anniversary_config, today_cache, roster_guard)
 public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, settings)
 public/       — Also: manifest.webmanifest + sw.js + icons/ (the PWA layer; index.php serves sw.js/manifest at the app ROOT so the worker scope covers the whole app)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
@@ -1130,6 +1130,23 @@ before building.
   `birthdays` it NEVER moves the top-level `status` — an optional accessory
   that pauses nothing must not be able to report the scheduler as degraded. A
   missing heartbeat means "not installed", not "unhealthy".
+- **`lib/roster_guard.php` is SHARED by both bots** and guards the worst failure
+  either has: both put employee names in a public channel, and the ONLY thing
+  between "today's celebrants" and "everyone who ever worked here" is the WHERE
+  clause of an operator-editable query — 193 current staff out of 1,547 rows on
+  this venue. Both defaults carry `EmpStatus = 1 AND DateOfTerminate IS NULL`
+  and are otherwise byte-identical; neither bot caches the roster on the daily
+  path (`TodayCache` is the dashboard strip only), so every run re-reads it.
+  `RosterGuard::employmentFilter()` reads the WHERE clause — comments stripped,
+  SELECT list ignored, since neither can limit rows — and reports which columns
+  enforce it, surfaced as a **Still employed** row in both `--check`s and on
+  both pages, and as a line in every run's log. It is a WARNING, not a refusal:
+  the match is a heuristic (a venue can filter through a join no word list will
+  catch), and a false alarm costs a log line where refusing would cost a real
+  greeting. The one hard refusal stays discover.php's
+  `TODO_CONFIRM_EMPLOYMENT_FILTER` marker, which is not a guess. It replaced a
+  check that only asked whether the word WHERE appeared anywhere — so
+  `WHERE DateOfHire IS NOT NULL` passed silently.
 - **Both bots' systemd units are written by `deploy/write-bot-units.sh`**, called
   by `update.sh` (every deploy) AND by `anniversaries/install.sh` — the same
   single-writer arrangement as `write-fpm-unit.sh` / `write-daily-unit.sh`, and

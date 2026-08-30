@@ -44,6 +44,7 @@ require_once $root . '/config.php';
 require_once $root . '/lib/db.php';
 require_once $root . '/lib/crypto.php';
 require_once $root . '/lib/mssql_client.php';
+require_once $root . '/lib/roster_guard.php';
 require_once $root . '/lib/anniversary_config.php';
 require_once __DIR__ . '/lib/anniv_lib.php';
 // Shared with the birthday bot on purpose — see the header of each file.
@@ -638,6 +639,14 @@ if ($doCheck) {
                             . '(php anniversaries/discover.php finds it).';
                     } else {
                         $row('Roster query', 'ok', $n . ' current employees with a hire date (' . $ms . 'ms)');
+                    // The headcount above only means something if you can see WHAT made
+                    // those people 'current'. Without this row an operator has to read
+                    // the SQL to find out whether leavers are excluded at all.
+                    $emp = RosterGuard::employmentFilter($rosterSql);
+                    $row('Still employed', $emp['ok'] ? 'ok' : 'WARN', $emp['summary']);
+                    if (!$emp['ok']) {
+                        $problems[] = 'Roster query: ' . $emp['summary'] . '.';
+                    }
                         $up = annivUpcoming($nn['people'], $today, 60, $pickOpts);
                         $next = $up ? array_key_first($up) : null;
                         $todayHits = annivCelebrants($nn['people'], $today, $pickOpts);
@@ -912,9 +921,14 @@ if ($rosterFile !== '') {
         annivFail('roster_sql still contains TODO_CONFIRM_EMPLOYMENT_FILTER, '
             . 'so the "still employed" filter has never been filled in.', 1);
     }
-    if (stripos($rosterSql, 'where') === false) {
-        annivLog('WARNING: roster_sql has no WHERE clause, so it has no "still employed" filter. '
-            . 'Everyone who ever worked here will be congratulated.');
+    // The employment filter is the only thing between "today's celebrants" and
+    // "everyone who ever worked here", and it lives in an editable query — so
+    // say out loud, every run, what is actually enforcing it.
+    $employment = RosterGuard::employmentFilter($rosterSql);
+    if ($employment['ok']) {
+        annivLog('Employment filter: ' . $employment['summary'] . '.');
+    } else {
+        annivLog('WARNING: ' . $employment['summary'] . '. People who have left may be congratulated.');
     }
 
     try {

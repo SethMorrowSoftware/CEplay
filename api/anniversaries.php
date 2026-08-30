@@ -18,6 +18,7 @@
 
 require_once __DIR__ . '/../lib/anniversary_config.php';
 require_once __DIR__ . '/../lib/mssql_client.php';
+require_once __DIR__ . '/../lib/roster_guard.php';
 require_once __DIR__ . '/../lib/validator.php';
 require_once __DIR__ . '/../lib/today_cache.php';
 require_once __DIR__ . '/../anniversaries/lib/anniv_lib.php';
@@ -563,6 +564,10 @@ function annivApiCheck(array $cfg): void
         $add('Roster query', $n > 0 ? 'ok' : 'fail',
             $n > 0 ? $n . ' current employees with a hire date on file'
                    : 'returned rows, but none had a usable hire date');
+        // What actually makes those people "current". The headcount alone
+        // cannot show whether leavers are excluded.
+        $emp = RosterGuard::employmentFilter((string)$cfg['roster_sql']);
+        $add('Still employed', $emp['ok'] ? 'ok' : 'warn', $emp['summary']);
         if ($n > 0) {
             $today = date('Y-m-d');
             $hits = annivCelebrants($norm['people'], $today, $opts);

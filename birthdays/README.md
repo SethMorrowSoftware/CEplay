@@ -294,6 +294,26 @@ posting a second greeting.
 ("21 today!"). The roster holds full dates of birth and about a fifth of this
 staff are minors. The message gets the name and nothing more.
 
+## How you know they still work here
+
+The `WHERE` clause of `roster_sql` is the whole of the employment filter —
+`EmpStatus = 1` (Active) and `DateOfTerminate IS NULL`, which agree with each
+other on this venue: 193 current staff out of 1,547 rows. The work-anniversary
+bot uses the identical filter; the two default queries differ only in the date
+column.
+
+Because that lives in an editable query, the bot now **says what is enforcing
+it**. Every run logs it, and `--check` and the Birthdays page carry a
+**Still employed** row:
+
+```
+  Still employed     ok     filtered on EmpStatus, DateOfTerminate
+```
+
+Edit the query into something without an employment filter and that row turns
+to a warning. It replaced a check that only asked whether the word `WHERE`
+appeared anywhere — so `WHERE DateOfBirth IS NOT NULL` used to pass silently.
+
 ## How it decides who to greet
 
 - **Employment status is your query's job.** The `WHERE` clause in `roster_sql`
