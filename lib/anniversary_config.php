@@ -189,10 +189,20 @@ class AnniversaryConfig
             'label' => 'Ignore these hire dates',
             'help'  => 'YYYY-MM-DD, one per line. Placeholder dates the POS stamped in.',
         ],
+        // Higher than the birthday bot's 12, and it has to be. Twelve people
+        // sharing a BIRTHDAY means a broken query; twelve sharing a HIRE DATE
+        // is just how a seasonal venue staffs up — this roster has cohorts of
+        // 24, 13, 13, 12 and 11 on single spring dates. Set too low, the guard
+        // fires on the busiest anniversary of the year, every year, and posts
+        // nothing. It is still worth having: what it really catches is a
+        // placeholder date that never made it into the ignore list.
+        // `discover.php` measures the largest CURRENT-staff cohort so this can
+        // be set from evidence rather than taste.
         'max_celebrants' => [
-            'type' => 'int', 'default' => 12, 'min' => 1, 'max' => 100,
+            'type' => 'int', 'default' => 25, 'min' => 1, 'max' => 100,
             'label' => 'Refuse to post above',
-            'help'  => 'More than this many on one day means the query is wrong, not a coincidence.',
+            'help'  => 'A safety valve for a placeholder date. Keep it well above your biggest '
+                     . 'hiring cohort — people sharing a hire date is normal, unlike a birthday.',
         ],
         'roster_sql' => [
             'type' => 'text', 'default' => null,

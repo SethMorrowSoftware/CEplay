@@ -32,7 +32,6 @@ DATA_DIR="${INSTALL_DIR}/data"
 CONFIG="${DATA_DIR}/anniversary_config.php"
 EXAMPLE="${SCRIPT_DIR}/config.example.php"
 BDAY_CONFIG="${DATA_DIR}/birthday_config.php"
-UNIT_SRC="${SCRIPT_DIR}/systemd"
 UNIT_DST="${PG_UNIT_DIR:-/etc/systemd/system}"
 SERVICE="ceplay-anniversaries.service"
 TIMER="ceplay-anniversaries.timer"
@@ -373,52 +372,28 @@ if [[ "${tm,,}" != "n" ]]; then
     fi
 fi
 
-# The chosen time, plus two catch-up firings the same day.
+# Writing the units is delegated to deploy/write-bot-units.sh — the same script
+# update.sh calls on every deploy. One writer means the unit this installer
+# produces and the one a later update refreshes cannot drift apart, which is
+# the lesson write-fpm-unit.sh and write-daily-unit.sh already encode.
 #
-# A message that arrives tomorrow is not an anniversary message, so one shot a
-# day is not enough: a blip at the posting minute would lose it outright. The
-# retries cost nothing and cannot double-post — the bot records who it has
-# congratulated, so a run with nothing left to do exits silently.
-#
-# Catch-ups that would spill past midnight are dropped rather than wrapped: at
-# 23:45 they would land on the FOLLOWING day, which is a different day's
-# message, not a retry of this one.
-firing_times() {
-    local base=$((10#${PTIME%%:*} * 60 + 10#${PTIME##*:}))
-    local off t
-    printf '%s\n' "$PTIME"
-    for off in 30 90; do
-        t=$((base + off))
-        (( t < 1440 )) && printf '%02d:%02d\n' $((t / 60)) $((t % 60))
-    done
-}
-
-CAL_LINES=""
-while read -r t; do
-    CAL_LINES+="OnCalendar=*-*-* ${t}:00${TZ_SUFFIX}"$'\n'
-done < <(firing_times)
-RETRY_TIMES="$(firing_times | tail -n +2 | paste -sd' ' -)"
-
+# It handles the catch-up firings (the chosen time plus 30 and 90 minutes, with
+# anything past midnight dropped rather than wrapped — that would be the next
+# day's message, not a retry of this one) and pins the timezone onto each line
+# where the host's clock and the app's differ. Passing PTIME is what tells it to
+# (re)write the timer at all: called without a time, from update.sh, it leaves
+# an existing schedule alone.
 echo
-info "Installing the daily timer for ${PTIME}${TZ_SUFFIX:+ ${APP_TZ}}${RETRY_TIMES:+ (catch-up at ${RETRY_TIMES})}"
-install -m 0644 "${UNIT_SRC}/${SERVICE}" "${UNIT_DST}/${SERVICE}"
-# Replace the whole shipped block of OnCalendar lines with the generated one,
-# rather than rewriting each in place — the unit ships with three of them, and
-# a per-line substitution would give three copies of the same time.
-awk -v cal="$CAL_LINES" '
-    /^OnCalendar=/ { if (!seen) { printf "%s", cal; seen = 1 } next }
-    { print }
-' "${UNIT_SRC}/${TIMER}" > "${UNIT_DST}/${TIMER}"
-chmod 0644 "${UNIT_DST}/${TIMER}"
+info "Installing the daily timer for ${PTIME}${TZ_SUFFIX:+ ${APP_TZ}}"
+WRITER="${INSTALL_DIR}/deploy/write-bot-units.sh"
+[[ -f "$WRITER" ]] || WRITER="$(dirname "$SCRIPT_DIR")/deploy/write-bot-units.sh"
+[[ -f "$WRITER" ]] || die "Can't find deploy/write-bot-units.sh — is the deploy incomplete?"
 
-# The units ship with the default install path baked in; rewrite them if this
-# install lives somewhere else, or the timer would fire against the wrong tree.
-if [[ "$INSTALL_DIR" != "/var/persist/pause-groups" ]]; then
-    sed -i "s|/var/persist/pause-groups|${INSTALL_DIR}|g" "${UNIT_DST}/${SERVICE}"
-    info "Units repointed at ${INSTALL_DIR}"
-fi
-
-systemctl daemon-reload
+MSSQL_TAR_ARG="${MSSQL_TAR}"
+[[ -f "$MSSQL_TAR_ARG" ]] || MSSQL_TAR_ARG=""
+bash "$WRITER" anniversaries \
+    "${INSTALL_DIR}/.env" "$INSTALL_DIR" "$DATA_DIR" "$MSSQL_IMAGE" "$MSSQL_TAR_ARG" "$PTIME" \
+    || die "Could not write the systemd units."
 systemctl enable --now "$TIMER" >/dev/null 2>&1
 if systemctl is-active --quiet "$TIMER"; then
     ok "Timer enabled"

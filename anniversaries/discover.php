@@ -182,6 +182,20 @@ function a_isEmpNoCol(string $name): bool
     return in_array($n, ['empno', 'employeeno', 'employeeid', 'empid', 'employeenumber', 'empnum'], true);
 }
 
+/**
+ * A decoded status code as a SQL literal.
+ *
+ * NOT `(int)$code`. The code comes out of whatever lookup table the install
+ * happens to use, and nothing says it is numeric — an install whose status
+ * column is a char with 'A' = Active would have every code cast to 0, and the
+ * generated roster query would then select the wrong people, or nobody, while
+ * looking perfectly reasonable.
+ */
+function a_statusLiteral(string $code): string
+{
+    return preg_match('/^-?\d+$/', trim($code)) ? (string)(int)trim($code) : a_lit($code);
+}
+
 function a_isDateType(string $t): bool
 {
     return in_array(strtolower($t), ['date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset'], true);
@@ -478,8 +492,34 @@ $birthExpr = $chosen['birth'] ? $dateExpr($chosen['birth']) : null;
 
 a_sub('Hire-date candidates, measured');
 
+// --column exists precisely for the case where this venue's hire field is named
+// something a_isHireCol() does not recognise, so the forced column has to be
+// measurable even when it is NOT a candidate — searching only the candidate
+// list would reject exactly the name the operator is trying to rescue.
+$toMeasure = $chosen['hire'];
+if ($forceColumn !== '') {
+    $already = false;
+    foreach ($toMeasure as $c) {
+        if (strcasecmp($c['col'], $forceColumn) === 0) { $already = true; break; }
+    }
+    if (!$already) {
+        $forced = null;
+        foreach ($chosen['cols'] as $c) {
+            if (strcasecmp($c['col'], $forceColumn) === 0) { $forced = $c; break; }
+        }
+        if (!$forced) {
+            echo "\n   --column={$forceColumn} is not a column on " . $chosen['table'] . ".\n"
+               . "   The full column list is in the table above.\n";
+            exit(1);
+        }
+        echo "\n   --column={$forceColumn} is not one this probe would have picked; measuring it\n"
+           . "   anyway, including the birth-date cross-check.\n";
+        array_unshift($toMeasure, $forced);
+    }
+}
+
 $measured = [];
-foreach ($chosen['hire'] as $c) {
+foreach ($toMeasure as $c) {
     $H = $dateExpr($c);
     $sel = "SELECT COUNT(*) AS rows_total,
        SUM(CASE WHEN {$H} IS NULL THEN 1 ELSE 0 END) AS missing,
@@ -551,7 +591,8 @@ if ($forceColumn !== '') {
         if (strcasecmp($m['col']['col'], $forceColumn) === 0) { $hireCol = $m['col']; break; }
     }
     if (!$hireCol) {
-        echo "\n   --column={$forceColumn} is not a candidate on this table.\n";
+        // Unreachable: the forced column was added to $toMeasure above.
+        echo "\n   --column={$forceColumn} could not be measured.\n";
         exit(1);
     }
 } else {
@@ -662,10 +703,26 @@ ORDER BY COUNT(*) DESC", 20);
     }
 }
 
+// The condition that means "still works here", as decoded above. Everything
+// below reports on CURRENT staff wherever it can: this table is 88% leavers at
+// this venue (1,350 terminated of 1,547), and a distribution dominated by
+// people who left years ago answers a question nobody asked.
+$activePredicate = null;
+if ($activeCode !== null && $activeCodeCol !== null) {
+    $activePredicate = a_ident($activeCodeCol) . ' = ' . a_statusLiteral((string)$activeCode);
+} elseif ($chosen['term']) {
+    $activePredicate = a_ident($chosen['term'][0]) . ' IS NULL';
+}
+$currentOnly = $activePredicate !== null ? ' AND ' . $activePredicate : '';
+$currentLabel = $activePredicate !== null
+    ? 'CURRENT staff (' . $activePredicate . ')'
+    : 'every row (no employment filter could be decoded)';
+
 // -- hire-date data quality -------------------------------------------------
 a_sub('Hire-date data quality (' . $hireCol['col'] . ')');
 
-echo "\n   Most-repeated exact dates (a big count = a placeholder, not a hire date):\n";
+echo "\n   Most-repeated exact dates, all rows (a big count here can be a placeholder\n"
+   . "   OR a hiring cohort — the next table separates them):\n";
 $dupes = a_rows($client, "SELECT TOP 12 CONVERT(VARCHAR(10), {$H}, 120) AS hire_date, COUNT(*) AS people
 FROM {$T}
 WHERE {$H} IS NOT NULL
@@ -675,16 +732,46 @@ a_table($dupes);
 echo "   -> Add any date with an implausible count to 'Ignore these hire dates' on the\n"
    . "      Anniversaries page. (1900-01-01 and friends are already ignored by default.)\n";
 
-echo "\n   Years of service, as the bot would count them today:\n";
+// THE NUMBER max_celebrants HAS TO CLEAR.
+//
+// A shared hire date is NOT the anomaly a shared birthday is: a seasonal venue
+// onboards in waves, so a dozen people legitimately have the same anniversary.
+// If max_celebrants sits below the biggest cohort, the bot refuses to post on
+// the busiest anniversary of the year — every year — and records a failure for
+// it. Measured against CURRENT staff, because leavers do not get greeted.
+echo "\n   Hire dates shared by several people — " . $currentLabel . ":\n";
+$cohorts = a_rows($client, "SELECT TOP 12 CONVERT(VARCHAR(10), {$H}, 120) AS hire_date, COUNT(*) AS people
+FROM {$T}
+WHERE {$H} IS NOT NULL AND YEAR({$H}) >= 1901{$currentOnly}
+GROUP BY CONVERT(VARCHAR(10), {$H}, 120)
+HAVING COUNT(*) > 1
+ORDER BY COUNT(*) DESC", 12);
+if (!$cohorts) {
+    echo "   (nobody currently on staff shares a hire date)\n";
+    echo "   -> The default 'Refuse to post above' of 25 is comfortable.\n";
+} else {
+    a_table($cohorts);
+    $biggest = (int)($cohorts[0]['people'] ?? 0);
+    $suggest = max(25, (int)ceil($biggest * 1.5));
+    echo "   -> Biggest cohort on one day: " . $biggest . " current staff. That is how many\n"
+       . "      messages the bot would post on that date, so 'Refuse to post above'\n"
+       . "      (max_celebrants) must stay well clear of it — set it to at least "
+       . $suggest . ".\n"
+       . "      It defaults to 25. That guard is for a placeholder date that never made\n"
+       . "      it into the ignore list, NOT for a hiring wave: people sharing a hire\n"
+       . "      date is normal here in a way sharing a birthday would not be.\n";
+}
+
+echo "\n   Years of service — " . $currentLabel . ", as the bot would count them today:\n";
 $years = a_rows($client, "SELECT DATEDIFF(YEAR, {$H}, GETDATE()) AS years_of_service, COUNT(*) AS people
 FROM {$T}
-WHERE {$H} IS NOT NULL AND YEAR({$H}) >= 1901
+WHERE {$H} IS NOT NULL AND YEAR({$H}) >= 1901{$currentOnly}
 GROUP BY DATEDIFF(YEAR, {$H}, GETDATE())
 ORDER BY DATEDIFF(YEAR, {$H}, GETDATE())", 80);
 a_table($years);
-echo "   -> A long tail of 20+ year figures on a seasonal roster usually means leavers\n"
-   . "      are still included, i.e. the employment filter below is not tight enough.\n"
-   . "      (This count ignores it — it is every row in the table.)\n";
+echo "   -> Year 0 is people hired within the last twelve months; the bot skips them,\n"
+   . "      because a start date is not an anniversary. Everything else is a year the\n"
+   . "      bot will eventually post about.\n";
 
 // -- sample rows ------------------------------------------------------------
 a_sub('Sample rows');
@@ -713,9 +800,19 @@ WHERE {$H} IS NOT NULL AND YEAR({$H}) >= 1901
   AND MONTH({$H}) = MONTH(GETDATE()) AND DAY({$H}) = DAY(GETDATE())
   AND DATEDIFF(YEAR, {$H}, GETDATE()) >= 1", 50);
 a_table($todayRows);
-echo "   (all rows, ignoring employment status — the status filter is yours to set below.\n"
-   . "    Year zero is excluded, exactly as the bot excludes it: a start date is not an\n"
-   . "    anniversary.)\n";
+if ($activePredicate !== null) {
+    $todayCurrent = a_rows($client, "SELECT COUNT(*) AS n
+FROM {$T}
+WHERE {$H} IS NOT NULL AND YEAR({$H}) >= 1901
+  AND MONTH({$H}) = MONTH(GETDATE()) AND DAY({$H}) = DAY(GETDATE())
+  AND DATEDIFF(YEAR, {$H}, GETDATE()) >= 1
+  AND {$activePredicate}", 1);
+    echo "   -> " . (int)($todayCurrent[0]['n'] ?? 0) . " of these are current staff. That is what\n"
+       . "      would actually post today; the rest are leavers the filter drops.\n";
+}
+echo "   (the table above ignores employment status on purpose — it is how you check the\n"
+   . "    date matching itself. Year zero is excluded, exactly as the bot excludes it:\n"
+   . "    a start date is not an anniversary.)\n";
 
 // ---------------------------------------------------------------------------
 // 4. The generated roster query
@@ -728,7 +825,7 @@ $where = [a_ident($hireCol['col']) . " IS NOT NULL", "YEAR({$H}) >= 1901"];
 $filterKnown = false;
 
 if ($activeCode !== null && $activeCodeCol !== null) {
-    array_unshift($where, a_ident($activeCodeCol) . ' = ' . (int)$activeCode
+    array_unshift($where, a_ident($activeCodeCol) . ' = ' . a_statusLiteral((string)$activeCode)
         . "  /* '" . $activeCodeWhy . "' */");
     $filterKnown = true;
 } elseif ($statusCol !== null) {
@@ -751,7 +848,7 @@ if ($filterKnown && $activeCode !== null && $chosen['term']) {
     $agree = a_rows($client, "SELECT COUNT(*) AS active_rows,
        SUM(CASE WHEN " . a_ident($tCol) . " IS NOT NULL THEN 1 ELSE 0 END) AS active_with_term_date
 FROM {$T}
-WHERE " . a_ident($activeCodeCol) . ' = ' . (int)$activeCode, 1);
+WHERE " . a_ident($activeCodeCol) . ' = ' . a_statusLiteral((string)$activeCode), 1);
     $withTerm = isset($agree[0]) ? (int)$agree[0]['active_with_term_date'] : -1;
     if ($withTerm === 0) {
         array_splice($where, 1, 0, [a_ident($tCol) . " IS NULL  /* agrees with the status flag */"]);

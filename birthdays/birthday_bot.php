@@ -61,6 +61,9 @@ Usage: php birthdays/birthday_bot.php [options]
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
   --print-timezone       Print the timezone the bot treats as local; exit.
+  --is-configured        Exit 0 if a Slack token and channel are set, 1 if
+                         not. Prints nothing, touches no network. For
+                         deploy scripts deciding whether to enable the timer.
   --force                Post even if today's greeting already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --config=PATH          Use a specific config file.
@@ -80,7 +83,7 @@ TXT;
  * the opposite of what was typed. A value-taking flag given none is rejected
  * too, rather than silently doing something else.
  */
-const BDAY_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help',
+const BDAY_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help', 'is-configured',
                        'print-timezone'];
 const BDAY_OPTIONAL_VALUE = ['list', 'demo'];
 const BDAY_REQUIRES_VALUE = ['date', 'roster-file', 'config', 'resolve-channel'];
@@ -180,6 +183,24 @@ if ($tz !== '') {
 if (array_key_exists('print-timezone', $flags)) {
     echo ($tz !== '' ? $tz : date_default_timezone_get()) . "\n";
     exit(0);
+}
+
+/**
+ * --is-configured: has anybody actually set this bot up?
+ *
+ * Silent, and deliberately cheap — no Slack call, no MSSQL connection, no
+ * roster read. It answers only the question a deploy script needs before
+ * enabling a systemd timer: would a firing have somewhere to post? Enabling a
+ * timer for a bot with no token would put a failed run, and an audit row, in
+ * front of the operator every morning for a bot they never asked for.
+ *
+ * Sits beside --print-timezone because it has the same requirement: it must
+ * work when nothing at all is configured, which is precisely when it is asked.
+ */
+if (array_key_exists('is-configured', $flags)) {
+    $hasToken   = trim((string)($cfg['slack_bot_token'] ?? '')) !== '';
+    $hasChannel = trim((string)($cfg['slack_channel'] ?? '')) !== '';
+    exit(($hasToken && $hasChannel) ? 0 : 1);
 }
 
 $logFile = trim((string)($cfg['log_file'] ?? ''));

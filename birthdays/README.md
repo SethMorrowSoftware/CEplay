@@ -313,6 +313,31 @@ staff are minors. The message gets the name and nothing more.
   which day. `--force` overrides. A partial failure only records the messages
   that actually went out, so the rest are retried next run.
 
+## Deploys and your posting time
+
+`update.sh` now refreshes this bot's systemd **service** unit on every deploy —
+it carries the install path and the container image, and a stale one is how the
+nightly planner silently lost its MSSQL driver for six weeks.
+
+It deliberately does **not** touch `ceplay-birthdays.timer`. That file carries
+only the schedule — the time you chose when you ran `install.sh` — so a deploy
+can never move your posting time. To change it, re-run `install.sh`, or write
+the units directly:
+
+```bash
+sudo bash deploy/write-bot-units.sh birthdays \
+    /var/persist/pause-groups/.env /var/persist/pause-groups \
+    /var/persist/pause-groups/data localhost/pause-groups-fpm-mssql:latest \
+    /var/persist/pause-groups/php-fpm-mssql.tar 08:30
+```
+
+Passing a time is what tells the writer to rewrite the timer at all; called
+without one, it leaves an existing schedule alone.
+
+`--is-configured` answers "is this bot set up?" without touching Slack or
+MSSQL — exit 0 when a token and channel are both present. That is what
+`update.sh` uses to decide whether to enable the timer.
+
 ## On the dashboard
 
 Today's birthdays also appear as a strip of chips under the Command Center

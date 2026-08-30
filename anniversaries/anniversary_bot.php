@@ -72,6 +72,9 @@ Usage: php anniversaries/anniversary_bot.php [options]
   --check                Health-check everything and print a checklist; exit.
   --resolve-channel=X    Print the channel ID for a #name (or ID); exit.
   --print-timezone       Print the timezone the bot treats as local; exit.
+  --is-configured        Exit 0 if a Slack token and channel are set, 1 if
+                         not. Prints nothing, touches no network. For
+                         deploy scripts deciding whether to enable the timer.
   --force                Post even if today's message already went out.
   --roster-file=PATH     Read the roster from a JSON file instead of MSSQL.
   --config=PATH          Use a specific config file.
@@ -91,7 +94,7 @@ TXT;
  * the opposite of what was typed. A value-taking flag given none is rejected
  * too, rather than silently doing something else.
  */
-const ANNIV_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help',
+const ANNIV_SWITCHES = ['dry-run', 'force', 'test-slack', 'test-gifs', 'check', 'help', 'is-configured',
                         'print-timezone'];
 const ANNIV_OPTIONAL_VALUE = ['list', 'demo'];
 const ANNIV_REQUIRES_VALUE = ['date', 'roster-file', 'config', 'resolve-channel'];
@@ -189,6 +192,24 @@ if ($tz !== '') {
 if (array_key_exists('print-timezone', $flags)) {
     echo ($tz !== '' ? $tz : date_default_timezone_get()) . "\n";
     exit(0);
+}
+
+/**
+ * --is-configured: has anybody actually set this bot up?
+ *
+ * Silent, and deliberately cheap — no Slack call, no MSSQL connection, no
+ * roster read. It answers only the question a deploy script needs before
+ * enabling a systemd timer: would a firing have somewhere to post? Enabling a
+ * timer for a bot with no token would put a failed run, and an audit row, in
+ * front of the operator every morning for a bot they never asked for.
+ *
+ * Sits beside --print-timezone because it has the same requirement: it must
+ * work when nothing at all is configured, which is precisely when it is asked.
+ */
+if (array_key_exists('is-configured', $flags)) {
+    $hasToken   = trim((string)($cfg['slack_bot_token'] ?? '')) !== '';
+    $hasChannel = trim((string)($cfg['slack_channel'] ?? '')) !== '';
+    exit(($hasToken && $hasChannel) ? 0 : 1);
 }
 
 $logFile = trim((string)($cfg['log_file'] ?? ''));
@@ -991,11 +1012,16 @@ if (!$celebrants) {
     exit(0);
 }
 
-$max = max(1, (int)($cfg['max_celebrants'] ?? 12));
+$max = max(1, (int)($cfg['max_celebrants'] ?? 25));
 if (count($celebrants) > $max) {
     fwrite(STDERR,
-        "That usually means the roster query is reading the wrong column (a birth date,\n"
-        . "say) rather than a genuine coincidence. Run `php anniversaries/discover.php`.\n");
+        "Two things this can be, and they need opposite fixes:\n"
+        . "  - A HIRING COHORT. A seasonal venue onboards in waves, so a dozen people\n"
+        . "    sharing an anniversary is normal. Raise \"Refuse to post above\"\n"
+        . "    (max_celebrants) past your biggest cohort — `run.sh discover` measures it.\n"
+        . "  - A PLACEHOLDER DATE the POS stamped on everyone, or the query reading the\n"
+        . "    wrong column. Add the date to \"Ignore these hire dates\", or fix the query.\n"
+        . "`bash anniversaries/run.sh discover` tells you which of the two it is.\n");
     annivFail(sprintf(
         'Refused to post: %d people share an anniversary on %s, over the max_celebrants limit of %d.',
         count($celebrants), $target, $max
