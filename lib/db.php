@@ -934,6 +934,12 @@ class DB {
         )');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_time ON game_play_transactions(transaction_time DESC)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_game ON game_play_transactions(game_id)');
+        // Composite for the member-filtered raw reads (readerHourlyRows() and
+        // perfDailyPerGame()'s $onlyGames path): seek by game_id, then
+        // range-scan transaction_time, so a report about one reader-group area
+        // never walks the whole venue's feed. Same rationale as
+        // idx_ghs_game_date on the hourly rollup.
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_game_time ON game_play_transactions(game_id, transaction_time)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_card ON game_play_transactions(card_number)');
         $db->exec('CREATE INDEX IF NOT EXISTS idx_gpt_fetched ON game_play_transactions(fetched_at DESC)');
 
@@ -1204,6 +1210,47 @@ class DB {
                 error_log("Failed to drop obsolete table $obsoleteTable: " . $e->getMessage());
             }
         }
+    }
+
+    /**
+     * Execute a parameterized SELECT and hand each row to $fn AS IT ARRIVES,
+     * never building the full result array.
+     *
+     * For a query whose OUTPUT is small but whose ROW COUNT is large — the
+     * reporting rollups, which reduce a month of the raw play feed to a few
+     * hundred per-game buckets — this is the difference between a few hundred
+     * KB and a hundred-plus MB: DB::query() materializes every row first, at
+     * roughly 900 bytes of PHP array per row, and the container's PHP runs on
+     * the stock 128M memory_limit. Exceeding it is a FATAL, so the request dies
+     * with no JSON body at all and the browser only ever sees "HTTP 500" —
+     * which is exactly how the Go-Kart Labor page's Month and Year views
+     * started failing once the venue's daily play volume grew (Day and Week
+     * touch only a few days of raw feed, so they kept working).
+     *
+     * Use this whenever a read is aggregated on the spot rather than returned;
+     * reach for query() when the caller genuinely needs the rows.
+     *
+     * @param callable $fn fn(array $row): void
+     * @return int rows visited
+     */
+    public static function each(string $sql, array $params, callable $fn): int {
+        $db = self::getInstance();
+        $stmt = $db->prepare($sql);
+        self::bindParams($stmt, $params);
+        $result = $stmt->execute();
+        $n = 0;
+        try {
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $fn($row);
+                $n++;
+            }
+        } finally {
+            // Release the statement even if the callback throws, so a failed
+            // aggregation can't leave the connection holding a read lock.
+            $result->finalize();
+            $stmt->close();
+        }
+        return $n;
     }
 
     /**
