@@ -19,6 +19,7 @@
 require_once __DIR__ . '/../lib/anniversary_config.php';
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
+require_once __DIR__ . '/../lib/today_cache.php';
 require_once __DIR__ . '/../anniversaries/lib/anniv_lib.php';
 require_once __DIR__ . '/../birthdays/lib/slack_client.php';
 require_once __DIR__ . '/../birthdays/lib/gif_source.php';
@@ -397,11 +398,6 @@ function annivApiUpcoming(): void
 // stale-chip bug that a plain time-based cache would have.
 // ---------------------------------------------------------------------------
 
-/** How long a good answer stands. The roster barely changes during a day. */
-const ANNIV_TODAY_TTL_OK = 1800;    // 30 minutes
-/** How long a failure stands — shorter, so a fixed connection recovers soon. */
-const ANNIV_TODAY_TTL_FAIL = 600;   // 10 minutes
-
 /**
  * Everything that decides WHO shows up today.
  *
@@ -449,7 +445,7 @@ function annivApiToday(): void
     $sig  = annivTodaySignature($cfg);
     $force = !empty($_GET['refresh']);
 
-    $cached = $force ? null : annivTodayCacheRead($path, $today, $sig);
+    $cached = $force ? null : TodayCache::read($path, $today, $sig);
     if ($cached !== null) {
         @date_default_timezone_set($prev);
         $cached['cached'] = true;
@@ -483,59 +479,10 @@ function annivApiToday(): void
         $out['reason'] = $e->getMessage();
     }
 
-    annivTodayCacheWrite($path, $sig, $out);
+    TodayCache::write($path, $sig, $out);
     @date_default_timezone_set($prev);
     $out['cached'] = false;
     echo json_encode($out);
-}
-
-/** The cached answer, or null when there isn't a usable one. */
-function annivTodayCacheRead(string $path, string $today, string $sig): ?array
-{
-    if ($path === '' || !is_file($path)) {
-        return null;
-    }
-    $raw = @file_get_contents($path);
-    if ($raw === false || trim($raw) === '') {
-        return null;
-    }
-    $data = json_decode($raw, true);
-    if (!is_array($data) || !isset($data['payload']) || !is_array($data['payload'])) {
-        return null;
-    }
-    // A different day, or settings that change who counts, means the stored
-    // answer is about a different question — not merely an old answer to this
-    // one, so no TTL can rescue it.
-    if (($data['sig'] ?? '') !== $sig || ($data['payload']['date'] ?? '') !== $today) {
-        return null;
-    }
-    $age = time() - (int)($data['at'] ?? 0);
-    $ttl = !empty($data['payload']['available']) ? ANNIV_TODAY_TTL_OK : ANNIV_TODAY_TTL_FAIL;
-    return ($age >= 0 && $age < $ttl) ? $data['payload'] : null;
-}
-
-/** Store the answer. Best-effort: a cache that cannot be written just costs a query. */
-function annivTodayCacheWrite(string $path, string $sig, array $payload): void
-{
-    if ($path === '') {
-        return;
-    }
-    $dir = dirname($path);
-    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
-        return;
-    }
-    $json = json_encode(['at' => time(), 'sig' => $sig, 'payload' => $payload]);
-    if ($json === false) {
-        return;
-    }
-    // Written like the bot's state file: atomically, and owner-only — it names
-    // employees.
-    $tmp = $path . '.tmp';
-    if (@file_put_contents($tmp, $json) === false) {
-        return;
-    }
-    @chmod($tmp, 0600);
-    @rename($tmp, $path);
 }
 
 /** Health check, message preview, and the two live Slack tests. */

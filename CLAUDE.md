@@ -29,7 +29,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Directory Layout
 ```
 api/          — API endpoint handlers (auth, settings, games, cards, groups, reader_groups, promotions, items, kiosks, schedules, overrides, analytics, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, users, roles, capabilities)
-lib/          — 11 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config, anniversary_config)
+lib/          — 12 core libraries (db, auth, csrf, crypto, validator, scheduler, centeredge_client, mssql_client, reporting, birthday_config, anniversary_config, today_cache)
 public/js/    — Vanilla JS modules (api, app, login, dashboard, games, tags, cards, groups, kiosks, schedules, overrides, analytics, performance, readers, promotions, items, labor, cardloads, tickets, revenue, redemption, explorer, birthdays, anniversaries, logs, settings)
 public/       — Also: manifest.webmanifest + sw.js + icons/ (the PWA layer; index.php serves sw.js/manifest at the app ROOT so the worker scope covers the whole app)
 public/css/   — Dark/light theme stylesheet (modular @imports from style.css; page styles under css/pages/)
@@ -1035,6 +1035,12 @@ before building.
     `birthday_failed` — only real events, never the ~300 idle days a year.
     Keep both `api/logs.php` filter allowlists and the `public/js/logs.js`
     dropdowns in sync.
+- **`GET /api/birthdays/today`** feeds the Command Center strip (see the
+  Work Anniversaries section for the whole design — the strip carries both
+  bots). NAMES ONLY in that payload: no age, no birth year, not even a field
+  for one, for exactly the reason the greeting is forbidden from carrying
+  either. Memoised through the shared `lib/today_cache.php`, keyed by
+  `bdayTodaySignature()`.
 - Gates: `view_birthdays` (page, in `PAGE_PERMISSIONS`) and `birthdays_manage`
   (edit settings, post test messages). `migration_birthdays_v1` grants both to
   roles holding `settings`. Keep the key in sync across `Auth::PAGE_PERMISSIONS`,
@@ -1114,35 +1120,52 @@ before building.
   `birthdays` it NEVER moves the top-level `status` — an optional accessory
   that pauses nothing must not be able to report the scheduler as degraded. A
   missing heartbeat means "not installed", not "unhealthy".
-- **The Command Center strip** (`#dash-anniversaries` in `public/js/dashboard.js`,
-  `.anniv-strip`/`.anniv-chip` in `public/css/pages/anniversaries.css`) puts
-  today's celebrants under the dashboard header as one chip per person. Four
-  properties, all deliberate: it renders NOTHING on the ~300 empty days a year
-  (no empty state above the fold); it never surfaces its own failures there (a
-  roster that can't be read just means no strip — an optional accessory must not
-  put a red banner on the floor's main screen); it is the SAME selection the bot
-  posts (same `min_years`/mode/opt-outs, so nobody asks why Slack stayed quiet
-  about somebody listed there); and it does NOT cost a roster read per poll.
-  That last one matters: the dashboard polls every 30s and
-  `GET /api/anniversaries/today` sits on a 5000-row MSSQL query behind a 30s
-  timeout. So the browser refetches at most every 10 min (`ANNIV_REFRESH_MS`)
-  and the server memoises to `data/anniversary_today.json`
-  (`ANNIV_TODAY_TTL_OK` 30 min; `ANNIV_TODAY_TTL_FAIL` 10 min — **caching the
-  FAILURE is the point**, or an unreachable database is retried by every open
-  dashboard on every poll, each waiting out the connect timeout). The entry
-  carries `annivTodaySignature()`, a hash of every setting that decides who
-  counts, so a settings change invalidates it outright instead of leaving a
-  wrong chip up for the rest of the TTL — add a setting there when you add one
-  that changes the answer. `anniversaries/tests/test_today_cache.php` pins all
-  of this (it needs config.php but no DB — config.php is constants only).
+- **The Command Center strip** (`#dash-celebrations` in `public/js/dashboard.js`,
+  `public/css/components/celebrate-strip.css`) puts today's BIRTHDAYS and today's
+  ANNIVERSARIES under the dashboard header as one row: a group per kind, a chip
+  per person, each group linking to its own page. Fed by
+  `GET /api/birthdays/today` + `GET /api/anniversaries/today`. Five properties,
+  all deliberate:
+  - it renders NOTHING on the days nobody is celebrating (no empty state above
+    the fold), and each group disappears independently;
+  - it never surfaces its own failures there (a roster that can't be read just
+    means no group — an optional accessory must not put a red banner on the
+    floor's main screen);
+  - it is the SAME selection each bot posts (same leap rule, opt-outs,
+    `min_years`, milestone mode), so nobody asks why Slack stayed quiet about
+    somebody listed there. The corollary: in milestone-only mode an ordinary
+    third year appears in neither place;
+  - **a birthday chip carries a NAME AND NOTHING ELSE** — no age, no birth year,
+    not even a field for one, for the same reason the greeting is forbidden from
+    printing either. Years of service are the opposite case and only anniversary
+    chips carry a number;
+  - it does NOT cost a roster read per poll. The dashboard polls every 30s and
+    both endpoints sit on a 5000-row MSSQL query behind a 30s timeout, so the
+    browser refetches at most every 10 min (`CELEBRATE_REFRESH_MS`) and the
+    server memoises via `lib/today_cache.php`.
+- **`lib/today_cache.php` is SHARED by both bots** (same rationale as
+  `slack_client.php`/`gif_source.php`): `TodayCache::TTL_OK` 30 min,
+  `TTL_FAIL` 10 min — **caching the FAILURE is the point**, or an unreachable
+  database is retried by every open dashboard on every poll, each waiting out
+  the connect timeout. Entries are keyed by a per-bot SIGNATURE
+  (`annivTodaySignature()` / `bdayTodaySignature()`) of every setting that
+  decides who counts, so a settings change invalidates outright instead of
+  leaving a wrong chip up for the rest of the TTL — add a setting there when
+  you add one that changes the answer. A negative age (clock jumped back) is a
+  miss, not an immortal entry. Pinned by
+  `anniversaries/tests/test_today_cache.php` (needs config.php but no DB —
+  config.php is constants only), which covers BOTH bots' signatures.
 - **The milestone chip keeps the SAME background as an ordinary chip** and is
-  lifted by a border + halo + a ★ instead. Filling it with the hue looked right
-  on dark and was backwards on light, where the ordinary chips are white and a
-  green-tinted milestone chip was the DIMMEST thing in the row it is supposed to
-  lead. The star also means the distinction is not carried by two shades of
-  green alone. Light-mode `--anniversary` is `#4a7016` (5.9:1 on white) rather
-  than the more obvious `#5f8f22`, which measures 3.9:1 and fails AA for the
-  0.72rem uppercase labels.
+  lifted by a border + halo + a star instead. Filling it with the hue looked
+  right on dark and was backwards on light, where the ordinary chips are white
+  and a green-tinted milestone chip was the DIMMEST thing in the row it is
+  supposed to lead. The star also means the distinction is not carried by two
+  shades of green alone. Light-mode `--anniversary` is `#4a7016` (5.9:1 on
+  white) rather than the more obvious `#5f8f22`, which measures 3.9:1 and fails
+  AA for the 0.72rem uppercase labels; light-mode `--birthday` moved from
+  `#b3661a` (4.4:1) to `#9c580f` (5.6:1) for the same reason, and gained the
+  `--birthday-rgb` override it had always been missing (every tinted background
+  on the Birthdays page was being washed in the DARK-mode amber).
 
 ### Tag Board & PWA
 - Tag Board (`#/tags`, `public/js/tags.js`, `public/css/pages/tags.css`) is the

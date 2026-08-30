@@ -12,11 +12,21 @@
     --birthday: #e0913a;            /* Candle amber */
     --birthday-rgb: 224, 145, 58;
 }
+/* Deeper on light surfaces, and the RGB triple has to move with it — every
+   tinted background here (.bd-today, .bd-check-fail, the Command Center strip)
+   is built from --birthday-rgb, so leaving it on the dark-mode amber washed
+   those in one hue while the text beside them was drawn in another.
+   #9c580f measures 5.6:1 on white; the previous #b3661a is 4.4:1 and misses AA
+   for the 0.7rem uppercase labels this page uses it on. */
 :root[data-theme="light"] {
-    --birthday: #b3661a;
+    --birthday: #9c580f;
+    --birthday-rgb: 156, 88, 15;
 }
 @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --birthday: #b3661a; }
+    :root:not([data-theme="dark"]) {
+        --birthday: #9c580f;
+        --birthday-rgb: 156, 88, 15;
+    }
 }
 
 /* --- Health checks: one line per dependency ---------------------------- */

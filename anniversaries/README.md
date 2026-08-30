@@ -28,11 +28,11 @@ anniversaries/
 ├─ config.example.php     Copy to data/anniversary_config.php (or use the page)
 ├─ lib/anniv_lib.php      Date matching, years of service, message building
 ├─ systemd/               Daily timer units
-└─ tests/                 215 assertions — run anywhere, no database needed
+└─ tests/                 225 assertions — run anywhere, no database needed
 ```
 
-It also puts today's anniversaries on the **Command Center** — see
-[On the dashboard](#on-the-dashboard) below.
+It also puts today's anniversaries — alongside today's birthdays — on the
+**Command Center**; see [On the dashboard](#on-the-dashboard) below.
 
 ---
 
@@ -153,36 +153,46 @@ a different thing from an anniversary.
 
 ## On the dashboard
 
-Today's anniversaries also appear as a strip of chips under the Command Center
-header — one chip per person with their years of service, milestone years
-ringed and starred, the whole strip linking through to this page.
+Today's anniversaries appear as a strip under the Command Center header,
+sharing the row with today's **birthdays**: one group per kind, one chip per
+person, each group linking to its own page. Anniversary chips carry the years
+of service, with milestone years ringed and starred.
 
-Four things about it are deliberate:
+Five things about it are deliberate:
 
-- **Nothing to say, nothing on screen.** On the ~300 days a year when nobody is
-  celebrating the strip is not rendered at all. It sits above the fold on the
-  page an operator watches while running the floor, so it has to earn its space
-  rather than reserve it with an empty state.
+- **Nothing to say, nothing on screen.** On the days when nobody is
+  celebrating the strip is not rendered at all, and each group disappears
+  independently. It sits above the fold on the page an operator watches while
+  running the floor, so it has to earn its space rather than reserve it with an
+  empty state.
 - **It never reports its own failures there.** If the POS roster can't be read,
-  the strip simply doesn't appear — an optional accessory must not put a red
+  the group simply doesn't appear — an optional accessory must not put a red
   banner on the floor's main screen. `--check`, or the check row on this page,
   is where that gets diagnosed.
-- **It is the same selection the bot posts** — same `min_years`, same milestone
-  mode, same opt-outs. A dashboard listing people Slack said nothing about
-  would only raise "why didn't the bot mention Dana?". Note the corollary: in
-  milestone-only mode, an ordinary third year appears in neither place.
+- **It is the same selection each bot posts** — same `min_years`, milestone
+  mode and opt-outs here; same leap-day rule and opt-outs for birthdays. A
+  dashboard listing people Slack said nothing about would only raise "why
+  didn't the bot mention Dana?". Note the corollary: in milestone-only mode, an
+  ordinary third year appears in neither place.
+- **A birthday chip carries a name and nothing else.** No age, no birth year,
+  not even a field for one in the payload — the same rule the birthday greeting
+  follows, and a dashboard anyone can walk past is a worse place to publish
+  either than a channel would be. Years of service are the opposite case: they
+  are the whole point of an anniversary, so only those chips carry a number.
 - **It does not cost a roster read per poll.** The dashboard refreshes every 30
-  seconds; `GET /api/anniversaries/today` sits on top of a 5000-row MSSQL query,
-  so the browser asks at most every ten minutes and the server memoises the
-  answer on top of that (`data/anniversary_today.json`, 30 minutes for a good
-  answer, 10 for a failure — a cached failure is the point, or an unreachable
-  database would be retried by every open dashboard on every poll). The cache
+  seconds; both `today` endpoints sit on top of a 5000-row MSSQL query, so the
+  browser asks at most every ten minutes and the server memoises the answers on
+  top of that (`lib/today_cache.php`, shared with the birthday bot — 30 minutes
+  for a good answer, 10 for a failure). A cached failure is the point, not an
+  oversight: without it an unreachable database is retried by every open
+  dashboard on every poll, each one waiting out the connect timeout. Each entry
   carries a signature of every setting that decides who counts, so editing the
   roster query or the milestone rules shows up immediately instead of at the
   end of a TTL.
 
-Visibility follows `view_anniversaries`: a role without it never sees the strip
-and the browser never makes the call.
+Visibility follows `view_anniversaries` and `view_birthdays` independently: a
+role holding one key sees only that group, and one holding neither never makes
+the call.
 
 ---
 
@@ -267,7 +277,7 @@ Two keys, both granted once by a migration to every role that already holds
 
 ```bash
 php anniversaries/tests/test_anniv_lib.php     # 186 — the bot's own logic
-php anniversaries/tests/test_today_cache.php   # 29  — the dashboard chip's cache
+php anniversaries/tests/test_today_cache.php   # 39  — the dashboard strip's cache
 ```
 
 186 assertions, no database and no network — the date matching, the
@@ -279,7 +289,8 @@ one renders every built-in combination and fails if any placeholder is left
 unreplaced, and one fails if any flavour line would not stand alone after an
 arbitrary greeting.
 
-The second file covers the dashboard cache: that a failure is cached (and for
-less time than a success), that a backwards clock jump can't pin a stale entry
-forever, and that every setting deciding who counts changes the signature while
-a wording or Slack change does not.
+The second file covers `lib/today_cache.php`, which this bot and the birthday
+bot share: that a failure is cached (and for less time than a success), that a
+backwards clock jump can't pin a stale entry forever, and that every setting
+deciding who counts changes the signature — for BOTH bots — while a wording or
+Slack change does not.

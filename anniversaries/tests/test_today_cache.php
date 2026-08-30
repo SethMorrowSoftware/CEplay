@@ -1,6 +1,11 @@
 <?php
 /**
- * Unit tests for the Command Center chip's cache (api/anniversaries.php).
+ * Unit tests for the Command Center strip's cache.
+ *
+ * Covers lib/today_cache.php, which the BIRTHDAY bot and the anniversary bot
+ * share, plus the per-bot signature functions that key it. It lives here rather
+ * than in birthdays/tests/ because the anniversary side is where the strip was
+ * built; both bots depend on every assertion in it.
  *
  * The dashboard polls every 30 seconds and `GET /api/anniversaries/today` sits
  * on top of a 5000-row MSSQL query, so the memoisation in front of it is the
@@ -22,7 +27,9 @@
 
 $root = dirname(dirname(__DIR__));
 require_once $root . '/config.php';
+require_once $root . '/lib/today_cache.php';
 require_once $root . '/api/anniversaries.php';
+require_once $root . '/api/birthdays.php';
 
 $pass = 0;
 $fail = 0;
@@ -71,63 +78,63 @@ function age_cache(string $path, int $seconds): void
 // ---------------------------------------------------------------------------
 section('write / read round trip');
 
-is_eq('a missing file is a miss', annivTodayCacheRead($tmp, $today, 'sig1'), null);
+is_eq('a missing file is a miss', TodayCache::read($tmp, $today, 'sig1'), null);
 
-annivTodayCacheWrite($tmp, 'sig1', $goodPayload);
+TodayCache::write($tmp, 'sig1', $goodPayload);
 ok('the file was written', is_file($tmp));
 is_eq('...and is owner-only (it names employees)', fileperms($tmp) & 0777, 0600);
-is_eq('a fresh entry is a hit', annivTodayCacheRead($tmp, $today, 'sig1'), $goodPayload);
+is_eq('a fresh entry is a hit', TodayCache::read($tmp, $today, 'sig1'), $goodPayload);
 
 file_put_contents($tmp, 'not json at all');
-is_eq('a corrupt file is a miss, not a crash', annivTodayCacheRead($tmp, $today, 'sig1'), null);
+is_eq('a corrupt file is a miss, not a crash', TodayCache::read($tmp, $today, 'sig1'), null);
 file_put_contents($tmp, json_encode(['at' => time(), 'sig' => 'sig1']));
-is_eq('a file with no payload is a miss', annivTodayCacheRead($tmp, $today, 'sig1'), null);
+is_eq('a file with no payload is a miss', TodayCache::read($tmp, $today, 'sig1'), null);
 
 // ---------------------------------------------------------------------------
 section('invalidation');
 
-annivTodayCacheWrite($tmp, 'sig1', $goodPayload);
-is_eq('a different signature is a miss', annivTodayCacheRead($tmp, $today, 'sig2'), null);
-is_eq('a different day is a miss', annivTodayCacheRead($tmp, '2027-01-01', 'sig1'), null);
+TodayCache::write($tmp, 'sig1', $goodPayload);
+is_eq('a different signature is a miss', TodayCache::read($tmp, $today, 'sig2'), null);
+is_eq('a different day is a miss', TodayCache::read($tmp, '2027-01-01', 'sig1'), null);
 // Both of those are about a DIFFERENT question, so no TTL can rescue them —
 // they must miss however fresh the entry is.
 age_cache($tmp, 0);
 is_eq('...even when the entry was written this second',
-    annivTodayCacheRead($tmp, $today, 'sig2'), null);
+    TodayCache::read($tmp, $today, 'sig2'), null);
 
 // ---------------------------------------------------------------------------
 section('TTLs');
 
-annivTodayCacheWrite($tmp, 'sig1', $goodPayload);
-age_cache($tmp, ANNIV_TODAY_TTL_OK - 60);
-ok('a good answer stands inside its TTL', annivTodayCacheRead($tmp, $today, 'sig1') !== null);
-age_cache($tmp, ANNIV_TODAY_TTL_OK + 60);
-is_eq('...and expires after it', annivTodayCacheRead($tmp, $today, 'sig1'), null);
+TodayCache::write($tmp, 'sig1', $goodPayload);
+age_cache($tmp, TodayCache::TTL_OK - 60);
+ok('a good answer stands inside its TTL', TodayCache::read($tmp, $today, 'sig1') !== null);
+age_cache($tmp, TodayCache::TTL_OK + 60);
+is_eq('...and expires after it', TodayCache::read($tmp, $today, 'sig1'), null);
 
 // A cached FAILURE is the point of the whole design: without it an unreachable
 // database is retried by every dashboard on every poll, each waiting out the
 // connect timeout. It expires sooner than a good answer so a fixed connection
 // comes back quickly.
 ok('a failure is cached for less time than a success',
-    ANNIV_TODAY_TTL_FAIL < ANNIV_TODAY_TTL_OK);
-annivTodayCacheWrite($tmp, 'sig1', $failPayload);
-age_cache($tmp, ANNIV_TODAY_TTL_FAIL - 60);
-ok('a failure stands inside its shorter TTL', annivTodayCacheRead($tmp, $today, 'sig1') !== null);
-age_cache($tmp, ANNIV_TODAY_TTL_FAIL + 60);
-is_eq('...and expires after it', annivTodayCacheRead($tmp, $today, 'sig1'), null);
+    TodayCache::TTL_FAIL < TodayCache::TTL_OK);
+TodayCache::write($tmp, 'sig1', $failPayload);
+age_cache($tmp, TodayCache::TTL_FAIL - 60);
+ok('a failure stands inside its shorter TTL', TodayCache::read($tmp, $today, 'sig1') !== null);
+age_cache($tmp, TodayCache::TTL_FAIL + 60);
+is_eq('...and expires after it', TodayCache::read($tmp, $today, 'sig1'), null);
 // The good-answer TTL must not be applied to a failure — that would keep a
 // database outage on screen (as "nothing to show") for half an hour.
-annivTodayCacheWrite($tmp, 'sig1', $failPayload);
-age_cache($tmp, ANNIV_TODAY_TTL_OK - 60);
+TodayCache::write($tmp, 'sig1', $failPayload);
+age_cache($tmp, TodayCache::TTL_OK - 60);
 is_eq('a failure does NOT get the longer success TTL',
-    annivTodayCacheRead($tmp, $today, 'sig1'), null);
+    TodayCache::read($tmp, $today, 'sig1'), null);
 
 // A clock that jumped backwards would otherwise give a negative age, which is
 // "younger than the TTL" and would pin a stale entry indefinitely.
-annivTodayCacheWrite($tmp, 'sig1', $goodPayload);
+TodayCache::write($tmp, 'sig1', $goodPayload);
 age_cache($tmp, -3600);
 is_eq('a future timestamp is a miss, not an immortal entry',
-    annivTodayCacheRead($tmp, $today, 'sig1'), null);
+    TodayCache::read($tmp, $today, 'sig1'), null);
 
 @unlink($tmp);
 
@@ -174,6 +181,42 @@ is_eq('a wording or Slack change leaves it alone', annivTodaySignature($irreleva
 is_eq('the milestone list is normalised, not hashed raw',
     annivTodaySignature(array_merge($base, ['milestone_years' => ['10', '5', '5']])),
     annivTodaySignature(array_merge($base, ['milestone_years' => [5, 10]])));
+
+// ---------------------------------------------------------------------------
+section('bdayTodaySignature');
+
+$bbase = [
+    'roster_sql' => 'SELECT 1', 'leap_day_mode' => 'feb28', 'name_style' => 'full',
+    'exclude_emp_nos' => [], 'exclude_names' => [], 'ignore_birth_dates' => [],
+    'timezone' => 'America/New_York',
+];
+$bsig = bdayTodaySignature($bbase);
+is_eq('stable for identical settings', bdayTodaySignature($bbase), $bsig);
+
+$bchanges = [
+    'roster_sql'         => 'SELECT 2',
+    'leap_day_mode'      => 'mar1',
+    'name_style'         => 'first',
+    'exclude_emp_nos'    => ['101'],
+    'exclude_names'      => ['Alex Rivera'],
+    'ignore_birth_dates' => ['1900-01-01'],
+    'timezone'           => 'UTC',
+];
+foreach ($bchanges as $key => $value) {
+    $changed = $bbase;
+    $changed[$key] = $value;
+    ok("changing {$key} changes the signature", bdayTodaySignature($changed) !== $bsig);
+}
+is_eq('a wording or Slack change leaves it alone',
+    bdayTodaySignature(array_merge($bbase, ['slack_channel' => '#somewhere',
+        'greetings' => ['hi {names}'], 'add_reactions' => true])), $bsig);
+
+// The two bots key the SAME shared cache class, so their signatures must not
+// collide on identical-looking settings — they write different files, but a
+// collision would still mean each bot's cache silently answering for the other
+// if a path were ever misconfigured.
+ok('the two bots do not produce the same signature from the same settings',
+    annivTodaySignature($bbase) !== bdayTodaySignature($bbase));
 
 // ---------------------------------------------------------------------------
 echo "\n" . str_repeat('-', 50) . "\n";

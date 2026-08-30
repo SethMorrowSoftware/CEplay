@@ -76,6 +76,7 @@
 @import url("pages/anniversaries.css");
 
 /* --- Cross-cutting components (must come after pages) ------- */
+@import url("components/celebrate-strip.css");
 @import url("components/clickable.css");
 @import url("components/deep-link.css");
 @import url("components/polish-controls.css");

@@ -241,6 +241,10 @@ SQL;
         $cfg['log_file']       = $root . '/data/birthdays.log';
         $cfg['heartbeat_file'] = $root . '/data/.heartbeat_birthdays';
         $cfg['lock_file']      = $root . '/data/birthday.lock';
+        // Today's celebrants, memoised for the Command Center strip. Named here
+        // for the same reason as the four above — and see bdayApiToday() for
+        // why the dashboard must never read the roster directly.
+        $cfg['today_cache_file'] = $root . '/data/birthday_today.json';
 
         if (!is_string($cfg['roster_sql']) || trim($cfg['roster_sql']) === '') {
             $cfg['roster_sql'] = self::DEFAULT_ROSTER_SQL;

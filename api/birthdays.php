@@ -14,6 +14,7 @@
 require_once __DIR__ . '/../lib/birthday_config.php';
 require_once __DIR__ . '/../lib/mssql_client.php';
 require_once __DIR__ . '/../lib/validator.php';
+require_once __DIR__ . '/../lib/today_cache.php';
 require_once __DIR__ . '/../birthdays/lib/birthday_lib.php';
 require_once __DIR__ . '/../birthdays/lib/slack_client.php';
 require_once __DIR__ . '/../birthdays/lib/gif_source.php';
@@ -33,6 +34,11 @@ function handleBirthdays(string $method, array $parts, ?array $input): void
     Auth::requireAccess('view_birthdays');
     $action = $parts[0] ?? '';
 
+    if ($action === 'today') {
+        if ($method !== 'GET') { bdayApi405(); return; }
+        bdayApiToday();
+        return;
+    }
     if ($action === 'upcoming') {
         if ($method !== 'GET') { bdayApi405(); return; }
         bdayApiUpcoming();
@@ -301,6 +307,99 @@ function bdayApiUpcoming(): void
         'today_preview' => $preview,
         'days'         => $days,
     ]);
+}
+
+// ---------------------------------------------------------------------------
+// Today's celebrants, for the Command Center strip
+//
+// The dashboard polls every 30 seconds and is the busiest page in the app, so
+// this endpoint must NEVER cost a roster read per request: that is a 5000-row
+// MSSQL query behind a 30-second timeout. The memoisation in front of it lives
+// in lib/today_cache.php and is shared with the anniversary bot — see that file
+// for why failures are cached too, and why the entry is keyed by a signature
+// rather than a clock alone.
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything that decides WHO shows up today.
+ *
+ * Any change to one of these has to invalidate the cache, so they are hashed
+ * rather than listed: adding a new setting here is the only thing needed to
+ * keep the strip honest.
+ */
+function bdayTodaySignature(array $cfg): string
+{
+    return substr(hash('sha256', json_encode([
+        (string)($cfg['roster_sql'] ?? ''),
+        (string)($cfg['leap_day_mode'] ?? ''),
+        (string)($cfg['name_style'] ?? ''),
+        (array)($cfg['exclude_emp_nos'] ?? []),
+        (array)($cfg['exclude_names'] ?? []),
+        (array)($cfg['ignore_birth_dates'] ?? []),
+        (string)($cfg['timezone'] ?? ''),
+    ])), 0, 16);
+}
+
+/**
+ * Whose birthday is today — a small, cacheable payload for the dashboard.
+ *
+ * NAMES ONLY. No age, no birth year, not even a field for one: about a fifth of
+ * this roster are minors, the greeting itself is forbidden from carrying either
+ * (see birthdays/lib/birthday_lib.php), and a dashboard on a screen anyone can
+ * walk past is a worse place to publish them than a channel would be.
+ *
+ * Deliberately the SAME selection the bot posts — same leap-day rule, same
+ * opt-outs — so nobody has to wonder why Slack stayed quiet about a name
+ * listed here.
+ *
+ * `available` false means the roster could not be read (no driver, not
+ * configured, query broken). The dashboard renders nothing at all in that case;
+ * the Birthdays page is where that gets diagnosed.
+ */
+function bdayApiToday(): void
+{
+    $cfg = BirthdayConfig::load(bdayConfigFile());
+    $tz = trim((string)($cfg['timezone'] ?? '')) ?: (defined('DEFAULT_TIMEZONE') ? DEFAULT_TIMEZONE : 'UTC');
+    $prev = date_default_timezone_get();
+    @date_default_timezone_set($tz);
+    $today = date('Y-m-d');
+
+    $path = (string)($cfg['today_cache_file'] ?? '');
+    $sig  = bdayTodaySignature($cfg);
+    $cached = empty($_GET['refresh']) ? TodayCache::read($path, $today, $sig) : null;
+    if ($cached !== null) {
+        @date_default_timezone_set($prev);
+        $cached['cached'] = true;
+        echo json_encode($cached);
+        return;
+    }
+
+    $out = [
+        'date'       => $today,
+        'timezone'   => $tz,
+        'available'  => true,
+        'reason'     => '',
+        'people'     => [],
+        'count'      => 0,
+        'checked_at' => date('c'),
+    ];
+    try {
+        $norm = bdayApiRoster($cfg);
+        $style = (string)($cfg['name_style'] ?? 'full');
+        $leap  = (string)($cfg['leap_day_mode'] ?? 'feb28');
+        foreach (bdayCelebrants($norm['people'], $today, $leap) as $p) {
+            $out['people'][] = ['name' => bdayDisplayName($p, $style)];
+        }
+        $out['count'] = count($out['people']);
+    } catch (Exception $e) {
+        $out['available'] = false;
+        $out['reason'] = $e->getMessage();
+    }
+
+    TodayCache::write($path, $sig, $out);
+    @date_default_timezone_set($prev);
+    $out['cached'] = false;
+    echo json_encode($out);
 }
 
 /**
