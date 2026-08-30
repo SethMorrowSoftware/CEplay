@@ -283,50 +283,52 @@ function analyticsOverview(bool $hideMoney = false): void {
     ));
 
     // ---- Time-bucketed series (hour-of-day, day-of-week, daily) ----
-    // We pull just the columns we need for binning so memory stays sane.
+    // We pull just the columns we need for binning, and STREAM them (DB::each):
+    // the output is 24 + 7 + one-per-day buckets, but the read behind it is
+    // every play in the window. Narrowing the column list was not enough on its
+    // own once daily volume grew — see DB::each().
     // The optimizer uses idx_gpt_time on transaction_time DESC.
-    $bucketRows = DB::query(
-        'SELECT transaction_time, redemption_tickets,
-                (cash_amount + credit_card_amount) AS cash_amount
-         FROM game_play_transactions
-         WHERE transaction_time >= :p0 AND transaction_time < :p1' . $noTimeSql,
-        [$startIsoUtc, $endIsoUtc]
-    );
-
     $hourBuckets = array_fill(0, 24, ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0]);
     $dowBuckets  = array_fill(0, 7,  ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0]);
     $dailyByKey  = [];
 
-    foreach ($bucketRows as $row) {
-        $tt = $row['transaction_time'] ?? '';
-        if ($tt === '') continue;
-        try {
-            $d = new DateTime($tt);
-        } catch (Exception $e) {
-            continue;
+    DB::each(
+        'SELECT transaction_time, redemption_tickets,
+                (cash_amount + credit_card_amount) AS cash_amount
+         FROM game_play_transactions
+         WHERE transaction_time >= :p0 AND transaction_time < :p1' . $noTimeSql,
+        [$startIsoUtc, $endIsoUtc],
+        function (array $row) use (&$hourBuckets, &$dowBuckets, &$dailyByKey, $tz): void {
+            $tt = $row['transaction_time'] ?? '';
+            if ($tt === '') return;
+            try {
+                $d = new DateTime($tt);
+            } catch (Exception $e) {
+                return;
+            }
+            $d->setTimezone($tz);
+            $h = (int)$d->format('G');
+            $dow = (int)$d->format('w');
+            $key = $d->format('Y-m-d');
+            $tickets = (float)($row['redemption_tickets'] ?? 0);
+            $cash    = (float)($row['cash_amount'] ?? 0);
+
+            $hourBuckets[$h]['plays']   += 1;
+            $hourBuckets[$h]['tickets'] += $tickets;
+            $hourBuckets[$h]['cash']    += $cash;
+
+            $dowBuckets[$dow]['plays']   += 1;
+            $dowBuckets[$dow]['tickets'] += $tickets;
+            $dowBuckets[$dow]['cash']    += $cash;
+
+            if (!isset($dailyByKey[$key])) {
+                $dailyByKey[$key] = ['date' => $key, 'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0];
+            }
+            $dailyByKey[$key]['plays']   += 1;
+            $dailyByKey[$key]['tickets'] += $tickets;
+            $dailyByKey[$key]['cash']    += $cash;
         }
-        $d->setTimezone($tz);
-        $h = (int)$d->format('G');
-        $dow = (int)$d->format('w');
-        $key = $d->format('Y-m-d');
-        $tickets = (float)($row['redemption_tickets'] ?? 0);
-        $cash    = (float)($row['cash_amount'] ?? 0);
-
-        $hourBuckets[$h]['plays']   += 1;
-        $hourBuckets[$h]['tickets'] += $tickets;
-        $hourBuckets[$h]['cash']    += $cash;
-
-        $dowBuckets[$dow]['plays']   += 1;
-        $dowBuckets[$dow]['tickets'] += $tickets;
-        $dowBuckets[$dow]['cash']    += $cash;
-
-        if (!isset($dailyByKey[$key])) {
-            $dailyByKey[$key] = ['date' => $key, 'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0];
-        }
-        $dailyByKey[$key]['plays']   += 1;
-        $dailyByKey[$key]['tickets'] += $tickets;
-        $dailyByKey[$key]['cash']    += $cash;
-    }
+    );
 
     // Fill date gaps for the daily series so the trend line doesn't lie.
     $daily = analyticsFillDailyGaps($dailyByKey, $startLocal, $endLocal, $tz);
@@ -976,35 +978,39 @@ function analyticsGuests(string $startIso, string $endIso, DateTimeZone $tz, Dat
 
     // Per-card facts within the window: distinct active days (visits),
     // earliest active day (new/returning fallback), and carded spend.
-    $rows = DB::query(
+    // STREAMED (DB::each): $cards is bounded by distinct cards, but the read
+    // behind it is every play in the window — a month of this venue's feed
+    // outgrew the container's 128M limit, and blowing that is a fatal, so the
+    // page died with no JSON body at all. Same trap the card_activity read
+    // below already had to be rescued from.
+    $cards = [];        // card => ['days' => set, 'earliest' => date, 'spend' => float]
+    DB::each(
         'SELECT card_number, transaction_time,
                 (cash_amount + credit_card_amount) AS spend
          FROM game_play_transactions
          WHERE transaction_time >= :p0 AND transaction_time < :p1
            AND card_number != \'\' AND card_number != \'000000\''
             . ($excludeTimePlays ? ' AND used_time_play = 0' : ''),
-        [$startIso, $endIso]
+        [$startIso, $endIso],
+        function (array $r) use (&$cards, $tz): void {
+            $tt = (string)($r['transaction_time'] ?? '');
+            if ($tt === '') return;
+            try {
+                $d = new DateTime($tt);
+            } catch (Exception $e) {
+                return;
+            }
+            $d->setTimezone($tz);
+            $date = $d->format('Y-m-d');
+            $card = (string)$r['card_number'];
+            if (!isset($cards[$card])) {
+                $cards[$card] = ['days' => [], 'earliest' => $date, 'spend' => 0.0];
+            }
+            $cards[$card]['days'][$date] = true;
+            if ($date < $cards[$card]['earliest']) $cards[$card]['earliest'] = $date;
+            $cards[$card]['spend'] += (float)($r['spend'] ?? 0);
+        }
     );
-
-    $cards = [];        // card => ['days' => set, 'earliest' => date, 'spend' => float]
-    foreach ($rows as $r) {
-        $tt = (string)($r['transaction_time'] ?? '');
-        if ($tt === '') continue;
-        try {
-            $d = new DateTime($tt);
-        } catch (Exception $e) {
-            continue;
-        }
-        $d->setTimezone($tz);
-        $date = $d->format('Y-m-d');
-        $card = (string)$r['card_number'];
-        if (!isset($cards[$card])) {
-            $cards[$card] = ['days' => [], 'earliest' => $date, 'spend' => 0.0];
-        }
-        $cards[$card]['days'][$date] = true;
-        if ($date < $cards[$card]['earliest']) $cards[$card]['earliest'] = $date;
-        $cards[$card]['spend'] += (float)($r['spend'] ?? 0);
-    }
 
     $totalGuests = count($cards);
 
@@ -1561,13 +1567,43 @@ function perfRangeMeta(array $win, string $tzName): array {
 }
 
 /**
+ * Chunked `game_id IN (...)` fragments for a member filter, as [sql, params]
+ * pairs to append to a query whose own bindings start at :p{count($chunk)}.
+ * One pair per chunk; an empty/absent filter yields a single unfiltered pair.
+ *
+ * @param ?array<string,mixed> $onlyGames game_id => anything, or null for all
+ * @return array<int,array{0:string,1:array}> [clause, leading params]
+ */
+function perfGameFilterChunks(?array $onlyGames): array {
+    if ($onlyGames === null || !$onlyGames) return [['', []]];
+    $out = [];
+    foreach (array_chunk(array_keys($onlyGames), 400) as $chunk) {
+        $ph = [];
+        $params = [];
+        foreach ($chunk as $i => $gid) { $ph[] = ':p' . $i; $params[] = (string)$gid; }
+        $out[] = ['game_id IN (' . implode(',', $ph) . ') AND ', $params];
+    }
+    return $out;
+}
+
+/**
  * Per-game daily totals read from the RAW feed for [$fromDate, $toDate]
  * (inclusive local dates), bucketed by local calendar date in PHP so day
  * boundaries are correct regardless of the timestamp's "Z"/offset format.
  * Returns ['byDate' => [date => [gid => totals]], 'names' => [gid => name]].
+ *
+ * Rows are STREAMED (DB::each) rather than fetched into an array: the output is
+ * a few hundred day/game buckets, but a month of this venue's feed is ~150k
+ * rows and materializing it costs well over the container's 128M limit. See
+ * DB::each().
+ *
+ * $onlyGames narrows the read to a set of game_ids IN SQL (chunked IN-lists),
+ * for a caller that only reports on one area — otherwise a request about eight
+ * go-kart readers decodes a timestamp for every swipe in the building.
  */
-function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz): array {
+function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz, ?array $onlyGames = null): array {
     if ($fromDate > $toDate) return ['byDate' => [], 'names' => []];
+    if ($onlyGames !== null && !$onlyGames) return ['byDate' => [], 'names' => []];
     $utc = new DateTimeZone('UTC');
     $start   = DateTime::createFromFormat('!Y-m-d', $fromDate, $tz);
     $endExcl = DateTime::createFromFormat('!Y-m-d', $toDate, $tz)->modify('+1 day');
@@ -1576,30 +1612,21 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
     $lo = (clone $start)->setTimezone($utc)->modify('-1 day')->format('Y-m-d\TH:i:s\Z');
     $hi = (clone $endExcl)->setTimezone($utc)->modify('+1 day')->format('Y-m-d\TH:i:s\Z');
 
-    $rows = DB::query(
-        'SELECT transaction_time, game_id, game_description, card_number,
-                redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
-                regular_points, bonus_points, used_time_play
-         FROM game_play_transactions
-         WHERE transaction_time >= :p0 AND transaction_time < :p1',
-        [$lo, $hi]
-    );
-
     $byDate = [];
     $names = [];
-    foreach ($rows as $r) {
+    $accumulate = function (array $r) use (&$byDate, &$names, $tz, $fromDate, $toDate): void {
         $tt = $r['transaction_time'] ?? '';
-        if ($tt === '') continue;
+        if ($tt === '') return;
         try {
             $d = new DateTime($tt);
         } catch (Exception $e) {
-            continue;
+            return;
         }
         $d->setTimezone($tz);
         $date = $d->format('Y-m-d');
-        if ($date < $fromDate || $date > $toDate) continue;
+        if ($date < $fromDate || $date > $toDate) return;
         $gid = (string)($r['game_id'] ?? '');
-        if ($gid === '') continue;
+        if ($gid === '') return;
 
         if (!isset($byDate[$date][$gid])) {
             $byDate[$date][$gid] = ['plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'regular_points' => 0.0, 'bonus_points' => 0.0, 'time_plays' => 0];
@@ -1613,22 +1640,36 @@ function perfRawDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz)
 
         $desc = trim((string)($r['game_description'] ?? ''));
         if ($desc !== '') $names[$gid] = $desc;
+    };
+
+    foreach (perfGameFilterChunks($onlyGames) as [$clause, $params]) {
+        $n = count($params);
+        $params[] = $lo;
+        $params[] = $hi;
+        DB::each(
+            'SELECT transaction_time, game_id, game_description,
+                    redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
+                    regular_points, bonus_points, used_time_play
+             FROM game_play_transactions
+             WHERE ' . $clause . 'transaction_time >= :p' . $n . ' AND transaction_time < :p' . ($n + 1),
+            $params,
+            $accumulate
+        );
     }
     return ['byDate' => $byDate, 'names' => $names];
 }
 
-/** Per-game daily totals read from the permanent rollup for [$fromDate,$toDate]. */
-function perfRollupDailyPerGame(string $fromDate, string $toDate): array {
+/**
+ * Per-game daily totals read from the permanent rollup for [$fromDate,$toDate].
+ * Streamed and optionally game-filtered for the same reasons as the raw reader
+ * above — a Year view spans ~365 days × every game the venue has ever run.
+ */
+function perfRollupDailyPerGame(string $fromDate, string $toDate, ?array $onlyGames = null): array {
     if ($fromDate > $toDate) return ['byDate' => [], 'names' => []];
-    $rows = DB::query(
-        'SELECT stat_date, game_id, game_name, plays, tickets, cash, regular_points, bonus_points, time_plays
-         FROM game_daily_stats
-         WHERE stat_date >= :p0 AND stat_date <= :p1',
-        [$fromDate, $toDate]
-    );
+    if ($onlyGames !== null && !$onlyGames) return ['byDate' => [], 'names' => []];
     $byDate = [];
     $names = [];
-    foreach ($rows as $r) {
+    $accumulate = function (array $r) use (&$byDate, &$names): void {
         $date = (string)$r['stat_date'];
         $gid  = (string)$r['game_id'];
         $byDate[$date][$gid] = [
@@ -1641,6 +1682,19 @@ function perfRollupDailyPerGame(string $fromDate, string $toDate): array {
         ];
         $nm = trim((string)$r['game_name']);
         if ($nm !== '') $names[$gid] = $nm;
+    };
+
+    foreach (perfGameFilterChunks($onlyGames) as [$clause, $params]) {
+        $n = count($params);
+        $params[] = $fromDate;
+        $params[] = $toDate;
+        DB::each(
+            'SELECT stat_date, game_id, game_name, plays, tickets, cash, regular_points, bonus_points, time_plays
+             FROM game_daily_stats
+             WHERE ' . $clause . 'stat_date >= :p' . $n . ' AND stat_date <= :p' . ($n + 1),
+            $params,
+            $accumulate
+        );
     }
     return ['byDate' => $byDate, 'names' => $names];
 }
@@ -1649,8 +1703,12 @@ function perfRollupDailyPerGame(string $fromDate, string $toDate): array {
  * Combined per-game daily totals for [$fromDate,$toDate], stitching the rollup
  * (older days) and the raw feed (recent days) at a split point safely inside
  * raw retention. toDate is clamped to today (no future data).
+ *
+ * $onlyGames (game_id => anything) narrows both sides to that set in SQL, for a
+ * caller reporting on one area rather than the whole venue. Null = every game,
+ * which is what the venue-wide Analytics/Performance endpoints want.
  */
-function perfDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz): array {
+function perfDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz, ?array $onlyGames = null): array {
     $today = (new DateTime('now', $tz))->format('Y-m-d');
     if ($toDate > $today) $toDate = $today;
     if ($fromDate > $toDate) return ['byDate' => [], 'names' => []];
@@ -1666,14 +1724,14 @@ function perfDailyPerGame(string $fromDate, string $toDate, DateTimeZone $tz): a
 
     $rollupTo = ($toDate < $rawBefore) ? $toDate : $rawBefore;
     if ($fromDate <= $rollupTo) {
-        $r = perfRollupDailyPerGame($fromDate, $rollupTo);
+        $r = perfRollupDailyPerGame($fromDate, $rollupTo, $onlyGames);
         foreach ($r['byDate'] as $date => $games) $byDate[$date] = $games;
         $names += $r['names'];
     }
 
     $rawFrom = ($fromDate > $rawCoverStart) ? $fromDate : $rawCoverStart;
     if ($rawFrom <= $toDate) {
-        $r = perfRawDailyPerGame($rawFrom, $toDate, $tz);
+        $r = perfRawDailyPerGame($rawFrom, $toDate, $tz, $onlyGames);
         foreach ($r['byDate'] as $date => $games) $byDate[$date] = $games;
         $names = $r['names'] + $names;
     }
@@ -2237,26 +2295,26 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
             $n = count($chunk);
             $params[] = $fromDate;
             $params[] = $rollupTo;
-            foreach (DB::query(
+            DB::each(
                 'SELECT stat_date, hour, game_id, plays, tickets, cash, time_plays
                  FROM game_hourly_stats
                  WHERE game_id IN (' . implode(',', $ph) . ')
                    AND stat_date >= :p' . $n . ' AND stat_date <= :p' . ($n + 1),
-                $params
-            ) as $r) {
-                $gid = (string)$r['game_id'];
-                $plays = (int)$r['plays'];
-                $timePlays = (int)$r['time_plays'];
-                $rows[] = [
-                    'date'       => (string)$r['stat_date'],
-                    'hour'       => (int)$r['hour'],
-                    'game_id'    => $gid,
-                    'plays'      => $excludeTimePlays ? max(0, $plays - $timePlays) : $plays,
-                    'tickets'    => (float)$r['tickets'],
-                    'cash'       => (float)$r['cash'],
-                    'time_plays' => $timePlays,
-                ];
-            }
+                $params,
+                function (array $r) use (&$rows, $excludeTimePlays): void {
+                    $plays = (int)$r['plays'];
+                    $timePlays = (int)$r['time_plays'];
+                    $rows[] = [
+                        'date'       => (string)$r['stat_date'],
+                        'hour'       => (int)$r['hour'],
+                        'game_id'    => (string)$r['game_id'],
+                        'plays'      => $excludeTimePlays ? max(0, $plays - $timePlays) : $plays,
+                        'tickets'    => (float)$r['tickets'],
+                        'cash'       => (float)$r['cash'],
+                        'time_plays' => $timePlays,
+                    ];
+                }
+            );
         }
     }
 
@@ -2278,40 +2336,41 @@ function readerHourlyRows(string $fromDate, string $toDate, DateTimeZone $tz, ar
             $n = count($chunk);
             $params[] = $lo;
             $params[] = $hi;
-            foreach (DB::query(
+            DB::each(
                 'SELECT transaction_time, game_id, redemption_tickets,
                         (cash_amount + credit_card_amount) AS cash_amount, used_time_play
                  FROM game_play_transactions
                  WHERE game_id IN (' . implode(',', $ph) . ')
                    AND transaction_time >= :p' . $n . ' AND transaction_time < :p' . ($n + 1),
-                $params
-            ) as $r) {
-                $gid = (string)($r['game_id'] ?? '');
-                if ($gid === '') continue;
-                $tt = $r['transaction_time'] ?? '';
-                if ($tt === '') continue;
-                try {
-                    $d = new DateTime($tt);
-                } catch (Exception $e) {
-                    continue;
+                $params,
+                function (array $r) use (&$agg, $tz, $rawFrom, $toDate, $excludeTimePlays): void {
+                    $gid = (string)($r['game_id'] ?? '');
+                    if ($gid === '') return;
+                    $tt = $r['transaction_time'] ?? '';
+                    if ($tt === '') return;
+                    try {
+                        $d = new DateTime($tt);
+                    } catch (Exception $e) {
+                        return;
+                    }
+                    $d->setTimezone($tz);
+                    $date = $d->format('Y-m-d');
+                    if ($date < $rawFrom || $date > $toDate) return;
+                    $hour = (int)$d->format('G');
+                    $k = $date . "\0" . $hour . "\0" . $gid;
+                    if (!isset($agg[$k])) {
+                        $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
+                                    'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
+                    }
+                    $isTimePlay = ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
+                    if (!($excludeTimePlays && $isTimePlay)) {
+                        $agg[$k]['plays'] += 1;
+                    }
+                    $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
+                    $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
+                    $agg[$k]['time_plays'] += $isTimePlay;
                 }
-                $d->setTimezone($tz);
-                $date = $d->format('Y-m-d');
-                if ($date < $rawFrom || $date > $toDate) continue;
-                $hour = (int)$d->format('G');
-                $k = $date . "\0" . $hour . "\0" . $gid;
-                if (!isset($agg[$k])) {
-                    $agg[$k] = ['date' => $date, 'hour' => $hour, 'game_id' => $gid,
-                                'plays' => 0, 'tickets' => 0.0, 'cash' => 0.0, 'time_plays' => 0];
-                }
-                $isTimePlay = ((int)($r['used_time_play'] ?? 0)) ? 1 : 0;
-                if (!($excludeTimePlays && $isTimePlay)) {
-                    $agg[$k]['plays'] += 1;
-                }
-                $agg[$k]['tickets']    += (float)($r['redemption_tickets'] ?? 0);
-                $agg[$k]['cash']       += (float)($r['cash_amount'] ?? 0);
-                $agg[$k]['time_plays'] += $isTimePlay;
-            }
+            );
         }
         foreach ($agg as $a) $rows[] = $a;
     }

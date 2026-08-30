@@ -46,6 +46,32 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
 - Parameterized queries use positional `:p0, :p1, ...` placeholders
 - Schema auto-initializes on first DB access (CREATE TABLE IF NOT EXISTS)
 - Migrations via ALTER TABLE in try/catch for backward compat
+- **`DB::each()` — stream a read you are AGGREGATING; `DB::query()` only when
+  the caller really needs the rows.** `query()` materializes every row first, at
+  ~900 bytes of PHP array per row, and the app runs on the stock `php:8.3-fpm`
+  **128M `memory_limit`** (nothing in `deploy/` raises it). Blowing that is a
+  FATAL, not an exception: `index.php`'s handler never runs, the response
+  carries NO JSON body, and `public/js/api.js` can only report
+  **"Request failed (HTTP 500)"** — a bare 500 with no message anywhere in the
+  UI is the signature of this bug, not of a caught error.
+  **MEASURED Aug 2026:** the Go-Kart Labor page 500'd on Month and Year while
+  Day and Week worked, because `laborRideStats()` asked `perfDailyPerGame()`
+  for EVERY game to count eight kart readers, and that pulls the raw play feed
+  (`game_play_transactions`) into one array. Day/Week overlap only a few days
+  of the 28-day raw window; Month/Year overlap all of it. At ~2,600 plays/day
+  it peaked at 70-86MB and survived; the threshold is ~4,000 plays/day, and a
+  venue summer crossed it. `analyticsGamesLeaderboard`, `analyticsReaderGroupDetail`
+  and `analyticsOverview` were the same read away from the same death and are
+  fixed too (measured at 12,000 plays/day: 304-338MB → 6-44MB, output
+  byte-identical across 30 endpoint/range combinations).
+  Two rules follow, and the second is the one that actually saves you:
+  **stream anything reduced on the spot**, and **filter to the games you
+  report on** — `perfDailyPerGame()`/`perfRawDailyPerGame()`/
+  `perfRollupDailyPerGame()` take an optional `$onlyGames` set (chunked
+  `IN`-lists via `perfGameFilterChunks()`, `idx_gpt_game_time` covers it), the
+  same shape `readerHourlyRows()` already used. An empty set means NO games,
+  never all of them. A row-count guard is not a substitute: the read that kills
+  you is the one whose OUTPUT is small.
 
 ### Reporting & Analytics
 - **ACTUALS ONLY — no projections, no averaged baselines.** A standing product
@@ -269,6 +295,14 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   view_revenue (nav key view_revenue); config gate: settings. The
   sandbox/test env has no MSSQL driver — the live connection test happens
   on the venue server via the page's Test connection button.
+  **The swipe COUNTS are the one part of this page that is NOT MSSQL** — they
+  come from the app's own feed via `laborRideStats()`, and that is where the
+  Aug 2026 Month/Year `HTTP 500` lived: it read every game in the building to
+  count eight karts. It now passes its member set to `perfDailyPerGame()`. Do
+  not drop that argument; see the `DB::each()` entry under **Database**. A bare
+  500 with no error text on this page is a PHP fatal (memory), never the MSSQL
+  layer — every MSSQL failure here is caught and reported as `{error}` at
+  HTTP 200 on the panel itself.
 - Card Loads (`#/cardloads`, `/api/cardloads/*`, `api/cardloads.php`) reports
   the money guests ADD to their cards, by Day/Week/Month/Year/Custom (same
   `perfResolveWindow` window model as Performance/Labor), plus a money-loaded-

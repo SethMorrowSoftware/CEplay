@@ -210,7 +210,11 @@ function laborRideStats(array $dates, int $groupId): array {
     $memberSet = array_flip($members);
     sort($dates);
     list($tz) = perfTimezone();
-    $daily = perfDailyPerGame($dates[0], $dates[count($dates) - 1], $tz);
+    // Narrow the read to THIS AREA's readers. Asking for every game pulled the
+    // whole venue's raw feed into memory for the sake of a handful of karts —
+    // fine over a Day or a Week, fatal (128M PHP limit, no JSON body, bare
+    // HTTP 500) over a Month or a Year once the feed grew.
+    $daily = perfDailyPerGame($dates[0], $dates[count($dates) - 1], $tz, $memberSet);
     foreach ($dates as $d) {
         $rides = 0; $pass = 0;
         foreach (($daily['byDate'][$d] ?? []) as $gid => $b) {
