@@ -313,6 +313,35 @@ staff are minors. The message gets the name and nothing more.
   which day. `--force` overrides. A partial failure only records the messages
   that actually went out, so the rest are retried next run.
 
+## On the dashboard
+
+Today's birthdays also appear as a strip of chips under the Command Center
+header, sharing the row with today's **work anniversaries** (`anniversaries/`)
+— one group per kind, each linking to its own page.
+
+The same rule as the message applies, and it is enforced in the payload rather
+than the styling: **a birthday chip carries a name and nothing else.** No age,
+no birth year, not even a field for one in `GET /api/birthdays/today`. A screen
+anyone can walk past is a worse place to publish either than a channel would be.
+
+Three other things about it:
+
+- It renders **nothing at all** on the days nobody has a birthday — no empty
+  state above the fold.
+- It **never reports its own failures there.** If the roster can't be read the
+  group simply doesn't appear; the Birthdays page is where that gets diagnosed.
+  An optional accessory must not put a red banner on the floor's main screen.
+- It **does not cost a roster read per poll.** The dashboard refreshes every 30
+  seconds and this endpoint sits on the same 5000-row query the bot uses, so
+  the browser asks at most every ten minutes and the server memoises on top of
+  that (`lib/today_cache.php`, shared with the anniversary bot). Failures are
+  cached too — otherwise an unreachable database gets retried by every open
+  dashboard on every poll.
+
+It shows the same people the bot greets (same leap-day rule, same opt-outs), so
+nobody has to wonder why Slack stayed quiet about a name listed there.
+Visibility follows `view_birthdays`.
+
 ## What this venue's database says
 
 Confirmed August 2026, and verified end to end against the live roster:

@@ -33,6 +33,13 @@
     var hourlyToday = null;  // Server 24-bin hourly plays/tickets for today (accurate peak hour)
     var hourlyRecent = null; // Server 12-bin last-12-clock-hours (accurate hero sparkline)
     var lastActiveOverrides = []; // Last-seen active overrides — lets optimistic re-renders refresh the insight row
+    // Today's birthdays and work anniversaries, for the celebration strip under
+    // the header. Fetched on its own slow cadence rather than with the 30s
+    // poll — the roster changes once a day at most, and both endpoints behind
+    // it read the POS database. See loadCelebrations().
+    var CELEBRATE_REFRESH_MS = 600000;   // 10 minutes
+    var celebrations = { birthdays: null, anniversaries: null };
+    var celebrationsFetchedAt = 0;
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -287,6 +294,12 @@
         // Security warnings banner (populated by loadDashboard)
         container.appendChild(App.el('div', { id: 'security-warnings' }));
 
+        // Today's birthdays and work anniversaries. Empty and INVISIBLE on the
+        // days when nobody is celebrating — it sits above the fold, so it has
+        // to earn its space rather than reserve it. Populated by
+        // loadCelebrations(), which runs on its own slow cadence.
+        container.appendChild(App.el('div', { id: 'dash-celebrations', style: { display: 'none' } }));
+
         // Plain-words headline row — is everything running, is anyone
         // holding a manual override, when was the room busiest. Populated
         // by renderDashInsights() on every poll.
@@ -529,6 +542,7 @@
         ]));
 
         loadDashboard();
+        loadCelebrations();
         scheduleNextPoll();
 
         // Live venue clock — updates the header pill every second while the
@@ -718,6 +732,9 @@
             renderStats(allGames);
             lastActiveOverrides = activeOverrides;
             renderDashInsights(allGames, activeOverrides);
+            // Its own ten-minute cadence, not this 30s poll — see the comment
+            // above loadCelebrations().
+            maybeRefreshCelebrations();
             if (canSeeSales) {
                 renderHeroPulse();
                 renderTicketSummary();
@@ -2215,6 +2232,202 @@
         if (cards.length === 0) { box.style.display = 'none'; return; }
         box.style.display = '';
         box.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
+    // ------------------------------------------------------------------
+    // Today's birthdays and work anniversaries
+    //
+    // A celebration strip under the header: one group per kind, one chip per
+    // person, each group linking to its own page. It is the same selection the
+    // Slack bots post (same leap-day rule, same opt-outs, same min_years and
+    // milestone mode) — a dashboard listing people Slack said nothing about
+    // would only raise "why didn't the bot mention Dana?".
+    //
+    // Four rules this follows, all of them because it sits above the fold on
+    // the page an operator watches while running the floor:
+    //
+    //   1. Nothing to say, nothing on screen. No empty state, no "no birthdays
+    //      today" — that is most days of the year, and it would be noise.
+    //   2. It never reports its own failures here. If the POS roster can't be
+    //      read, the group simply doesn't render; the Birthdays and
+    //      Anniversaries pages are where that gets diagnosed. An optional
+    //      accessory must not put a red banner on the floor's main screen.
+    //   3. Birthday chips carry a NAME AND NOTHING ELSE. No age, no birth
+    //      year: about a fifth of this roster are minors, and the greeting
+    //      itself is forbidden from printing either. Years of service are the
+    //      opposite case — they are the whole point of an anniversary — so
+    //      only those chips carry a number.
+    //   4. Its own slow cadence. The dashboard polls every 30 seconds; these
+    //      read the employee roster, so they refresh every ten minutes and the
+    //      server memoises both on top of that.
+    // ------------------------------------------------------------------
+
+    async function loadCelebrations() {
+        // Both endpoints are gated server-side; checking here as well means a
+        // role without a key never even makes that call. A role with only one
+        // of the two gets only that group.
+        var wantBirthdays = App.canAccess('view_birthdays');
+        var wantAnniversaries = App.canAccess('view_anniversaries');
+        if (!wantBirthdays && !wantAnniversaries) return;
+
+        var gen = App.navGeneration();
+        // Deliberately silent on failure — see rule 2 above. An error where the
+        // game status should be would be worse than showing nothing.
+        var quiet = function() { return null; };
+        var results = await Promise.all([
+            wantBirthdays ? API.get('birthdays/today').catch(quiet) : Promise.resolve(null),
+            wantAnniversaries ? API.get('anniversaries/today').catch(quiet) : Promise.resolve(null)
+        ]);
+        if (App.navGeneration() !== gen) return;
+
+        celebrations.birthdays = results[0];
+        celebrations.anniversaries = results[1];
+        // Stamped even when both came back null, so an endpoint that is
+        // refusing us (a permission change mid-session, say) backs off to the
+        // same ten minutes instead of being retried by every 30-second poll.
+        celebrationsFetchedAt = Date.now();
+        renderCelebrations();
+    }
+
+    /** Called from the 30s poll; actually fetches at most every ten minutes. */
+    function maybeRefreshCelebrations() {
+        if (!App.canAccess('view_birthdays') && !App.canAccess('view_anniversaries')) return;
+        if (Date.now() - celebrationsFetchedAt < CELEBRATE_REFRESH_MS) return;
+        loadCelebrations();
+    }
+
+    /**
+     * The people in one `today` payload, or none when it can't be trusted.
+     *
+     * The date check is what stops a tab left open across midnight showing
+     * yesterday's names until the ten-minute refresh catches up: the payload
+     * says which day it is about, so it is dropped the moment that stops being
+     * today at the venue.
+     */
+    function celebrationPeople(payload, today) {
+        var d = payload || {};
+        if (!d.available || !Array.isArray(d.people)) return [];
+        if (d.date && today && d.date !== today) return [];
+        return d.people;
+    }
+
+    function renderCelebrations() {
+        var box = document.getElementById('dash-celebrations');
+        if (!box) return;
+
+        var today = venueToday();
+        var birthdays = celebrationPeople(celebrations.birthdays, today);
+        var anniversaries = celebrationPeople(celebrations.anniversaries, today);
+
+        var groups = [];
+        // Birthdays lead: they are the more universally recognised of the two,
+        // and it is the order the strip's colour wash runs in.
+        if (birthdays.length) {
+            groups.push({
+                kind: 'birthday',
+                icon: '🎂',
+                label: birthdays.length === 1 ? 'Birthday today' : 'Birthdays today',
+                href: '#/birthdays',
+                page: 'Birthdays',
+                people: birthdays,
+                showYears: false
+            });
+        }
+        if (anniversaries.length) {
+            groups.push({
+                kind: 'anniversary',
+                icon: anniversaries.some(function(p) { return p.milestone; }) ? '🏆' : '🎉',
+                label: anniversaries.length === 1 ? 'Work anniversary today' : 'Work anniversaries today',
+                href: '#/anniversaries',
+                page: 'Work Anniversaries',
+                people: anniversaries,
+                showYears: true
+            });
+        }
+
+        if (!groups.length) {
+            box.innerHTML = '';
+            box.style.display = 'none';
+            return;
+        }
+
+        var kindClass = groups.length === 2 ? 'both' : groups[0].kind;
+        var strip = App.el('div', { className: 'celebrate-strip celebrate-strip-' + kindClass },
+            groups.map(celebrationGroup));
+
+        box.innerHTML = '';
+        box.appendChild(strip);
+        box.style.display = '';
+    }
+
+    /** One kind of celebration, as a link to the page that explains it. */
+    function celebrationGroup(g) {
+        var shown = g.people.slice(0, 6);
+        var extra = g.people.length - shown.length;
+
+        var chips = shown.map(function(p) {
+            var parts = [App.el('span', { className: 'celebrate-chip-name', textContent: p.name })];
+            if (g.showYears) {
+                // A star as well as the colour: the milestone treatment must
+                // not be carried by two shades of green alone.
+                if (p.milestone) {
+                    parts.push(App.el('span', { className: 'celebrate-chip-star',
+                        'aria-hidden': 'true', textContent: '★' }));
+                }
+                parts.push(App.el('span', { className: 'celebrate-chip-years',
+                    textContent: yearsText(p.years) }));
+            }
+            return App.el('span', {
+                className: 'celebrate-chip' + (p.milestone ? ' celebrate-chip-milestone' : ''),
+                title: g.showYears
+                    ? p.name + ' — ' + yearsText(p.years) + ' today'
+                        + (p.milestone ? ' (a milestone year)' : '')
+                    : p.name + ' — birthday today'
+            }, parts);
+        });
+        if (extra > 0) {
+            chips.push(App.el('span', { className: 'celebrate-chip celebrate-chip-more',
+                textContent: '+' + extra + ' more' }));
+        }
+
+        // A real anchor rather than a click handler: hash routing works
+        // natively, and it keeps middle-click, focus order and keyboard
+        // activation without a role/tabindex shim.
+        var link = App.el('a', {
+            className: 'celebrate-group celebrate-group-' + g.kind,
+            href: g.href,
+            title: 'Open ' + g.page
+        }, [
+            App.el('span', { className: 'celebrate-group-icon', 'aria-hidden': 'true', textContent: g.icon }),
+            App.el('span', { className: 'celebrate-group-label', textContent: g.label }),
+            App.el('span', { className: 'celebrate-chips' }, chips)
+        ]);
+
+        // One plain sentence for a screen reader, rather than making it
+        // assemble the group out of chips. Names the whole list, including
+        // anyone behind "+N more".
+        link.setAttribute('aria-label', g.label + ': ' + g.people.map(function(p) {
+            return g.showYears
+                ? p.name + ', ' + yearsText(p.years) + (p.milestone ? ', a milestone year' : '')
+                : p.name;
+        }).join('; ') + '. Open the ' + g.page + ' page.');
+        return link;
+    }
+
+    function yearsText(n) {
+        n = Number(n) || 0;
+        return n + (n === 1 ? ' year' : ' years');
+    }
+
+    /** Today's date in the VENUE's timezone, which is not necessarily the browser's. */
+    function venueToday() {
+        try {
+            return new Intl.DateTimeFormat('en-CA', {
+                timeZone: App.appTimezone, year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date());   // yields YYYY-MM-DD
+        } catch (e) {
+            return null;   // a bad zone must not blank a perfectly good strip
+        }
     }
 
     function insightCard(emoji, cls, label, value, sub) {

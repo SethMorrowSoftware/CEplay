@@ -1,0 +1,270 @@
+/* ============================================
+   Work Anniversaries — upcoming years of service + bot settings
+   ============================================
+   Deliberately the same shape as the Birthdays page (pages/birthdays.css): a
+   glanceable list on top, a long settings form underneath, the list carrying
+   the visual weight. Whoever configures one page already knows this one.
+
+   Two differences that are the point of the page rather than decoration:
+   every name carries its year count as a chip, and a milestone year is marked
+   so it stands out of a list before anybody reads the numbers.
+
+   Page hue is a laurel green — distinct from the candle amber of Birthdays,
+   the emerald of Revenue Mix, the teal of Item Watch and the violet of
+   Redemption. */
+
+:root {
+    --anniversary: #8fbf4d;         /* Laurel */
+    --anniversary-rgb: 143, 191, 77;
+}
+/* Deeper on light surfaces. #4a7016 on white is 5.9:1, which the 0.72rem
+   uppercase labels need — the more obvious #5f8f22 measures 3.9:1 and fails
+   AA for text that small. */
+:root[data-theme="light"] {
+    --anniversary: #4a7016;
+    --anniversary-rgb: 74, 112, 22;
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+        --anniversary: #4a7016;
+        --anniversary-rgb: 74, 112, 22;
+    }
+}
+
+/* --- Health checks: one line per dependency ---------------------------- */
+.an-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
+}
+.an-check {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+.an-check-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
+    background: var(--text-muted);
+    flex: 0 0 auto;
+    align-self: center;
+}
+.an-check-label { color: var(--text-primary); font-weight: 600; }
+.an-check-detail { color: var(--text-secondary); }
+.an-check-ok   .an-check-dot { background: var(--success); }
+.an-check-warn .an-check-dot { background: var(--warning); }
+.an-check-fail .an-check-dot { background: var(--danger); }
+.an-check-fail { border-color: rgba(var(--anniversary-rgb), 0.4); }
+.an-check-idle .an-check-dot,
+.an-check-off  .an-check-dot { background: var(--text-muted); }
+.an-check-loading { padding: 0.35rem 0; }
+
+/* --- Today's message, rendered the way Slack will show it -------------- */
+.an-today {
+    border: 1px solid rgba(var(--anniversary-rgb), 0.35);
+    background: rgba(var(--anniversary-rgb), 0.07);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 1rem;
+}
+.an-today-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--anniversary);
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+}
+.an-message {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
+.an-message:last-child { margin-bottom: 0; }
+.an-message-line {
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+/* --- The upcoming list ------------------------------------------------- */
+.an-list { display: flex; flex-direction: column; }
+.an-row {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border-subtle, var(--border));
+}
+.an-row:last-child { border-bottom: none; }
+.an-row-today .an-person-name { color: var(--anniversary); font-weight: 700; }
+
+/* Fixed-width date block so the names all start on the same line. */
+.an-date {
+    flex: 0 0 2.6rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.05;
+}
+.an-date-day {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.an-date-mon {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+.an-row-main { min-width: 0; }
+.an-names {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.6rem;
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+/* Name + year count. The years are the whole point of this page, so they get
+   their own pill rather than being tucked into the name string. */
+.an-person {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+}
+.an-person-name { color: var(--text-primary); }
+.an-person-years {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-full);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+/* A milestone year has to be visible before anybody reads the number. */
+.an-person-milestone .an-person-years {
+    background: rgba(var(--anniversary-rgb), 0.18);
+    color: var(--anniversary);
+    border: 1px solid rgba(var(--anniversary-rgb), 0.45);
+}
+
+/* --- Settings form ----------------------------------------------------- */
+.an-field { margin-bottom: 1.1rem; }
+.an-field:last-child { margin-bottom: 0; }
+.an-placeholders {
+    margin: 0 0 1rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    line-height: 1.5;
+}
+.an-help {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+}
+.an-textarea {
+    width: 100%;
+    resize: vertical;
+    line-height: 1.5;
+    min-height: 5rem;
+}
+.an-mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+}
+.an-narrow { max-width: 12rem; }
+
+.an-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.an-toggle input { margin-top: 0.15rem; flex: 0 0 auto; }
+
+/* Inline actions ("load the built-in lines", "clear it") — a button that
+   reads as a link, so it can't be mistaken for a form control. */
+.an-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.an-link:hover { color: var(--anniversary); }
+.an-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.an-link-danger { color: var(--danger); }
+.an-link-danger:hover { color: var(--danger); }
+
+.an-save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.85rem 0 0.25rem;
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(to top, var(--bg-primary, var(--bg-card)) 65%, transparent);
+}
+
+/* --- GIF check --------------------------------------------------------- */
+.an-preview-controls { align-items: center; margin-bottom: 0.75rem; }
+.an-gif-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0.6rem 0;
+    max-height: 18rem;
+    overflow-y: auto;
+}
+.an-gif {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    font-size: 0.78rem;
+}
+.an-gif-state {
+    flex: 0 0 2.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+}
+.an-gif-ok   .an-gif-state { color: var(--success); }
+.an-gif-dead .an-gif-state { color: var(--danger); }
+.an-gif-url {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (max-width: 640px) {
+    .an-save-bar { flex-direction: column; align-items: stretch; }
+    .an-save-bar .flex { justify-content: stretch; }
+    .an-save-bar .btn { flex: 1; }
+}

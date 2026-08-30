@@ -16,6 +16,12 @@
  * time, and a broken image block in the birthday message is worse than no
  * image at all. One HEAD request a day costs nothing. If no candidate
  * verifies, the message still posts — just without a GIF.
+ *
+ * SHARED with the work-anniversary bot (anniversaries/), which requires this
+ * same file. Nothing here is birthday-specific except the two DEFAULT_ lists
+ * below, and those are only reached when the caller's config supplies neither —
+ * AnniversaryConfig fills both keys with its own candidates precisely so a
+ * birthday GIF can never turn up on an anniversary post.
  */
 
 class GifSource

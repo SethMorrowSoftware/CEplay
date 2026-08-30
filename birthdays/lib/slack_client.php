@@ -1,9 +1,16 @@
 <?php
 /**
- * Minimal Slack Web API client for the birthday bot.
+ * Minimal Slack Web API client for this repo's Slack bots.
  *
  * Bot token (`xoxb-…`) only, three endpoints, no dependencies — same spirit as
  * alerts/ceplay_game_alerts.py, which already posts to Slack from this repo.
+ *
+ * SHARED, deliberately: the work-anniversary bot (anniversaries/) requires this
+ * same file rather than carrying a copy. There is nothing birthday-specific in
+ * here — it is pure Slack transport — and one copy means a fix to the retry
+ * classifier or the customize fallback lands in both bots at once. The only
+ * thing that differs is where a caller tells the operator to go when the token
+ * is missing, which is the $configHint argument.
  *
  * Slack answers HTTP 200 even when it refuses the call, putting the real
  * outcome in the JSON `ok` field, so every method here checks `ok` rather
@@ -46,12 +53,19 @@ class SlackClient
     /** @var string Why a display-name override was dropped, if it was. */
     private $customizeDropped = '';
 
-    public function __construct(string $token, int $timeout = 20)
+    /**
+     * @param string $configHint where the caller's operator sets the token.
+     *        Only used in the "no token" message — the birthday bot and the
+     *        anniversary bot store theirs in different places, and sending
+     *        somebody to the wrong page is worse than saying nothing.
+     */
+    public function __construct(string $token, int $timeout = 20,
+                                string $configHint = 'the Birthdays page in CEplay, or in data/birthday_config.php')
     {
         $token = trim($token);
         if ($token === '') {
-            throw new RuntimeException('No Slack bot token configured — set one on the '
-                . 'Birthdays page in CEplay, or in data/birthday_config.php.');
+            throw new RuntimeException('No Slack bot token configured — set one on '
+                . $configHint . '.');
         }
         if (strpos($token, 'xoxb-') !== 0) {
             throw new RuntimeException('Slack token does not look like a bot token (expected it to start with "xoxb-").');

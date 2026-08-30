@@ -1,15 +1,15 @@
 <?php
 /**
- * Birthday bot configuration — the single source both the CLI runner and the
- * Birthdays page read from.
+ * Work-anniversary bot configuration — the single source both the CLI runner
+ * and the Anniversaries page read from.
  *
  * Values resolve in three layers, each overriding the one before:
  *
  *   1. DEFAULTS below — the bot works with no configuration at all except a
  *      Slack token and channel.
- *   2. data/birthday_config.php, if it exists — how the bot was configured
- *      before this page existed, and still valid for a file-only install.
- *   3. api_config rows keyed `birthday_*` — what the page writes.
+ *   2. data/anniversary_config.php, if it exists — a file-only install, and how
+ *      install.sh sets the bot up before anybody opens the page.
+ *   3. api_config rows keyed `anniversary_*` — what the page writes.
  *
  * The page therefore never has to rewrite a PHP file (generating PHP from a web
  * form is a bad idea), and an existing file install keeps working untouched
@@ -18,15 +18,22 @@
  * Secrets (the Slack token, the Giphy key) are encrypted at rest with the same
  * Crypto helper the CenterEdge and MSSQL credentials use, and are never
  * returned to the browser — see publicConfig().
+ *
+ * This is the sibling of lib/birthday_config.php and is deliberately kept
+ * separate rather than generalised: the two bots have different roster columns,
+ * different message rules and different keys, and one shared class would have
+ * to be told which bot it was for on every call. What they DO share is the
+ * api_config table, so every key here carries its own prefix.
  */
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/crypto.php';
+require_once __DIR__ . '/../anniversaries/lib/anniv_lib.php';
 
-class BirthdayConfig
+class AnniversaryConfig
 {
     /** api_config keys all carry this prefix. */
-    private const PREFIX = 'birthday_';
+    private const PREFIX = 'anniversary_';
 
     /** @var array<string,string> Non-fatal load problems, keyed by field. */
     private static $warnings = [];
@@ -45,13 +52,13 @@ class BirthdayConfig
     public const FIELDS = [
         'enabled' => [
             'type' => 'bool', 'default' => true,
-            'label' => 'Post birthday greetings',
+            'label' => 'Post anniversary messages',
             'help'  => 'Turn off to stop posting without removing the timer.',
         ],
         'slack_bot_token' => [
             'type' => 'secret', 'default' => '',
             'label' => 'Slack bot token',
-            'help'  => 'Starts with xoxb-. Needs chat:write.',
+            'help'  => 'Starts with xoxb-. Needs chat:write. The same token as the birthday bot is fine.',
         ],
         'slack_channel' => [
             'type' => 'string', 'default' => '',
@@ -66,7 +73,7 @@ class BirthdayConfig
         'bot_icon_emoji' => [
             'type' => 'string', 'default' => '',
             'label' => 'Icon emoji',
-            'help'  => 'e.g. :birthday: — only used with a custom name.',
+            'help'  => 'e.g. :trophy: — only used with a custom name.',
         ],
         'mention' => [
             'type' => 'string', 'default' => '',
@@ -77,7 +84,6 @@ class BirthdayConfig
             'type' => 'enum', 'default' => 'full',
             'options' => ['full' => 'Full name', 'first' => 'First name only', 'first_initial' => 'First name + initial'],
             'label' => 'How names appear',
-            'help'  => 'Never an age or a birth year, whichever you pick.',
         ],
         'venue_label' => [
             'type' => 'string', 'default' => 'The Castle Fun Center',
@@ -87,31 +93,45 @@ class BirthdayConfig
         'footer_text' => [
             'type' => 'string', 'default' => null,
             'label' => 'Footer line',
-            'help'  => 'Blank uses ":balloon: from everyone at {venue}". A single space removes it.',
+            'help'  => 'Blank uses ":trophy: from everyone at {venue}". A single space removes it.',
         ],
         'post_separately' => [
             'type' => 'bool', 'default' => false,
             'label' => 'One message per person',
-            'help'  => 'Off means several birthdays on one day share a single post.',
+            'help'  => 'On means each person gets their own post — and their own milestone wording.',
         ],
         'greetings' => [
             'type' => 'list', 'default' => null,
             'label' => 'Greeting lines',
-            'help'  => 'One per line, each containing {names}. Blank uses the built-in set.',
+            'help'  => 'One per line, each containing {names}. {years}, {year_label} and {ordinal} are available. Blank uses the built-in set.',
         ],
         'flavors' => [
             'type' => 'list', 'default' => null,
             'label' => 'Flavour lines',
             'help'  => 'One per line. Each must stand alone after any greeting.',
         ],
+        'milestone_years' => [
+            'type' => 'list', 'default' => null,
+            'label' => 'Milestone years',
+            'help'  => 'Whole numbers, one per line. These get the louder wording. Blank uses 1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50.',
+        ],
+        'milestone_greetings' => [
+            'type' => 'list', 'default' => null,
+            'label' => 'Greeting lines (milestone year)',
+            'help'  => 'Used for one person hitting a milestone. Must contain {names}.',
+        ],
+        'milestone_flavors' => [
+            'type' => 'list', 'default' => null,
+            'label' => 'Flavour lines (milestone year)',
+        ],
         'multi_greetings' => [
             'type' => 'list', 'default' => null,
-            'label' => 'Greeting lines (shared birthday)',
-            'help'  => 'Must contain {names}; {count} is available.',
+            'label' => 'Greeting lines (shared day)',
+            'help'  => 'Must contain {names}; {count} and the COMBINED {years} are available, {ordinal} is not.',
         ],
         'multi_flavors' => [
             'type' => 'list', 'default' => null,
-            'label' => 'Flavour lines (shared birthday)',
+            'label' => 'Flavour lines (shared day)',
             'help'  => 'Must read as plural.',
         ],
         'gifs_enabled' => [
@@ -134,14 +154,25 @@ class BirthdayConfig
             'help'  => 'Needs the reactions:write scope.',
         ],
         'reactions' => [
-            'type' => 'list', 'default' => ['tada', 'birthday'],
+            'type' => 'list', 'default' => ['tada', 'clap'],
             'label' => 'Reaction emoji',
             'help'  => 'Names without colons, one per line.',
         ],
+        'celebrate_years' => [
+            'type' => 'enum', 'default' => 'all',
+            'options' => ['all' => 'Every year', 'milestones' => 'Milestone years only'],
+            'label' => 'Which anniversaries to post',
+            'help'  => 'Milestone-only is much quieter, but a third year then passes in silence.',
+        ],
+        'min_years' => [
+            'type' => 'int', 'default' => ANNIV_DEFAULT_MIN_YEARS, 'min' => 1, 'max' => 50,
+            'label' => 'Start congratulating at',
+            'help'  => 'Years of service. 1 is the first anniversary — the hire date itself is a start date, not an anniversary.',
+        ],
         'leap_day_mode' => [
             'type' => 'enum', 'default' => 'feb28',
-            'options' => ['feb28' => 'Wish them on 28 February', 'mar1' => 'Wish them on 1 March', 'skip' => 'Say nothing'],
-            'label' => '29 February birthdays, in a non-leap year',
+            'options' => ['feb28' => 'Mark it on 28 February', 'mar1' => 'Mark it on 1 March', 'skip' => 'Say nothing'],
+            'label' => '29 February hire dates, in a non-leap year',
         ],
         'exclude_emp_nos' => [
             'type' => 'list', 'default' => [],
@@ -153,9 +184,9 @@ class BirthdayConfig
             'label' => 'Opt out by name',
             'help'  => 'One per line, as they appear on the roster.',
         ],
-        'ignore_birth_dates' => [
+        'ignore_hire_dates' => [
             'type' => 'list', 'default' => [],
-            'label' => 'Ignore these birth dates',
+            'label' => 'Ignore these hire dates',
             'help'  => 'YYYY-MM-DD, one per line. Placeholder dates the POS stamped in.',
         ],
         'max_celebrants' => [
@@ -166,40 +197,55 @@ class BirthdayConfig
         'roster_sql' => [
             'type' => 'text', 'default' => null,
             'label' => 'Roster query',
-            'help'  => 'One read-only SELECT returning current employees. Blank uses the verified default.',
+            'help'  => 'One read-only SELECT returning current employees and their hire date, aliased hire_date. Blank uses the default below.',
         ],
     ];
 
-    /** The roster query verified against this venue's database. */
+    /**
+     * The roster query.
+     *
+     * The table, the employment filter and the name columns are the SAME ones
+     * the birthday bot has been running against this venue's database since
+     * August 2026, so those parts are verified. The HIRE-DATE column is the one
+     * unverified piece: `dbo.Employees` is known to carry `DateOfBirth` and
+     * `DateOfTerminate`, and `DateOfHire` follows that naming, but it has not
+     * been confirmed against the live schema from here (the sandbox has no
+     * MSSQL driver).
+     *
+     * If it is wrong, MSSQL says so loudly — "Invalid column name 'DateOfHire'"
+     * — rather than posting anything incorrect, and
+     * `php anniversaries/discover.php` prints the real column name plus a
+     * ready-to-paste replacement query.
+     */
     public const DEFAULT_ROSTER_SQL = <<<SQL
 SELECT EmpNo AS emp_no,
        FirstName AS first_name,
        LastName AS last_name,
-       CONVERT(VARCHAR(10), DateOfBirth, 120) AS birth_date
+       CONVERT(VARCHAR(10), DateOfHire, 120) AS hire_date
 FROM CenterEdge.dbo.Employees
 WHERE EmpStatus = 1
   AND DateOfTerminate IS NULL
-  AND DateOfBirth IS NOT NULL
-  AND YEAR(DateOfBirth) >= 1901
+  AND DateOfHire IS NOT NULL
+  AND YEAR(DateOfHire) >= 1901
 SQL;
 
     /** Settings the bot reads that are not editable from the page. */
     private const RUNTIME_DEFAULTS = [
-        'roster_max_rows' => 5000,
-        'query_timeout'   => 30,
-        'gif_verify'      => true,
-        'gif_timeout'     => 6,
-        'gif_alt_text'    => 'A birthday celebration GIF',
-        'giphy_rating'    => 'g',
-        'bold_names'      => true,
+        'roster_max_rows'  => 5000,
+        'query_timeout'    => 30,
+        'gif_verify'       => true,
+        'gif_timeout'      => 6,
+        'gif_alt_text'     => 'A celebration GIF',
+        'giphy_rating'     => 'g',
+        'bold_names'       => true,
         'mention_by_email' => false,
-        'timezone'        => '',
+        'timezone'         => '',
     ];
 
     /**
-     * The merged configuration, in the shape birthday_bot.php expects.
+     * The merged configuration, in the shape anniversary_bot.php expects.
      *
-     * @param string|null $filePath data/birthday_config.php, or null to skip it
+     * @param string|null $filePath data/anniversary_config.php, or null to skip it
      */
     public static function load(?string $filePath = null): array
     {
@@ -233,22 +279,35 @@ SQL;
         // These four stay derived, never configurable from a form: pointing
         // them anywhere else is a way to write files as the app user.
         //
-        // Derived HERE rather than in the bot so the Birthdays page reads the
-        // same heartbeat the timer writes — they run in different containers
-        // and only agree because this is the one place that names the paths.
+        // Derived HERE rather than in the bot so the Anniversaries page reads
+        // the same heartbeat the timer writes — they run in different
+        // containers and only agree because this is the one place that names
+        // the paths. Every one is distinct from the birthday bot's: the two
+        // timers can fire at the same minute, and a shared state file would
+        // mean each read-modify-write could drop the other's record.
         $root = dirname(__DIR__);
-        $cfg['state_file']     = $root . '/data/birthday_state.json';
-        $cfg['log_file']       = $root . '/data/birthdays.log';
-        $cfg['heartbeat_file'] = $root . '/data/.heartbeat_birthdays';
-        $cfg['lock_file']      = $root . '/data/birthday.lock';
-        // Today's celebrants, memoised for the Command Center strip. Named here
-        // for the same reason as the four above — and see bdayApiToday() for
+        $cfg['state_file']     = $root . '/data/anniversary_state.json';
+        $cfg['log_file']       = $root . '/data/anniversaries.log';
+        $cfg['heartbeat_file'] = $root . '/data/.heartbeat_anniversaries';
+        $cfg['lock_file']      = $root . '/data/anniversary.lock';
+        // Today's celebrants, memoised for the Command Center chip. Named here
+        // for the same reason as the four above — and see annivApiToday() for
         // why the dashboard must never read the roster directly.
-        $cfg['today_cache_file'] = $root . '/data/birthday_today.json';
+        $cfg['today_cache_file'] = $root . '/data/anniversary_today.json';
 
         if (!is_string($cfg['roster_sql']) || trim($cfg['roster_sql']) === '') {
             $cfg['roster_sql'] = self::DEFAULT_ROSTER_SQL;
         }
+
+        // The GIF picker is shared with the birthday bot, and its own fallback
+        // list and search terms are birthday ones. Filling both keys in here
+        // means GifSource never reaches them: an anniversary post gets an
+        // anniversary GIF even with nothing configured at all.
+        if (!is_array($cfg['gifs']) || !$cfg['gifs']) {
+            $cfg['gifs'] = ANNIV_DEFAULT_GIFS;
+        }
+        $cfg['gif_search_terms'] = ANNIV_DEFAULT_SEARCH_TERMS;
+
         return $cfg;
     }
 
@@ -267,6 +326,14 @@ SQL;
                 continue;
             }
             $out[$key] = $cfg[$key] ?? $spec['default'];
+        }
+        // load() substitutes the built-in GIF list when nothing is stored, so
+        // the form would show the defaults as if somebody had typed them — and
+        // one save would pin them as a custom list that no longer tracks the
+        // shipped one. Blank it back out, but only when it really is the
+        // substitution (a list from the config file is a real setting).
+        if (self::rawGet('gifs') === null && ($out['gifs'] ?? null) === ANNIV_DEFAULT_GIFS) {
+            $out['gifs'] = null;
         }
         return $out;
     }
@@ -302,8 +369,8 @@ SQL;
      * Stored value for a key, or null when it was never saved.
      *
      * DB::getConfig already decrypts anything written with encrypt=true, so
-     * there is deliberately no second decrypt here — doing it twice throws,
-     * and the catch would turn a perfectly good Slack token into "not set".
+     * there is deliberately no second decrypt here — doing it twice throws, and
+     * the catch would turn a perfectly good Slack token into "not set".
      */
     private static function rawGet(string $key): ?string
     {
@@ -317,7 +384,7 @@ SQL;
             if (self::FIELDS[$key]['type'] === 'secret') {
                 self::$warnings[$key] = 'The stored ' . (self::FIELDS[$key]['label'] ?? $key)
                     . ' could not be decrypted (' . $e->getMessage()
-                    . '). Re-enter it on the Birthdays page.';
+                    . '). Re-enter it on the Anniversaries page.';
                 return null;
             }
             throw $e;

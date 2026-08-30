@@ -1,0 +1,145 @@
+/* ============================================
+   Celebration strip — today's birthdays and work anniversaries
+   ============================================
+   One row of chips under the Command Center header (public/js/dashboard.js).
+   Two optional groups, each linking to its own page; either can be absent, and
+   when both are the JS renders nothing at all — the strip sits above the fold
+   on the page an operator watches while running the floor, so it has to earn
+   its space rather than reserve it with an empty state.
+
+   A component rather than page CSS because it belongs to neither page: it is
+   fed by the birthday bot and the anniversary bot together, and borrows the
+   hue each of them already owns (--birthday from pages/birthdays.css,
+   --anniversary from pages/anniversaries.css).
+
+   Frame idiom — 12px radius, 4px tinted left border — is the insight-card one
+   from components/insight-cards.css, so the strip and the insight row directly
+   beneath it read as one system. */
+
+.celebrate-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem 1.25rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--celebrate-hue, var(--accent));
+    border-radius: 12px;
+    /* 0.10 rather than the insight cards' 0.07: the amber reads as flat grey
+       on a light background below that, where the more saturated laurel does
+       not — and the two single-kind strips have to look equally deliberate. */
+    background: rgba(var(--celebrate-hue-rgb, 91, 141, 239), 0.10);
+}
+
+/* Which hue frames the strip depends on what is actually in it. With both
+   kinds present neither one gets to speak for the row, so the wash runs from
+   one to the other in reading order — birthdays first, anniversaries second,
+   the same order the groups appear in. */
+.celebrate-strip-birthday {
+    --celebrate-hue: var(--birthday);
+    --celebrate-hue-rgb: var(--birthday-rgb);
+}
+.celebrate-strip-anniversary {
+    --celebrate-hue: var(--anniversary);
+    --celebrate-hue-rgb: var(--anniversary-rgb);
+}
+.celebrate-strip-both {
+    --celebrate-hue: var(--birthday);
+    background: linear-gradient(
+        90deg,
+        rgba(var(--birthday-rgb), 0.10),
+        rgba(var(--anniversary-rgb), 0.10)
+    );
+}
+
+/* --- One group per kind, each a link to its own page ------------------- */
+.celebrate-group {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.5rem;
+    min-width: 0;
+    padding: 0.1rem 0.2rem;
+    border-radius: 8px;
+    text-decoration: none;
+    color: inherit;
+}
+.celebrate-group:hover .celebrate-group-label { text-decoration: underline; }
+.celebrate-group:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.celebrate-group-icon { font-size: 1.1rem; line-height: 1; flex: 0 0 auto; }
+.celebrate-group-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    flex: 0 0 auto;
+    text-underline-offset: 3px;
+}
+.celebrate-group-birthday    .celebrate-group-label { color: var(--birthday); }
+.celebrate-group-anniversary .celebrate-group-label { color: var(--anniversary); }
+
+.celebrate-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-width: 0;          /* so long names wrap instead of stretching the row */
+}
+
+/* --- One chip per person ----------------------------------------------- */
+.celebrate-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    font-size: 0.82rem;
+    max-width: 100%;
+}
+.celebrate-chip-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+/* Years of service, on anniversary chips only. A birthday chip carries a NAME
+   AND NOTHING ELSE — no age, no birth year, not even a field for one. About a
+   fifth of this roster are minors, the greeting itself is forbidden from
+   printing either, and a dashboard anyone can walk past is a worse place to
+   publish them than a channel would be. */
+.celebrate-chip-years {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+/* A milestone year has to be visible before anybody reads the number.
+   It keeps the SAME background as an ordinary chip and is lifted by a border
+   and a halo instead. Filling it with the hue looked right on dark and was
+   backwards on light: the ordinary chips are white there, so a tinted
+   milestone chip was the DIMMEST thing in a row it is supposed to lead.
+   The star carries the same meaning without colour, for anyone who cannot
+   separate the two greens. */
+.celebrate-chip-milestone {
+    border-color: var(--anniversary);
+    box-shadow: 0 0 0 3px rgba(var(--anniversary-rgb), 0.18);
+}
+.celebrate-chip-star {
+    color: var(--anniversary);
+    font-size: 0.7rem;
+    line-height: 1;
+    margin-right: -0.15rem;   /* sits with the years, not floating between */
+}
+.celebrate-chip-milestone .celebrate-chip-years { color: var(--text-primary); font-weight: 700; }
+.celebrate-chip-more { color: var(--text-secondary); font-size: 0.78rem; }
+
+@media (max-width: 640px) {
+    /* Groups stack rather than sitting side by side, so a long birthday list
+       cannot push the anniversary group off the end of a line. */
+    .celebrate-strip { align-items: flex-start; gap: 0.5rem; }
+    .celebrate-group { flex: 1 1 100%; }
+}
