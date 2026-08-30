@@ -1067,18 +1067,28 @@ before building.
   `DEFAULT_SEARCH_TERMS` are birthday ones, so `AnniversaryConfig::load()` fills
   BOTH keys with `ANNIV_DEFAULT_*` — a birthday GIF must never turn up on an
   anniversary post.
-- **THE HIRE-DATE COLUMN IS THE ONE UNVERIFIED THING.** Everything else in the
-  roster query is the birthday bot's verified query (`dbo.Employees`,
-  `EmpStatus = 1`, `DateOfTerminate IS NULL`); `DateOfHire` is a guess from the
-  naming of its neighbours and has never been run against the live schema. A
-  wrong guess fails loudly ("Invalid column name") rather than posting anything
-  incorrect, and `annivColumnHint()` turns that error into a pointer to
-  `anniversaries/discover.php`. That probe MEASURES each candidate column —
-  population, year range, future-dated rows — and above all **cross-checks it
-  against the birth-date column**: a hire date and a date of birth are both
-  dates on the same table, and picking the wrong one would post "Happy 41st
-  anniversary" to a public channel, so any column whose values agree with the
-  birth date is rejected outright.
+- **THE HIRE-DATE COLUMN IS `DateOfHire` — VERIFIED at the venue Aug 2026** via
+  `anniversaries/discover.php`, so the shipped default roster query is correct
+  as-is and needs no edit. Measured on `dbo.Employees` (1,547 rows): 1,532
+  populated, years 1993-2026, ZERO future-dated, and **zero rows where it equals
+  `DateOfBirth`** — that last one is the check that matters, since a hire date
+  and a date of birth are both datetimes on the same table and picking the wrong
+  one would post "Happy 41st anniversary" to a public channel. `EmpStatus` is
+  decoded from `dbo.EmployeeStatus`: 1 Active (193), 2 Suspended (4),
+  3 Terminated (1,350); `DateOfTerminate` agrees with it (no active row carries
+  one). Do not re-litigate this without new evidence. If a FUTURE install
+  disagrees, the failure is loud ("Invalid column name") rather than a wrong
+  post, and `annivColumnHint()` points at the probe.
+- **`max_celebrants` defaults to 25 here, NOT the birthday bot's 12, and the
+  difference is the whole point.** Twelve people sharing a BIRTHDAY means a
+  broken query; twelve sharing a HIRE DATE is just how a seasonal venue staffs
+  up — this roster has cohorts of 24, 13, 13, 12 and 11 on single spring dates.
+  Set the guard below the biggest cohort and the bot refuses to post on the
+  busiest anniversary of the year, every year, and records a failure for it.
+  What the guard actually catches is a placeholder date that never reached
+  `ignore_hire_dates`. `discover.php` measures the largest CURRENT-staff cohort
+  and recommends a value, and reports every distribution against current staff
+  rather than the whole table (88% of which is leavers).
 - **Year zero is not an anniversary.** Somebody hired this morning matches
   today's month and day exactly; `min_years` floors at 1 and the UI will not go
   below it. This is the anniversary equivalent of the birthday bot's sentinel

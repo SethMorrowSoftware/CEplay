@@ -24,7 +24,7 @@ anniversaries/
 ├─ run.sh                 Run any command inside the MSSQL-enabled container
 ├─ slack-app-manifest.yml Paste into Slack to create the app with its scopes
 ├─ anniversary_bot.php    The daily runner
-├─ discover.php           Find this venue's hire-date column — run this first
+├─ discover.php           Re-derive the roster query from the live database
 ├─ config.example.php     Copy to data/anniversary_config.php (or use the page)
 ├─ lib/anniv_lib.php      Date matching, years of service, message building
 ├─ systemd/               Daily timer units
@@ -36,31 +36,49 @@ It also puts today's anniversaries — alongside today's birthdays — on the
 
 ---
 
-## The one thing to check first
+## The roster query — already verified
 
-Everything about the roster query is already verified against this venue —
-`dbo.Employees`, `EmpStatus = 1`, `DateOfTerminate IS NULL`, the name columns —
-**except the hire-date column itself.** The shipped default guesses
-`DateOfHire`, following the naming of `DateOfBirth` and `DateOfTerminate` next
-to it, but that guess has never been run against the live schema.
+`DateOfHire` on `dbo.Employees` was **confirmed against the live venue database
+in August 2026**, so the shipped default query is correct as-is and needs no
+edit. What the probe measured:
 
-If it is wrong, nothing posts and MSSQL says `Invalid column name 'DateOfHire'`.
-To find out in one command:
+| | |
+|---|---|
+| populated | 1,532 of 1,547 rows |
+| range | 1993 – 2026, none future-dated |
+| **equal to the birth date** | **0 rows** |
+| employment filter | `EmpStatus = 1` = "Active" (193 people), decoded from `dbo.EmployeeStatus` |
+| `DateOfTerminate` | agrees — no active row carries one |
+
+That third line is the one that mattered. A hire date and a date of birth are
+both datetimes on the same table, and picking the wrong one would put "Happy
+41st anniversary" in a public channel — so any column whose values agree with
+the birth date is rejected outright.
+
+If you ever need to re-derive it (a different install, a schema change), one
+command prints every candidate, measures each, and emits a ready-to-paste
+query:
 
 ```bash
 sudo bash /var/persist/pause-groups/anniversaries/run.sh discover
 ```
 
-That prints every hire-date-ish column in the database, **measures** each
-candidate on the roster table (how many rows carry a value, what year range,
-how many are future-dated, and — importantly — how many of them are identical
-to the person's date of birth), and then prints a ready-to-paste roster query
-with the employment filter decoded from the database's own status lookup table.
+A wrong column fails loudly (`Invalid column name`) rather than posting
+anything incorrect, and both the CLI and the page turn that error into a
+pointer at the probe.
 
-The birthday cross-check is the one worth reading. A hire date and a date of
-birth are both dates on the same table, and picking the wrong one would put
-"Happy 41st anniversary" in a public channel. Any column whose values agree
-with the birth date is rejected outright and said so.
+### Set "Refuse to post above" from the cohort size
+
+`max_celebrants` defaults to **25**, not the birthday bot's 12, and the
+difference is deliberate. Twelve people sharing a *birthday* means a broken
+query; twelve sharing a *hire date* is just how a seasonal venue staffs up —
+this roster has cohorts of 24, 13, 13, 12 and 11 on single spring dates. Set
+the guard below your biggest cohort and the bot will refuse to post on the
+busiest anniversary of the year, every year.
+
+What the guard is actually for is a placeholder date that never made it into
+"Ignore these hire dates". `discover.php` measures the largest **current-staff**
+cohort and recommends a number, so you can set it from evidence.
 
 ---
 

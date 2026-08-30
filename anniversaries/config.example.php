@@ -98,9 +98,18 @@ return [
     // "126 years" message.
     'ignore_hire_dates' => [],
 
-    // If more than this many people share one anniversary date, the bot refuses
-    // to post and says so. That many is a wrong query, not a coincidence.
-    'max_celebrants' => 12,
+    // A safety valve: if more than this many people share one anniversary date,
+    // the bot refuses to post and says so.
+    //
+    // Deliberately higher than the birthday bot's 12. Twelve people sharing a
+    // BIRTHDAY means a broken query; twelve sharing a HIRE DATE is just how a
+    // seasonal venue staffs up — this roster has cohorts of 24, 13, 13, 12 and
+    // 11 on single spring dates. Set this below your biggest cohort and the bot
+    // will refuse to post on the busiest anniversary of the year, every year.
+    // What it really catches is a placeholder date that never made it into
+    // ignore_hire_dates. `anniversaries/run.sh discover` measures the largest
+    // CURRENT-staff cohort so you can set this from evidence.
+    'max_celebrants' => 25,
 
     // -----------------------------------------------------------------------
     // The message

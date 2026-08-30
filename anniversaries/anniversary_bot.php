@@ -991,11 +991,16 @@ if (!$celebrants) {
     exit(0);
 }
 
-$max = max(1, (int)($cfg['max_celebrants'] ?? 12));
+$max = max(1, (int)($cfg['max_celebrants'] ?? 25));
 if (count($celebrants) > $max) {
     fwrite(STDERR,
-        "That usually means the roster query is reading the wrong column (a birth date,\n"
-        . "say) rather than a genuine coincidence. Run `php anniversaries/discover.php`.\n");
+        "Two things this can be, and they need opposite fixes:\n"
+        . "  - A HIRING COHORT. A seasonal venue onboards in waves, so a dozen people\n"
+        . "    sharing an anniversary is normal. Raise \"Refuse to post above\"\n"
+        . "    (max_celebrants) past your biggest cohort — `run.sh discover` measures it.\n"
+        . "  - A PLACEHOLDER DATE the POS stamped on everyone, or the query reading the\n"
+        . "    wrong column. Add the date to \"Ignore these hire dates\", or fix the query.\n"
+        . "`bash anniversaries/run.sh discover` tells you which of the two it is.\n");
     annivFail(sprintf(
         'Refused to post: %d people share an anniversary on %s, over the max_celebrants limit of %d.',
         count($celebrants), $target, $max

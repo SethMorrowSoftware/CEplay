@@ -503,6 +503,17 @@ function annivApiTest(array $input): void
 /** One pass over every dependency, each with its own verdict. */
 function annivApiCheck(array $cfg): void
 {
+    // Which day is "today" depends on the VENUE's clock, not the web
+    // container's — index.php restores the PHP default before dispatching, and
+    // on this venue the host runs UTC while the app runs Eastern. Without this,
+    // between 20:00 and midnight local the Today and Next-up rows below would
+    // be about TOMORROW, disagreeing with /upcoming and /today, which both set
+    // the zone. Every handler in this file that reasons about a date has to do
+    // this; there is no global one.
+    $tz = trim((string)($cfg['timezone'] ?? '')) ?: (defined('DEFAULT_TIMEZONE') ? DEFAULT_TIMEZONE : 'UTC');
+    $prevTz = date_default_timezone_get();
+    @date_default_timezone_set($tz);
+
     $checks = [];
     $add = function (string $label, string $status, string $detail = '') use (&$checks) {
         $checks[] = ['label' => $label, 'status' => $status, 'detail' => $detail];
@@ -596,6 +607,7 @@ function annivApiCheck(array $cfg): void
         }
     }
 
+    @date_default_timezone_set($prevTz);
     echo json_encode(['checks' => $checks]);
 }
 
