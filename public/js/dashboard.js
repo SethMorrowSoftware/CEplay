@@ -33,6 +33,13 @@
     var hourlyToday = null;  // Server 24-bin hourly plays/tickets for today (accurate peak hour)
     var hourlyRecent = null; // Server 12-bin last-12-clock-hours (accurate hero sparkline)
     var lastActiveOverrides = []; // Last-seen active overrides — lets optimistic re-renders refresh the insight row
+    // Today's work anniversaries, for the celebration strip under the header.
+    // Fetched on its own slow cadence rather than with the 30s poll — the
+    // roster changes once a day at most, and the endpoint behind it reads the
+    // POS database. See loadAnniversaries().
+    var ANNIV_REFRESH_MS = 600000;   // 10 minutes
+    var annivData = null;
+    var annivFetchedAt = 0;
     var refreshIntervalCleanup = null;
     var expiryTimers = [];
     var transitionTimers = [];
@@ -287,6 +294,12 @@
         // Security warnings banner (populated by loadDashboard)
         container.appendChild(App.el('div', { id: 'security-warnings' }));
 
+        // Today's work anniversaries. Empty and INVISIBLE on the ~300 days a
+        // year when nobody is celebrating — it sits above the fold, so it has
+        // to earn its space rather than reserve it. Populated by
+        // loadAnniversaries(), which runs on its own slow cadence.
+        container.appendChild(App.el('div', { id: 'dash-anniversaries', style: { display: 'none' } }));
+
         // Plain-words headline row — is everything running, is anyone
         // holding a manual override, when was the room busiest. Populated
         // by renderDashInsights() on every poll.
@@ -529,6 +542,7 @@
         ]));
 
         loadDashboard();
+        loadAnniversaries();
         scheduleNextPoll();
 
         // Live venue clock — updates the header pill every second while the
@@ -718,6 +732,9 @@
             renderStats(allGames);
             lastActiveOverrides = activeOverrides;
             renderDashInsights(allGames, activeOverrides);
+            // Its own ten-minute cadence, not this 30s poll — see the comment
+            // above loadAnniversaries().
+            maybeRefreshAnniversaries();
             if (canSeeSales) {
                 renderHeroPulse();
                 renderTicketSummary();
@@ -2215,6 +2232,141 @@
         if (cards.length === 0) { box.style.display = 'none'; return; }
         box.style.display = '';
         box.appendChild(App.el('div', { className: 'insight-row' }, cards));
+    }
+
+    // ------------------------------------------------------------------
+    // Today's work anniversaries
+    //
+    // A celebration strip under the header: one chip per person, with their
+    // years of service. It is the same selection the Slack bot posts (same
+    // min_years, same milestone mode, same opt-outs) — a dashboard listing
+    // people Slack said nothing about would only raise "why didn't the bot
+    // mention Dana?".
+    //
+    // Three rules this follows, all of them because it sits above the fold on
+    // the page an operator watches while running the floor:
+    //
+    //   1. Nothing to say, nothing on screen. No empty state, no "no
+    //      anniversaries today" — that is ~300 days a year of noise.
+    //   2. It never reports its own failures here. If the POS roster can't be
+    //      read, the strip simply doesn't render; the Anniversaries page is
+    //      where that gets diagnosed. An optional accessory must not put a red
+    //      banner on the floor's main screen.
+    //   3. Its own slow cadence. The dashboard polls every 30 seconds; this
+    //      reads the employee roster, so it refreshes every ten minutes and
+    //      the server memoises it on top of that.
+    // ------------------------------------------------------------------
+
+    async function loadAnniversaries() {
+        // The endpoint is gated on view_anniversaries server-side; checking
+        // here as well means a role without it never even makes the call.
+        if (!App.canAccess('view_anniversaries')) return;
+        var gen = App.navGeneration();
+        try {
+            var data = await API.get('anniversaries/today');
+            if (App.navGeneration() !== gen) return;
+            annivData = data || null;
+        } catch (err) {
+            // Deliberately silent — see rule 2 above. An error where the game
+            // status should be would be worse than showing nothing.
+            annivData = null;
+        }
+        // Stamped on the failure path too, so an endpoint that is refusing us
+        // (a permission change mid-session, say) backs off to the same ten
+        // minutes instead of being retried by every 30-second poll.
+        annivFetchedAt = Date.now();
+        renderAnniversaries();
+    }
+
+    /** Called from the 30s poll; actually fetches at most every ten minutes. */
+    function maybeRefreshAnniversaries() {
+        if (!App.canAccess('view_anniversaries')) return;
+        if (Date.now() - annivFetchedAt < ANNIV_REFRESH_MS) return;
+        loadAnniversaries();
+    }
+
+    function renderAnniversaries() {
+        var box = document.getElementById('dash-anniversaries');
+        if (!box) return;
+        var d = annivData || {};
+        var people = (d.available && Array.isArray(d.people)) ? d.people : [];
+
+        // A tab left open across midnight would otherwise keep yesterday's
+        // names up until the ten-minute refresh caught it. The payload says
+        // which day it is about, so drop it the moment that stops being today.
+        var today = venueToday();
+        if (d.date && today && d.date !== today) {
+            people = [];
+        }
+
+        if (!people.length) {
+            box.innerHTML = '';
+            box.style.display = 'none';
+            return;
+        }
+
+        // Longest service first — that is the order the API returns them in,
+        // and the order a reader expects the sentence to run.
+        var shown = people.slice(0, 6);
+        var extra = people.length - shown.length;
+        var anyMilestone = people.some(function(p) { return p.milestone; });
+
+        var chips = shown.map(function(p) {
+            var parts = [App.el('span', { className: 'anniv-chip-name', textContent: p.name })];
+            // A star as well as the colour: the milestone treatment must not be
+            // carried by two shades of green alone.
+            if (p.milestone) {
+                parts.push(App.el('span', { className: 'anniv-chip-star',
+                    'aria-hidden': 'true', textContent: '★' }));
+            }
+            parts.push(App.el('span', { className: 'anniv-chip-years', textContent: yearsText(p.years) }));
+            return App.el('span', {
+                className: 'anniv-chip' + (p.milestone ? ' anniv-chip-milestone' : ''),
+                title: p.name + ' — ' + yearsText(p.years) + ' today'
+                    + (p.milestone ? ' (a milestone year)' : '')
+            }, parts);
+        });
+        if (extra > 0) {
+            chips.push(App.el('span', { className: 'anniv-chip anniv-chip-more',
+                textContent: '+' + extra + ' more' }));
+        }
+
+        var strip = App.el('div', { className: 'anniv-strip' + (anyMilestone ? ' anniv-strip-milestone' : '') }, [
+            App.el('span', { className: 'anniv-strip-icon', 'aria-hidden': 'true',
+                textContent: anyMilestone ? '🏆' : '🎉' }),
+            App.el('span', { className: 'anniv-strip-label',
+                textContent: people.length === 1 ? 'Work anniversary today' : 'Work anniversaries today' }),
+            App.el('span', { className: 'anniv-strip-chips' }, chips),
+            App.el('span', { className: 'anniv-strip-go', 'aria-hidden': 'true', textContent: '→' })
+        ]);
+
+        // One plain sentence for a screen reader, instead of it having to
+        // assemble the strip out of chips. Set BEFORE makeCardLink, which only
+        // fills an aria-label in when there isn't one already.
+        strip.setAttribute('aria-label', 'Work anniversaries today: ' + people.map(function(p) {
+            return p.name + ', ' + yearsText(p.years) + (p.milestone ? ', a milestone year' : '');
+        }).join('; ') + '. Open the Work Anniversaries page.');
+        App.makeCardLink(strip, '#/anniversaries', { title: 'Open Work Anniversaries' });
+
+        box.innerHTML = '';
+        box.appendChild(strip);
+        box.style.display = '';
+    }
+
+    function yearsText(n) {
+        n = Number(n) || 0;
+        return n + (n === 1 ? ' year' : ' years');
+    }
+
+    /** Today's date in the VENUE's timezone, which is not necessarily the browser's. */
+    function venueToday() {
+        try {
+            return new Intl.DateTimeFormat('en-CA', {
+                timeZone: App.appTimezone, year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date());   // yields YYYY-MM-DD
+        } catch (e) {
+            return null;   // a bad zone must not blank a perfectly good strip
+        }
     }
 
     function insightCard(emoji, cls, label, value, sub) {

@@ -1114,6 +1114,35 @@ before building.
   `birthdays` it NEVER moves the top-level `status` — an optional accessory
   that pauses nothing must not be able to report the scheduler as degraded. A
   missing heartbeat means "not installed", not "unhealthy".
+- **The Command Center strip** (`#dash-anniversaries` in `public/js/dashboard.js`,
+  `.anniv-strip`/`.anniv-chip` in `public/css/pages/anniversaries.css`) puts
+  today's celebrants under the dashboard header as one chip per person. Four
+  properties, all deliberate: it renders NOTHING on the ~300 empty days a year
+  (no empty state above the fold); it never surfaces its own failures there (a
+  roster that can't be read just means no strip — an optional accessory must not
+  put a red banner on the floor's main screen); it is the SAME selection the bot
+  posts (same `min_years`/mode/opt-outs, so nobody asks why Slack stayed quiet
+  about somebody listed there); and it does NOT cost a roster read per poll.
+  That last one matters: the dashboard polls every 30s and
+  `GET /api/anniversaries/today` sits on a 5000-row MSSQL query behind a 30s
+  timeout. So the browser refetches at most every 10 min (`ANNIV_REFRESH_MS`)
+  and the server memoises to `data/anniversary_today.json`
+  (`ANNIV_TODAY_TTL_OK` 30 min; `ANNIV_TODAY_TTL_FAIL` 10 min — **caching the
+  FAILURE is the point**, or an unreachable database is retried by every open
+  dashboard on every poll, each waiting out the connect timeout). The entry
+  carries `annivTodaySignature()`, a hash of every setting that decides who
+  counts, so a settings change invalidates it outright instead of leaving a
+  wrong chip up for the rest of the TTL — add a setting there when you add one
+  that changes the answer. `anniversaries/tests/test_today_cache.php` pins all
+  of this (it needs config.php but no DB — config.php is constants only).
+- **The milestone chip keeps the SAME background as an ordinary chip** and is
+  lifted by a border + halo + a ★ instead. Filling it with the hue looked right
+  on dark and was backwards on light, where the ordinary chips are white and a
+  green-tinted milestone chip was the DIMMEST thing in the row it is supposed to
+  lead. The star also means the distinction is not carried by two shades of
+  green alone. Light-mode `--anniversary` is `#4a7016` (5.9:1 on white) rather
+  than the more obvious `#5f8f22`, which measures 3.9:1 and fails AA for the
+  0.72rem uppercase labels.
 
 ### Tag Board & PWA
 - Tag Board (`#/tags`, `public/js/tags.js`, `public/css/pages/tags.css`) is the

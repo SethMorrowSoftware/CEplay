@@ -17,15 +17,122 @@
     --anniversary: #8fbf4d;         /* Laurel */
     --anniversary-rgb: 143, 191, 77;
 }
+/* Deeper on light surfaces. #4a7016 on white is 5.9:1, which the 0.72rem
+   uppercase labels need — the more obvious #5f8f22 measures 3.9:1 and fails
+   AA for text that small. */
 :root[data-theme="light"] {
-    --anniversary: #5f8f22;
-    --anniversary-rgb: 95, 143, 34;
+    --anniversary: #4a7016;
+    --anniversary-rgb: 74, 112, 22;
 }
 @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
-        --anniversary: #5f8f22;
-        --anniversary-rgb: 95, 143, 34;
+        --anniversary: #4a7016;
+        --anniversary-rgb: 74, 112, 22;
     }
+}
+
+/* ============================================
+   The Command Center strip (public/js/dashboard.js)
+   ============================================
+   Today's anniversaries as a row of chips under the dashboard header. It lives
+   here rather than in pages/dashboard.css so one file owns the anniversary
+   look — the hue above is the same one the page uses.
+
+   It is INVISIBLE on the ~300 days a year with nobody celebrating (the JS
+   hides the container outright), so this styling never has to account for an
+   empty state. Frame idiom — 12px radius, 4px tinted left border — is the
+   insight-card one from components/insight-cards.css, so the two rows sitting
+   on top of each other read as one system. */
+
+.anniv-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.7rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(var(--anniversary-rgb), 0.3);
+    border-left: 4px solid var(--anniversary);
+    border-radius: 12px;
+    background: rgba(var(--anniversary-rgb), 0.07);
+}
+/* A milestone year in the room gets a touch more presence — not a different
+   design, just more of the same one. */
+.anniv-strip-milestone { background: rgba(var(--anniversary-rgb), 0.12); }
+
+.anniv-strip-icon { font-size: 1.15rem; line-height: 1; flex: 0 0 auto; }
+.anniv-strip-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--anniversary);
+    flex: 0 0 auto;
+}
+.anniv-strip-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-width: 0;          /* so long names wrap instead of stretching the row */
+}
+.anniv-strip-go {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    flex: 0 0 auto;
+}
+.anniv-strip:hover .anniv-strip-go { color: var(--anniversary); }
+
+/* One chip per person: who, and how long. The years are the reason the strip
+   exists, so they get their own pill rather than being folded into the name. */
+.anniv-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    font-size: 0.82rem;
+    max-width: 100%;
+}
+.anniv-chip-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.anniv-chip-years {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+/* A milestone has to be visible before anybody reads the number.
+   It keeps the SAME background as an ordinary chip and is lifted by a border
+   and a halo instead. Filling it with the hue looked right on dark and was
+   backwards on light: the ordinary chips are white there, so a green-tinted
+   milestone chip was the DIMMEST thing in a row it is supposed to lead.
+   A halo reads as "highlighted" against either surface.
+   The star carries the same meaning without colour, for anyone who cannot
+   separate the two greens. */
+.anniv-chip-milestone {
+    border-color: var(--anniversary);
+    box-shadow: 0 0 0 3px rgba(var(--anniversary-rgb), 0.18);
+}
+.anniv-chip-star {
+    color: var(--anniversary);
+    font-size: 0.7rem;
+    line-height: 1;
+    margin-right: -0.15rem;   /* sits with the years, not floating between */
+}
+.anniv-chip-milestone .anniv-chip-years { color: var(--text-primary); font-weight: 700; }
+.anniv-chip-more { color: var(--text-secondary); font-size: 0.78rem; }
+
+@media (max-width: 640px) {
+    /* The arrow's `margin-left: auto` would strand it on its own line once the
+       chips wrap, so on narrow screens the whole row just stacks. */
+    .anniv-strip { align-items: flex-start; }
+    .anniv-strip-go { display: none; }
 }
 
 /* --- Health checks: one line per dependency ---------------------------- */

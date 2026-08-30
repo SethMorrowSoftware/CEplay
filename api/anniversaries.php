@@ -43,6 +43,11 @@ function handleAnniversaries(string $method, array $parts, ?array $input): void
         annivApiUpcoming();
         return;
     }
+    if ($action === 'today') {
+        if ($method !== 'GET') { annivApi405(); return; }
+        annivApiToday();
+        return;
+    }
     if ($action === 'test') {
         if ($method !== 'POST') { annivApi405(); return; }
         Auth::requireAccess('anniversaries_manage');
@@ -370,6 +375,167 @@ function annivApiUpcoming(): void
         'mode'          => $opts['mode'],
         'min_years'     => $opts['min_years'],
     ]);
+}
+
+// ---------------------------------------------------------------------------
+// Today's celebrants, for the Command Center chip
+//
+// The dashboard polls every 30 seconds and is the busiest page in the app, so
+// this endpoint must NEVER cost a roster read per request: that is a 5000-row
+// MSSQL query behind a 30-second timeout, and on a venue where MSSQL is slow or
+// down it would stall the one page an operator watches while running the floor.
+//
+// So the answer is memoised to a small file in data/ and recomputed only when
+// it is genuinely out of date. FAILURES are cached too, and that is the point
+// rather than an oversight: without it, an unreachable database would be
+// retried on every poll from every open dashboard, each one waiting out the
+// full connect timeout.
+//
+// The cache carries a SIGNATURE of every setting that changes the answer, so
+// editing the roster query or the milestone rules on the Anniversaries page
+// shows up on the dashboard immediately instead of at the end of a TTL — the
+// stale-chip bug that a plain time-based cache would have.
+// ---------------------------------------------------------------------------
+
+/** How long a good answer stands. The roster barely changes during a day. */
+const ANNIV_TODAY_TTL_OK = 1800;    // 30 minutes
+/** How long a failure stands — shorter, so a fixed connection recovers soon. */
+const ANNIV_TODAY_TTL_FAIL = 600;   // 10 minutes
+
+/**
+ * Everything that decides WHO shows up today.
+ *
+ * Any change to one of these has to invalidate the cache, so they are hashed
+ * rather than listed: a new setting added to the list below is the only thing
+ * needed to keep the chip honest.
+ */
+function annivTodaySignature(array $cfg): string
+{
+    return substr(hash('sha256', json_encode([
+        (string)($cfg['roster_sql'] ?? ''),
+        (string)($cfg['leap_day_mode'] ?? ''),
+        (string)($cfg['celebrate_years'] ?? ''),
+        (int)($cfg['min_years'] ?? 0),
+        annivMilestoneYears($cfg['milestone_years'] ?? null),
+        (string)($cfg['name_style'] ?? ''),
+        (array)($cfg['exclude_emp_nos'] ?? []),
+        (array)($cfg['exclude_names'] ?? []),
+        (array)($cfg['ignore_hire_dates'] ?? []),
+        (string)($cfg['timezone'] ?? ''),
+    ])), 0, 16);
+}
+
+/**
+ * Who is celebrating today — a small, cacheable payload for the dashboard.
+ *
+ * Deliberately the SAME selection the bot would post: same min_years, same
+ * milestone mode, same exclusions. A dashboard that listed people Slack said
+ * nothing about would just raise "why didn't the bot mention Dana?".
+ *
+ * `available` false means the roster could not be read (no driver, not
+ * configured, query broken). The dashboard renders nothing at all in that case
+ * — an accessory that cannot answer must not put an error on the floor's main
+ * screen. The Anniversaries page is where that gets diagnosed.
+ */
+function annivApiToday(): void
+{
+    $cfg = AnniversaryConfig::load(annivConfigFile());
+    $tz = trim((string)($cfg['timezone'] ?? '')) ?: (defined('DEFAULT_TIMEZONE') ? DEFAULT_TIMEZONE : 'UTC');
+    $prev = date_default_timezone_get();
+    @date_default_timezone_set($tz);
+    $today = date('Y-m-d');
+
+    $path = (string)($cfg['today_cache_file'] ?? '');
+    $sig  = annivTodaySignature($cfg);
+    $force = !empty($_GET['refresh']);
+
+    $cached = $force ? null : annivTodayCacheRead($path, $today, $sig);
+    if ($cached !== null) {
+        @date_default_timezone_set($prev);
+        $cached['cached'] = true;
+        echo json_encode($cached);
+        return;
+    }
+
+    $out = [
+        'date'      => $today,
+        'timezone'  => $tz,
+        'available' => true,
+        'reason'    => '',
+        'people'    => [],
+        'count'     => 0,
+        'mode'      => (string)($cfg['celebrate_years'] ?? 'all'),
+        'checked_at' => date('c'),
+    ];
+    try {
+        $norm = annivApiRoster($cfg);
+        $style = (string)($cfg['name_style'] ?? 'full');
+        foreach (annivCelebrants($norm['people'], $today, annivApiPickOpts($cfg)) as $p) {
+            $out['people'][] = [
+                'name'      => annivDisplayName($p, $style),
+                'years'     => (int)$p['years'],
+                'milestone' => !empty($p['milestone']),
+            ];
+        }
+        $out['count'] = count($out['people']);
+    } catch (Exception $e) {
+        $out['available'] = false;
+        $out['reason'] = $e->getMessage();
+    }
+
+    annivTodayCacheWrite($path, $sig, $out);
+    @date_default_timezone_set($prev);
+    $out['cached'] = false;
+    echo json_encode($out);
+}
+
+/** The cached answer, or null when there isn't a usable one. */
+function annivTodayCacheRead(string $path, string $today, string $sig): ?array
+{
+    if ($path === '' || !is_file($path)) {
+        return null;
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return null;
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data) || !isset($data['payload']) || !is_array($data['payload'])) {
+        return null;
+    }
+    // A different day, or settings that change who counts, means the stored
+    // answer is about a different question — not merely an old answer to this
+    // one, so no TTL can rescue it.
+    if (($data['sig'] ?? '') !== $sig || ($data['payload']['date'] ?? '') !== $today) {
+        return null;
+    }
+    $age = time() - (int)($data['at'] ?? 0);
+    $ttl = !empty($data['payload']['available']) ? ANNIV_TODAY_TTL_OK : ANNIV_TODAY_TTL_FAIL;
+    return ($age >= 0 && $age < $ttl) ? $data['payload'] : null;
+}
+
+/** Store the answer. Best-effort: a cache that cannot be written just costs a query. */
+function annivTodayCacheWrite(string $path, string $sig, array $payload): void
+{
+    if ($path === '') {
+        return;
+    }
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+        return;
+    }
+    $json = json_encode(['at' => time(), 'sig' => $sig, 'payload' => $payload]);
+    if ($json === false) {
+        return;
+    }
+    // Written like the bot's state file: atomically, and owner-only — it names
+    // employees.
+    $tmp = $path . '.tmp';
+    if (@file_put_contents($tmp, $json) === false) {
+        return;
+    }
+    @chmod($tmp, 0600);
+    @rename($tmp, $path);
 }
 
 /** Health check, message preview, and the two live Slack tests. */
