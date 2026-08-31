@@ -60,7 +60,7 @@ class Auth {
         'view_logs'        => 'View the Action Log / audit trail (card numbers, logins, IP addresses)',
         'view_birthdays'   => 'See the Birthdays page (upcoming staff birthdays, bot settings)',
         'birthdays_manage' => 'Change birthday bot settings and post test messages to Slack',
-        'view_anniversaries'   => 'See the Work Anniversaries page (upcoming years of service, bot settings)',
+        'view_anniversaries'   => 'See the Work Anniversaries page (every employee\'s years of service, bot settings)',
         'anniversaries_manage' => 'Change anniversary bot settings and post test messages to Slack',
     ];
 

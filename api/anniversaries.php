@@ -45,6 +45,11 @@ function handleAnniversaries(string $method, array $parts, ?array $input): void
         annivApiUpcoming();
         return;
     }
+    if ($action === 'roster') {
+        if ($method !== 'GET') { annivApi405(); return; }
+        annivApiRosterList();
+        return;
+    }
     if ($action === 'today') {
         if ($method !== 'GET') { annivApi405(); return; }
         annivApiToday();
@@ -274,8 +279,14 @@ function annivApiValidateList(string $key, array $list): void
     }
 }
 
-/** Read the roster, normalised, or throw with a message worth showing. */
-function annivApiRoster(array $cfg): array
+/**
+ * Read the roster, normalised, or throw with a message worth showing.
+ *
+ * $collectDropped is opt-in and only the whole-roster list uses it: the bot and
+ * the dashboard chip have no use for the rejected rows, and holding 1,350
+ * leavers in memory to discard them would be work for nothing.
+ */
+function annivApiRoster(array $cfg, bool $collectDropped = false): array
 {
     if (!MssqlClient::availableDrivers()) {
         throw new RuntimeException('No MSSQL driver in this PHP runtime — the app image needs pdo_dblib.');
@@ -293,8 +304,9 @@ function annivApiRoster(array $cfg): array
 
     $client = new MssqlClient();
     $client->setTimeout(max(5, (int)($cfg['query_timeout'] ?? 30)));
+    $limit = max(1, (int)($cfg['roster_max_rows'] ?? 5000));
     try {
-        $rows = $client->rows($sql, max(1, (int)($cfg['roster_max_rows'] ?? 5000)));
+        $rows = $client->rows($sql, $limit);
     } catch (Exception $e) {
         // A hire-date column that isn't called what the default query calls it
         // is the most likely failure on a fresh install, and MSSQL's own
@@ -308,12 +320,22 @@ function annivApiRoster(array $cfg): array
         throw $e;
     }
 
-    return annivNormalizeRoster($rows, [
+    $norm = annivNormalizeRoster($rows, [
         'today'             => date('Y-m-d'),
         'ignore_hire_dates' => (array)($cfg['ignore_hire_dates'] ?? []),
         'exclude_emp_nos'   => (array)($cfg['exclude_emp_nos'] ?? []),
         'exclude_names'     => (array)($cfg['exclude_names'] ?? []),
+        'collect_dropped'   => $collectDropped,
     ]);
+
+    // MssqlClient::rows() stops at the limit and returns what it has, with no
+    // error — the silent under-report that bit Revenue Mix. On a 60-day view a
+    // missing tail is nearly invisible; on a list headed "everyone" a missing
+    // person reads as "that person has no anniversary". Say it out loud.
+    $norm['row_count'] = count($rows);
+    $norm['truncated'] = count($rows) >= $limit;
+    $norm['row_limit'] = $limit;
+    return $norm;
 }
 
 /** Who's coming up, and what today's message would say. */
@@ -377,6 +399,177 @@ function annivApiUpcoming(): void
         'mode'          => $opts['mode'],
         'min_years'     => $opts['min_years'],
     ]);
+}
+
+/**
+ * The WHOLE roster, one row per person — the page's main list.
+ *
+ * /upcoming answers "who is coming up in the next N days, of the people the bot
+ * would post about". This answers "everybody, and when each of them is next
+ * due" — a different question, and the one somebody planning a quarter or
+ * checking nobody has been missed is actually asking.
+ *
+ * Three properties worth stating, because each is a trap avoided:
+ *
+ * ONE ROSTER READ. The page calls this and nothing else; the sort, the time
+ * range, the search and the CSV are all client-side work over this payload, the
+ * way Item Watch's toolbar is. A roster read is an MSSQL round trip behind an
+ * 8-second connect and a 30-second query timeout — filtering a list must never
+ * cost one.
+ *
+ * "COMPLETE" MEANS COMPLETE OVER TIME, NOT OVER THE PAYROLL. Every row here
+ * comes from the same operator-editable roster_sql the bot uses, through the
+ * same annivApiRoster(). There is no second query and no "include former staff"
+ * switch: widening that WHERE clause to fill this page would arm the exact
+ * failure RosterGuard exists to warn about, with a Slack post naming 1,350
+ * leavers as the first symptom. The payload therefore also carries the guard's
+ * verdict, so the headcount is read next to what makes it a headcount.
+ *
+ * WHAT REACHES THE BROWSER IS AN ALLOWLIST. Person records carry `email` and
+ * `slack_id`; neither has any use on this page, so neither is copied into a row
+ * — not hidden client-side, absent. `emp_no` is the key an admin uses to build
+ * exclude_emp_nos, so it only goes to `anniversaries_manage`. `hire_date` does
+ * go to everyone, deliberately: `years` plus `next_date` already determine it,
+ * so withholding the column would be theatre rather than privacy.
+ */
+function annivApiRosterList(): void
+{
+    $cfg = AnniversaryConfig::load(annivConfigFile());
+    // Same reason as every other handler in this file: the host runs UTC and
+    // the app runs Eastern, so without this the list computes "today" as
+    // tomorrow after 20:00 local and disagrees with /today and the dashboard.
+    $tz = trim((string)($cfg['timezone'] ?? '')) ?: (defined('DEFAULT_TIMEZONE') ? DEFAULT_TIMEZONE : 'UTC');
+    $prev = date_default_timezone_get();
+    @date_default_timezone_set($tz);
+    $today = date('Y-m-d');
+
+    $opts   = annivApiPickOpts($cfg);
+    $manage = Auth::hasPermission('anniversaries_manage');
+
+    // Built in full up front so the client's render path never trips over a
+    // missing key when the roster read fails — the api/items.php shape.
+    $out = [
+        'roster_ok'       => false,
+        'today'           => $today,
+        'timezone'        => $tz,
+        'rows'            => [],
+        'people_count'    => 0,
+        'row_count'       => 0,
+        'truncated'       => false,
+        'row_limit'       => 0,
+        'skipped'         => [],
+        'dropped'         => [],
+        'dropped_capped'  => false,
+        'sentinel_hits'   => [],
+        'oldest_hire'     => null,
+        'employment'      => ['ok' => true, 'summary' => ''],
+        'enabled'         => !empty($cfg['enabled']),
+        'mode'            => $opts['mode'],
+        'min_years'       => $opts['min_years'],
+        'milestone_years' => $opts['milestone_years'],
+        'leap_mode'       => $opts['leap_mode'],
+        'max_celebrants'  => max(1, (int)($cfg['max_celebrants'] ?? 25)),
+        'name_style'      => (string)($cfg['name_style'] ?? 'full'),
+        'can_manage'      => $manage,
+        'today_preview'   => null,
+    ];
+
+    try {
+        $norm = annivApiRoster($cfg, true);
+    } catch (Exception $e) {
+        // An unreachable database or a broken query is the EXPECTED failure
+        // here, so it is a message on the panel at HTTP 200, not a 500 the
+        // client can only render as "Request failed".
+        @date_default_timezone_set($prev);
+        $out['error'] = $e->getMessage();
+        echo json_encode($out);
+        return;
+    }
+
+    $people = $norm['people'];
+    $style  = $out['name_style'];
+
+    $rows = [];
+    foreach (annivRosterRows($people, $today, $opts) as $r) {
+        $row = [
+            'name'           => annivDisplayName($r, $style),
+            'hire_date'      => $r['hire_date'],
+            'years'          => $r['years'],
+            'next_date'      => $r['next_date'],
+            'next_years'     => $r['next_years'],
+            'next_milestone' => $r['next_milestone'],
+            'days_until'     => $r['days_until'],
+            'prev_date'      => $r['prev_date'],
+            'prev_years'     => $r['prev_years'],
+            'post_date'      => $r['post_date'],
+            'post_years'     => $r['post_years'],
+            'post_is_next'   => $r['post_is_next'],
+            'silent'         => $r['silent'],
+            'shared'         => $r['shared'],
+        ];
+        if ($manage) {
+            $row['emp_no'] = $r['emp_no'];
+        }
+        $rows[] = $row;
+    }
+
+    // The oldest hire date on the list, as a second reading on the roster
+    // filter. RosterGuard is a word-list heuristic and can pass while the
+    // filter is still wrong; a "current staff" list that reaches back three
+    // decades is self-evidently wrong in a way a passing regex is not.
+    $oldest = null;
+    foreach ($people as $p) {
+        if ($oldest === null || $p['hire_date'] < $oldest) {
+            $oldest = $p['hire_date'];
+        }
+    }
+
+    // Who was left out, and why. The data-quality buckets are the point of the
+    // panel — they are how somebody finds the record to fix. The `excluded`
+    // bucket is different: those are people an admin deliberately kept out of a
+    // public channel, so it goes only to whoever can edit that setting, where
+    // it answers the opposite question ("is my opt-out entry even matching?").
+    $dropped = [];
+    foreach ($norm['dropped'] as $d) {
+        if ($d['reason'] === 'excluded' && !$manage) {
+            continue;
+        }
+        $entry = [
+            'reason' => $d['reason'],
+            'name'   => annivDisplayName($d, $style),
+            'value'  => $d['value'],
+        ];
+        if ($manage) {
+            $entry['emp_no'] = $d['emp_no'];
+        }
+        $dropped[] = $entry;
+    }
+
+    $out['roster_ok']     = true;
+    $out['rows']          = $rows;
+    $out['people_count']  = count($people);
+    $out['row_count']     = (int)($norm['row_count'] ?? 0);
+    $out['truncated']     = !empty($norm['truncated']);
+    $out['row_limit']     = (int)($norm['row_limit'] ?? 0);
+    $out['skipped']       = $norm['skipped'];
+    $out['dropped']       = $dropped;
+    // The named rows stop at ANNIV_MAX_DROPPED while the counts stay complete,
+    // so the panel has to know when it is showing a sample rather than a list.
+    $out['dropped_capped'] = count($norm['dropped']) >= ANNIV_MAX_DROPPED;
+    $out['sentinel_hits'] = $norm['sentinel_hits'];
+    $out['oldest_hire']   = $oldest;
+    $out['employment']    = RosterGuard::employmentFilter((string)$cfg['roster_sql']);
+
+    // Exactly what would go out today, built the way the timer builds it, so
+    // the list and the message above it can never disagree.
+    $todayHits = annivCelebrants($people, $today, $opts);
+    if ($todayHits) {
+        $out['today_preview'] = annivBuildText($todayHits, annivMessageConfig($cfg),
+            annivSeedFor($today, $todayHits));
+    }
+
+    @date_default_timezone_set($prev);
+    echo json_encode($out);
 }
 
 // ---------------------------------------------------------------------------

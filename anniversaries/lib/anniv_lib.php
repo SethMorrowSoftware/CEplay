@@ -172,6 +172,36 @@ function annivIsUsableHireDate(?string $iso, array $extraSentinels = [], ?string
 }
 
 /**
+ * Split a roster row's name columns into first/last/full, tolerating a single
+ * "Last, First" or "First Last" column where there is no separate pair.
+ *
+ * Pulled out of annivNormalizeRoster() so a row that is about to be DROPPED can
+ * still be named: "12 rows had no usable hire date" tells you a column is
+ * wrong, but only "Dana Reyes, Sam Cole, …" tells you whose record to fix.
+ *
+ * @return array{first: string, last: string, name: string}
+ */
+function annivRowNames(array $row): array
+{
+    $first = trim((string)(annivPickCol($row, 'first_name') ?? ''));
+    $last  = trim((string)(annivPickCol($row, 'last_name') ?? ''));
+    $full  = trim((string)(annivPickCol($row, 'full_name') ?? ''));
+    if ($first === '' && $last === '' && $full !== '') {
+        if (strpos($full, ',') !== false) {
+            [$last, $first] = array_map('trim', array_pad(explode(',', $full, 2), 2, ''));
+        } else {
+            $bits  = preg_split('/\s+/', $full);
+            $first = array_shift($bits) ?? '';
+            $last  = implode(' ', $bits);
+        }
+    }
+    return ['first' => $first, 'last' => $last, 'name' => trim($first . ' ' . $last)];
+}
+
+/** At most this many dropped rows are kept when $cfg['collect_dropped'] is on. */
+const ANNIV_MAX_DROPPED = 400;
+
+/**
  * Turn raw roster rows into people, reporting exactly what was dropped and why.
  *
  * The counts matter: "0 anniversaries today" is an unremarkable result, but
@@ -179,7 +209,17 @@ function annivIsUsableHireDate(?string $iso, array $extraSentinels = [], ?string
  * pointed at the wrong column — most likely the birth date, which every one of
  * these tables also carries. The runner prints both.
  *
- * @return array{people: array, skipped: array, sentinel_hits: array}
+ * With $cfg['collect_dropped'] the dropped rows are also returned individually,
+ * for the page's "not on the list" panel. It is OPT-IN because the daily bot run
+ * has no use for them and should not hold 1,350 leavers in memory to throw away.
+ *
+ * WHAT A DROPPED RECORD MAY CARRY IS AN ALLOWLIST, and it has to stay one: this
+ * roster query is operator-editable and nothing stops it being SELECT *, over a
+ * table that also holds SSN, PasswordHash, PinHash and FingerprintTemplate. The
+ * raw row must never be echoed back — only the name, the hire value that was
+ * rejected, and the reason.
+ *
+ * @return array{people: array, skipped: array, sentinel_hits: array, dropped: array}
  */
 function annivNormalizeRoster(array $rows, array $cfg = []): array
 {
@@ -200,6 +240,25 @@ function annivNormalizeRoster(array $rows, array $cfg = []): array
     ];
     $sentinelHits = [];
     $seen = [];
+    $collect = !empty($cfg['collect_dropped']);
+    $dropped = [];
+
+    /** Record one rejected row under an allowlisted projection. See the docblock. */
+    $drop = function (string $reason, array $row, string $value = '') use (&$dropped, $collect) {
+        if (!$collect || count($dropped) >= ANNIV_MAX_DROPPED) {
+            return;
+        }
+        $n = annivRowNames($row);
+        $empNo = annivPickCol($row, 'emp_no');
+        $dropped[] = [
+            'reason' => $reason,
+            'name'   => $n['name'],
+            'first'  => $n['first'],
+            'last'   => $n['last'],
+            'emp_no' => $empNo === null ? '' : trim((string)$empNo),
+            'value'  => mb_substr(trim($value), 0, 40),
+        ];
+    };
 
     foreach ($rows as $row) {
         if (!is_array($row)) {
@@ -208,50 +267,49 @@ function annivNormalizeRoster(array $rows, array $cfg = []): array
         $rawHire = annivPickCol($row, 'hire_date');
         if ($rawHire === null || $rawHire === '') {
             $skipped['no_hire_date']++;
+            $drop('no_hire_date', $row);
             continue;
         }
         $iso = annivParseDate($rawHire);
         if ($iso === null) {
             $skipped['unparsed']++;
+            $drop('unparsed', $row, (string)$rawHire);
             continue;
         }
         if ($iso > $today) {
             // Hired, but not started. Counted on its own so a roster full of
             // future start dates doesn't read as a broken column.
             $skipped['future']++;
+            $drop('future', $row, $iso);
             continue;
         }
         if (!annivIsUsableHireDate($iso, $extraSentinels, $today)) {
             $skipped['sentinel']++;
             $sentinelHits[$iso] = ($sentinelHits[$iso] ?? 0) + 1;
+            $drop('sentinel', $row, $iso);
             continue;
         }
 
-        $first = trim((string)(annivPickCol($row, 'first_name') ?? ''));
-        $last  = trim((string)(annivPickCol($row, 'last_name') ?? ''));
-        $full  = trim((string)(annivPickCol($row, 'full_name') ?? ''));
-        if ($first === '' && $last === '' && $full !== '') {
-            // A single "Last, First" or "First Last" column.
-            if (strpos($full, ',') !== false) {
-                [$last, $first] = array_map('trim', array_pad(explode(',', $full, 2), 2, ''));
-            } else {
-                $bits  = preg_split('/\s+/', $full);
-                $first = array_shift($bits) ?? '';
-                $last  = implode(' ', $bits);
-            }
-        }
+        $names = annivRowNames($row);
+        $first = $names['first'];
+        $last  = $names['last'];
         if ($first === '' && $last === '') {
             $skipped['no_name']++;
+            $drop('no_name', $row, $iso);
             continue;
         }
 
         $empNo = annivPickCol($row, 'emp_no');
         $empNo = $empNo === null ? '' : trim((string)$empNo);
-        $nameFull = trim($first . ' ' . $last);
+        $nameFull = $names['name'];
 
         if (($empNo !== '' && in_array($empNo, $excludeNos, true))
             || in_array(annivNormKey($nameFull), $excludeNames, true)) {
             $skipped['excluded']++;
+            // Which rule matched, so a typo'd opt-out entry is visibly not
+            // matching anybody rather than silently doing nothing.
+            $drop('excluded', $row,
+                ($empNo !== '' && in_array($empNo, $excludeNos, true)) ? 'employee number' : 'name');
             continue;
         }
 
@@ -259,6 +317,7 @@ function annivNormalizeRoster(array $rows, array $cfg = []): array
         $dedupeKey = $empNo !== '' ? 'e:' . $empNo : 'n:' . annivNormKey($nameFull) . '|' . $iso;
         if (isset($seen[$dedupeKey])) {
             $skipped['duplicate']++;
+            $drop('duplicate', $row, $iso);
             continue;
         }
         $seen[$dedupeKey] = true;
@@ -281,7 +340,8 @@ function annivNormalizeRoster(array $rows, array $cfg = []): array
     }
 
     arsort($sentinelHits);
-    return ['people' => $people, 'skipped' => $skipped, 'sentinel_hits' => $sentinelHits];
+    return ['people' => $people, 'skipped' => $skipped, 'sentinel_hits' => $sentinelHits,
+            'dropped' => $dropped];
 }
 
 /** Is this a leap year? */
@@ -451,6 +511,368 @@ function annivUpcoming(array $people, string $from, int $days, array $opts = [])
         }
     }
     return $out;
+}
+
+// ---------------------------------------------------------------------------
+// Looking FORWARD from one person, rather than sweeping a range of days
+//
+// annivUpcoming() answers "who is coming up in the next N days" by walking one
+// day at a time — the right shape for a Slack bot, which only ever cares about
+// a short window. It is the wrong shape for a COMPLETE list: answering "when is
+// everybody's next anniversary" that way means sweeping 366 days for every
+// person, and it still cannot answer "when would the bot next post about this
+// person" when the answer is four milestone years away.
+//
+// So these three go the other way round: given one person, compute the dates
+// directly. They are the primitives the Anniversaries page's whole-roster list
+// is built from, and they are deliberately here rather than in the API handler
+// so that annivCelebrants() and this list can never drift apart about what
+// somebody's year count is — the same rule that put annivMessageConfig() in
+// one place.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which calendar date a hire month/day is OBSERVED on in $year, or null when
+ * the leap rule says it is not observed in that year at all.
+ *
+ * Only 29 February is ever interesting: every other month/day exists in every
+ * year. In a leap year 29 February is a real date and is used as-is, so the
+ * substitute must NOT also fire — the same rule annivTargetMonthDays() applies
+ * from the other direction, and these two have to agree or a person would be
+ * congratulated twice (or listed on a day the bot stays quiet).
+ */
+function annivObservedDate(int $year, int $month, int $day, string $leapMode = 'feb28'): ?string
+{
+    if ($month === 2 && $day === 29 && !annivIsLeapYear($year)) {
+        switch ($leapMode) {
+            case 'mar1': return annivMakeIso($year, 3, 1);
+            case 'skip': return null;
+            default:     return annivMakeIso($year, 2, 28);
+        }
+    }
+    return annivMakeIso($year, $month, $day);
+}
+
+/**
+ * The next work anniversary falling on or after $from, ignoring every posting
+ * rule — this is the calendar answer, not the bot's answer.
+ *
+ * $from itself counts: somebody whose anniversary is today gets today's date
+ * back, not next year's, which is what makes a list sorted by this field put
+ * today's celebrants at the top where they belong.
+ *
+ * `years` is the count they reach on that date, computed the same way
+ * annivYearsOfService() computes it (a plain year subtraction against the
+ * observance date), so a person listed here on date X shows exactly the number
+ * annivCelebrants() would give them on X.
+ *
+ * Returns null only if no observance can be found inside the search bound,
+ * which takes a leap-day hire under leap_mode 'skip' plus a broken calendar to
+ * achieve. The bound is there so a future edit cannot turn this into a spin.
+ *
+ * @return array{date: string, years: int}|null
+ */
+function annivNextAnniversary(string $hireIso, string $from, string $leapMode = 'feb28'): ?array
+{
+    $from     = substr($from, 0, 10);   // tolerate a 'Y-m-d H:i:s' caller
+    $hireYear = (int)substr($hireIso, 0, 4);
+    $month    = (int)substr($hireIso, 5, 2);
+    $day      = (int)substr($hireIso, 8, 2);
+    $startY   = (int)substr($from, 0, 4);
+
+    // Leap years are four apart EXCEPT across a non-leap century (2096 -> 2104),
+    // so a leap-day hire under 'skip' can wait eight. Anything less is not slow,
+    // it is wrong: it reports "no next anniversary" for somebody who has one.
+    for ($y = $startY; $y <= $startY + 8; $y++) {
+        $observed = annivObservedDate($y, $month, $day, $leapMode);
+        if ($observed !== null && $observed >= $from) {
+            return ['date' => $observed, 'years' => $y - $hireYear];
+        }
+    }
+    return null;
+}
+
+/**
+ * The most recent anniversary falling on or before $on, or null when there has
+ * not been one yet.
+ *
+ * The mirror of annivNextAnniversary(), and it exists so a list can be asked
+ * BACKWARD questions — "who have we already celebrated this year?", "who had an
+ * anniversary while I was away?" — which a forward-only view cannot answer at
+ * all. $on itself counts, so on somebody's anniversary this and the forward
+ * version agree, as they should.
+ *
+ * Never returns a date before the hire date: the day somebody started is
+ * reported (as year 0, the same as the forward version reports it), but the
+ * years before they worked here are not anniversaries of anything.
+ *
+ * @return array{date: string, years: int}|null
+ */
+function annivPrevAnniversary(string $hireIso, string $on, string $leapMode = 'feb28'): ?array
+{
+    $on       = substr($on, 0, 10);
+    $hireIso  = substr($hireIso, 0, 10);
+    $hireYear = (int)substr($hireIso, 0, 4);
+    $month    = (int)substr($hireIso, 5, 2);
+    $day      = (int)substr($hireIso, 8, 2);
+    $startY   = (int)substr($on, 0, 4);
+
+    for ($y = $startY; $y >= $startY - 8 && $y >= $hireYear; $y--) {
+        $observed = annivObservedDate($y, $month, $day, $leapMode);
+        if ($observed !== null && $observed <= $on && $observed >= $hireIso) {
+            return ['date' => $observed, 'years' => $y - $hireYear];
+        }
+    }
+    return null;
+}
+
+/**
+ * The next anniversary the bot would actually POST about, or null if there
+ * isn't one.
+ *
+ * Different from annivNextAnniversary() in three ways, each of them a rule the
+ * bot already applies in annivCelebrants():
+ *
+ *   - min_years — a first year below the threshold is skipped, not celebrated
+ *     quietly. Somebody hired last month has a next anniversary; under the
+ *     default they also have a next POSTED anniversary, on the same day.
+ *   - mode 'milestones' — only the configured milestone years post at all, so
+ *     the answer can be years out, and can be NULL: a person at 12 years with
+ *     a milestone list ending at 10 will never be posted about again. Saying
+ *     null out loud is the point — that silence is otherwise invisible.
+ *   - leap_mode 'skip' — a leap-day hire is only observed in leap years, so
+ *     an otherwise-eligible year can be passed over.
+ *
+ * The search is bounded by the largest configured milestone in milestone mode
+ * (past it nothing can ever match) and by a handful of years otherwise, so it
+ * always terminates.
+ *
+ * @param array $opts leap_mode, min_years, mode ('all'|'milestones'), milestone_years
+ * @return array{date: string, years: int}|null
+ */
+function annivNextCelebrated(string $hireIso, string $from, array $opts = []): ?array
+{
+    $leapMode   = (string)($opts['leap_mode'] ?? 'feb28');
+    $minYears   = max(0, (int)($opts['min_years'] ?? ANNIV_DEFAULT_MIN_YEARS));
+    $mode       = (string)($opts['mode'] ?? 'all');
+    $milestones = annivMilestoneYears($opts['milestone_years'] ?? null);
+
+    $from = substr($from, 0, 10);
+    $next = annivNextAnniversary($hireIso, $from, $leapMode);
+    if ($next === null) {
+        return null;
+    }
+
+    $hireYear = (int)substr($hireIso, 0, 4);
+    $month    = (int)substr($hireIso, 5, 2);
+    $day      = (int)substr($hireIso, 8, 2);
+    $first    = (int)$next['years'];
+
+    if ($mode === 'milestones') {
+        if (!$milestones) {
+            return null;   // milestone-only with no milestones can never post
+        }
+        $limit = max($milestones);
+    } else {
+        // +8, not +4: see annivNextAnniversary() on the non-leap century.
+        $limit = max($minYears, $first) + 8;
+    }
+
+    for ($years = $first; $years <= $limit; $years++) {
+        if ($years < $minYears) {
+            continue;
+        }
+        if ($mode === 'milestones' && !annivIsMilestone($years, $milestones)) {
+            continue;
+        }
+        $observed = annivObservedDate($hireYear + $years, $month, $day, $leapMode);
+        if ($observed !== null && $observed >= $from) {
+            return ['date' => $observed, 'years' => $years];
+        }
+    }
+    return null;
+}
+
+/**
+ * Completed years of service on $on — the HR number, not the next one.
+ *
+ * A plain calendar count, with one deliberate exception: on the day somebody's
+ * anniversary is OBSERVED it reads as the number the bot is announcing that
+ * morning. Without it, a 29 February hire congratulated on 28 February would
+ * be shown on the same screen as one year less than the message says, because
+ * the calendar has not reached their real date yet. Every other day of the
+ * year the two definitions agree.
+ */
+function annivYearsCompleted(string $hireIso, string $on, string $leapMode = 'feb28'): int
+{
+    $on   = substr($on, 0, 10);
+    $next = annivNextAnniversary($hireIso, $on, $leapMode);
+    if ($next !== null && $next['date'] === $on) {
+        return (int)$next['years'];
+    }
+    $years = (int)substr($on, 0, 4) - (int)substr($hireIso, 0, 4);
+    if (substr($on, 5) < substr($hireIso, 5)) {
+        $years--;
+    }
+    return max(0, $years);
+}
+
+/**
+ * The whole roster as list rows — every person, every date, computed once.
+ *
+ * This is the complete-list counterpart to annivCelebrants()/annivUpcoming(),
+ * and the reason it is a pure function taking `people + today + opts` is the
+ * same reason revenueCompose() is one: the page's most important numbers should
+ * be testable without a database, and the sandbox has no MSSQL driver.
+ *
+ * Two DIFFERENT dates per person, and keeping them apart is the whole point of
+ * the panel this feeds:
+ *
+ *   next_date  — the calendar answer. When their anniversary falls, full stop.
+ *   post_date  — the bot's answer. What Slack will actually say something on,
+ *                after min_years, milestone-only mode and the leap rule have
+ *                had their say. NULL when the bot will never mention them
+ *                again, with `silent` naming which rule did it.
+ *
+ * Collapse those into one column and the page starts answering "why didn't the
+ * bot mention Dana?" wrongly — the question the dashboard strip's same-selection
+ * rule exists to prevent.
+ *
+ * `shared` counts how many people share that posting date, so the page can
+ * predict the one day the bot refuses outright: a cohort bigger than
+ * max_celebrants. A seasonal venue hires in cohorts (this roster has 24 people
+ * on one spring date), so that day is a real, dated, foreseeable silence.
+ *
+ * It is counted by asking annivCelebrants() itself, per posting date, rather
+ * than by grouping the rows: those two agree for any date inside the next
+ * twelve months, but further out they do not. Milestone mode can put somebody's
+ * FIFTH anniversary next spring and their TENTH on a date four years away that
+ * another person reaches first — group the rows and the distant date reports
+ * one person where the bot will find two, and the warning that matters silently
+ * never appears. Only the candidates sharing that month and day are tested, so
+ * the exact answer costs a few thousand comparisons, not a sweep.
+ *
+ * Names are left RAW here — annivDisplayName() is applied by the caller, which
+ * knows the configured name_style.
+ *
+ * @param array $opts leap_mode, min_years, mode ('all'|'milestones'), milestone_years
+ */
+function annivRosterRows(array $people, string $today, array $opts = []): array
+{
+    $today      = substr($today, 0, 10);
+    $leapMode   = (string)($opts['leap_mode'] ?? 'feb28');
+    $minYears   = max(0, (int)($opts['min_years'] ?? ANNIV_DEFAULT_MIN_YEARS));
+    $mode       = (string)($opts['mode'] ?? 'all');
+    $milestones = annivMilestoneYears($opts['milestone_years'] ?? null);
+
+    $rows = [];
+    // Candidates bucketed by hire month/day, so counting a posting date's
+    // celebrants only ever compares the handful of people who could be on it.
+    $byMd = [];
+    foreach ($people as $p) {
+        $byMd[(int)$p['month'] . '-' . (int)$p['day']][] = $p;
+    }
+
+    foreach ($people as $p) {
+        $hire = (string)$p['hire_date'];
+        $next = annivNextAnniversary($hire, $today, $leapMode);
+        $prev = annivPrevAnniversary($hire, $today, $leapMode);
+        $post = annivNextCelebrated($hire, $today, $opts);
+
+        // Why the bot will stay quiet on the next anniversary, if it will.
+        //
+        // When both rules could be blocking, the one that is REPORTED is the
+        // one that is actually holding it up: if the next anniversary would
+        // post but for the floor, the floor is the answer; if it would not post
+        // even without the floor, the milestone list is. Naming the wrong one
+        // sends somebody to change a setting that changes nothing.
+        $silent = '';
+        if ($post === null) {
+            $silent = $mode === 'milestones'
+                ? ($milestones ? 'no_milestone_left' : 'no_milestones')
+                : 'never';
+        } elseif ($next !== null && $post['date'] !== $next['date']) {
+            $postableButForFloor = $mode !== 'milestones'
+                || annivIsMilestone((int)$next['years'], $milestones);
+            $silent = $postableButForFloor ? 'below_min' : 'milestones_only';
+        }
+
+        $row = [
+            'emp_no'         => (string)$p['emp_no'],
+            'first'          => (string)$p['first'],
+            'last'           => (string)$p['last'],
+            'name'           => (string)$p['name'],
+            'hire_date'      => $hire,
+            'years'          => annivYearsCompleted($hire, $today, $leapMode),
+            'next_date'      => $next['date'] ?? null,
+            'next_years'     => $next === null ? null : (int)$next['years'],
+            'next_milestone' => $next !== null && annivIsMilestone((int)$next['years'], $milestones),
+            'days_until'     => $next === null ? null : annivDaysBetween($today, $next['date']),
+            'prev_date'      => $prev['date'] ?? null,
+            'prev_years'     => $prev === null ? null : (int)$prev['years'],
+            'post_date'      => $post['date'] ?? null,
+            'post_years'     => $post === null ? null : (int)$post['years'],
+            'post_is_next'   => $post !== null && $next !== null && $post['date'] === $next['date'],
+            'silent'         => $silent,
+            'shared'         => 0,
+        ];
+        $rows[] = $row;
+    }
+
+    // How many people the bot will find on each posting date — its own count,
+    // from its own function, over only the candidates who could share the day.
+    $sharedByDate = [];
+    foreach ($rows as &$r) {
+        $d = $r['post_date'];
+        if ($d === null) {
+            continue;
+        }
+        if (!isset($sharedByDate[$d])) {
+            $candidates = [];
+            foreach (annivTargetMonthDays($d, $leapMode) as $t) {
+                foreach ($byMd[$t[0] . '-' . $t[1]] ?? [] as $c) {
+                    $candidates[] = $c;
+                }
+            }
+            $sharedByDate[$d] = count(annivCelebrants($candidates, $d, $opts));
+        }
+        $r['shared'] = $sharedByDate[$d];
+    }
+    unset($r);
+
+    // Soonest first, then longest service, then by name — the order somebody
+    // scanning for "who is next" reads in. The page can re-sort client-side;
+    // this is only the order it arrives in.
+    usort($rows, function ($a, $b) {
+        $ad = $a['next_date'] ?? '9999-12-31';
+        $bd = $b['next_date'] ?? '9999-12-31';
+        if ($ad !== $bd) {
+            return strcmp($ad, $bd);
+        }
+        if ($a['years'] !== $b['years']) {
+            return $b['years'] <=> $a['years'];
+        }
+        return strcasecmp($a['name'], $b['name']);
+    });
+    return $rows;
+}
+
+/**
+ * Whole days from $from to $to, both ISO dates.
+ *
+ * Built from UTC midnights rather than strtotime() on the local zone: across a
+ * DST boundary a local-time difference is 23 or 25 hours, and integer-dividing
+ * that by 86400 loses or gains a day — which would print "in 6 days" on the
+ * morning of the seventh.
+ */
+function annivDaysBetween(string $from, string $to): int
+{
+    $a = strtotime(substr($from, 0, 10) . ' 00:00:00 UTC');
+    $b = strtotime(substr($to, 0, 10) . ' 00:00:00 UTC');
+    if ($a === false || $b === false) {
+        return 0;
+    }
+    return (int)round(($b - $a) / 86400);
 }
 
 /** Render one person's name per the configured style. */

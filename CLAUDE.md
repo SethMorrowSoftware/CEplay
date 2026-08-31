@@ -1177,9 +1177,66 @@ before building.
 - `annivMessageConfig()` is the single place that lists which settings shape a
   message — same rule and same reason as `bdayMessageConfig()`. Add a wording
   setting there, never at a call site.
+- **The page's main list is the WHOLE roster, not a 60-day window**
+  (`GET /api/anniversaries/roster`, `annivApiRosterList()`). One row per person
+  the roster query returns, sortable on every column and filterable by time
+  range (next 7/30/90 days, this/next month, this/next quarter, rest of year,
+  last 30/90 days, earlier this year, custom, or everyone), by name, and by
+  milestone / bot-stays-quiet. **ONE roster read per page load** — the range,
+  sort, search and CSV are client-side over that payload, the Item Watch rule,
+  because a roster read is an MSSQL round trip behind an 8s connect and a 30s
+  query timeout. The page no longer calls `/upcoming` at all (that endpoint
+  still exists and still works; the CLI's `--list` is its remaining consumer).
+  Four properties that are the point of it:
+  - **Two dates per person, never merged**: `next_date` (the calendar answer)
+    beside `post_date` (what the bot will actually do, after `min_years`,
+    milestone-only mode and the leap rule). `post_date` NULL renders as
+    "Never again" **in words with the reason** — that silence is otherwise
+    invisible, and one merged column is how the page would start answering
+    "why didn't Slack mention Dana?" wrongly, 193 times.
+  - **"Complete" means complete over TIME, not over the payroll.** Same
+    `annivApiRoster()`, same operator-editable `roster_sql`, no second query and
+    no "include former staff" switch — widening that WHERE clause to fill this
+    page is the failure RosterGuard exists to warn about (193 current staff of
+    1,547 rows), and a page headed "everyone" showing 1,547 rows looks exactly
+    like the feature working. So the guard's verdict and the oldest hire date
+    render BESIDE the headcount, which reads "N people the roster query
+    returns", never "N employees".
+  - **What reaches the browser is an allowlist.** `email` and `slack_id` are
+    absent from the row entirely (not hidden client-side); `emp_no` and the
+    opted-out names go only to `anniversaries_manage`, scrubbed server-side.
+    `hire_date` goes to everyone deliberately — `years` + `next_date` already
+    determine it, and it is the column that catches a `DateOfHire`/`DateOfBirth`
+    mix-up. A unit test pins the exact key list of `annivRosterRows()` rows, and
+    another feeds a row carrying `SSN`/`PasswordHash` and asserts none of it
+    survives: `roster_sql` is operator-editable and `assertReadOnly()` permits
+    `SELECT *`.
+  - **It predicts the day the bot will REFUSE.** `shared` counts how many people
+    post on the same date; over `max_celebrants` the row says so. A seasonal
+    venue hires in cohorts (24 people on one spring date here), so that is a
+    real, dated, foreseeable silence — and this is the first surface that can
+    see all 366 days at once.
+  A **"Not on the list"** panel names the rows the normaliser dropped and why
+  (`collect_dropped`, OPT-IN — the daily run must not hold 1,350 leavers in
+  memory to discard them). Data-quality buckets are shown to anyone who can see
+  the page; the `excluded` bucket is `anniversaries_manage` only and labelled
+  as an opt-out rather than a defect, echoing which rule matched so a typo'd
+  `exclude_names` entry is visibly matching nobody.
+  Pure date logic lives in `anniv_lib.php` (`annivObservedDate`,
+  `annivNextAnniversary`, `annivPrevAnniversary`, `annivNextCelebrated`,
+  `annivYearsCompleted`, `annivRosterRows`, `annivDaysBetween`) so the page and
+  Slack can never drift about somebody's year count — the `annivMessageConfig()`
+  rule again. Two bounds worth keeping: the year search is **+8, not +4**
+  (leap years are 8 apart across a non-leap century, and a tighter bound tells a
+  real person the bot will never mention them again), and `annivDaysBetween`
+  works off UTC midnights because a local-time subtraction across a DST
+  boundary loses or gains a day.
 - Audit rows: source `anniversaries`, actions `anniversary_posted` /
   `anniversary_failed`. Keep both `api/logs.php` filter allowlists and the
-  `public/js/logs.js` dropdowns in sync.
+  `public/js/logs.js` dropdowns in sync. NOTE a pre-existing gap this change did
+  not touch: the page's own audit actions (`anniversary_settings` /
+  `anniversary_demo` / `anniversary_test_slack`, written under source `manual`)
+  are in neither allowlist, so they are recorded but cannot be filtered for.
 - Gates: `view_anniversaries` (page, in `PAGE_PERMISSIONS`) and
   `anniversaries_manage`. `migration_anniversaries_v1` grants both to roles
   holding `birthdays_manage` (the people who configure one Slack bot are the
