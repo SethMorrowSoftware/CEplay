@@ -263,6 +263,350 @@ is_eq('a year-long window finds the January hire',
     isset(annivUpcoming($roster, '2026-08-29', 200)['2027-01-05']), true);
 
 // ---------------------------------------------------------------------------
+section('annivObservedDate');
+
+is_eq('an ordinary date is itself',      annivObservedDate(2026, 8, 30), '2026-08-30');
+is_eq('29 Feb in a leap year is real',   annivObservedDate(2028, 2, 29), '2028-02-29');
+is_eq('and is NOT moved to the 28th',    annivObservedDate(2028, 2, 29, 'feb28'), '2028-02-29');
+is_eq('29 Feb otherwise falls back',     annivObservedDate(2026, 2, 29, 'feb28'), '2026-02-28');
+is_eq('or forward, when asked',          annivObservedDate(2026, 2, 29, 'mar1'), '2026-03-01');
+is_eq('or is not observed at all',       annivObservedDate(2026, 2, 29, 'skip'), null);
+is_eq('a century year is not a leap year', annivObservedDate(2100, 2, 29, 'feb28'), '2100-02-28');
+is_eq('but a 400-year one is',           annivObservedDate(2000, 2, 29, 'feb28'), '2000-02-29');
+
+// ---------------------------------------------------------------------------
+section('annivNextAnniversary');
+
+/** date => years, so a whole row of the table reads on one line. */
+function nextOn(string $hire, string $from, string $leap = 'feb28'): string
+{
+    $r = annivNextAnniversary($hire, $from, $leap);
+    return $r === null ? 'none' : $r['date'] . '=' . $r['years'];
+}
+
+is_eq('today counts as on-or-after',      nextOn('2020-08-31', '2026-08-31'), '2026-08-31=6');
+is_eq('yesterday rolls to next year',     nextOn('2020-08-30', '2026-08-31'), '2027-08-30=7');
+is_eq('tomorrow is this year',            nextOn('2020-09-01', '2026-08-31'), '2026-09-01=6');
+is_eq('hired today is the zeroth',        nextOn('2026-08-31', '2026-08-31'), '2026-08-31=0');
+is_eq('31 December, on the day',          nextOn('2015-12-31', '2026-12-31'), '2026-12-31=11');
+is_eq('1 January, from the last day',     nextOn('2015-01-01', '2026-12-31'), '2027-01-01=12');
+is_eq('1 January, on the day',            nextOn('2015-01-01', '2026-01-01'), '2026-01-01=11');
+is_eq('a January hire seen in August',    nextOn('2015-01-05', '2026-08-31'), '2027-01-05=12');
+is_eq('leap hire, non-leap year, feb28',  nextOn('2000-02-29', '2026-01-01', 'feb28'), '2026-02-28=26');
+is_eq('leap hire, non-leap year, mar1',   nextOn('2000-02-29', '2026-01-01', 'mar1'), '2026-03-01=26');
+is_eq('leap hire, skip, waits for 2028',  nextOn('2000-02-29', '2026-01-01', 'skip'), '2028-02-29=28');
+is_eq('leap hire, on the substitute day', nextOn('2000-02-29', '2026-02-28', 'feb28'), '2026-02-28=26');
+is_eq('and the day after moves on',       nextOn('2000-02-29', '2026-03-01', 'feb28'), '2027-02-28=27');
+is_eq('leap hire in a leap year',         nextOn('2000-02-29', '2028-02-01', 'feb28'), '2028-02-29=28');
+is_eq('the 28th does not fire in a leap year',
+    nextOn('2000-02-29', '2028-02-28', 'feb28'), '2028-02-29=28');
+is_eq('mar1 mode in a leap year uses the real date',
+    nextOn('2000-02-29', '2028-02-29', 'mar1'), '2028-02-29=28');
+is_eq('a hire date in the future still answers', nextOn('2027-03-04', '2026-08-31'), '2027-03-04=0');
+
+// The number this reports on a given day MUST be the number the bot announces
+// on that day, or the page and Slack disagree about somebody's tenth year.
+foreach ([['2019-08-30', '2026-08-30'], ['2016-02-29', '2026-02-28'],
+          ['2016-02-29', '2028-02-29'], ['2021-01-05', '2027-01-05']] as $row) {
+    $p = person('Parity Case', $row[0]);
+    $hit = annivCelebrants([$p], $row[1], ['min_years' => 0]);
+    $next = annivNextAnniversary($row[0], $row[1]);
+    is_eq('parity with annivCelebrants on ' . $row[1] . ' for a ' . $row[0] . ' hire',
+        [$next['date'], $next['years']], [$row[1], $hit ? $hit[0]['years'] : -1]);
+}
+
+// ---------------------------------------------------------------------------
+section('annivNextCelebrated');
+
+function celebOn(string $hire, string $from, array $opts = []): string
+{
+    $r = annivNextCelebrated($hire, $from, $opts);
+    return $r === null ? 'never' : $r['date'] . '=' . $r['years'];
+}
+
+is_eq('every year: the next one, as the calendar has it',
+    celebOn('2020-06-01', '2026-08-31'), '2027-06-01=7');
+is_eq('min_years skips the year below the floor',
+    celebOn('2026-08-01', '2026-08-31', ['min_years' => 1]), '2027-08-01=1');
+is_eq('min_years 5 waits for the fifth',
+    celebOn('2024-06-01', '2026-08-31', ['min_years' => 5]), '2029-06-01=5');
+is_eq('the day itself still counts',
+    celebOn('2020-08-31', '2026-08-31', ['min_years' => 1]), '2026-08-31=6');
+
+$ms = ['mode' => 'milestones', 'milestone_years' => [1, 5, 10, 15]];
+is_eq('milestone mode jumps to the next milestone',
+    celebOn('2019-06-01', '2026-08-31', $ms), '2029-06-01=10');
+is_eq('milestone mode when this year IS one',
+    celebOn('2016-06-01', '2026-08-31', $ms), '2031-06-01=15');
+is_eq('milestone mode past the end of the list is silence for good',
+    celebOn('2005-06-01', '2026-08-31', $ms), 'never');
+is_eq('milestone mode with an empty list can never post',
+    celebOn('2019-06-01', '2026-08-31', ['mode' => 'milestones', 'milestone_years' => []]), 'never');
+is_eq('a first year is a milestone by default',
+    celebOn('2026-06-01', '2026-08-31', ['mode' => 'milestones']), '2027-06-01=1');
+is_eq('leap hire under skip waits for the leap year',
+    celebOn('2000-02-29', '2026-01-01', ['leap_mode' => 'skip']), '2028-02-29=28');
+is_eq('leap hire under skip AND milestones takes the next milestone that IS a leap year',
+    celebOn('2000-02-29', '2026-01-01',
+        ['leap_mode' => 'skip', 'mode' => 'milestones', 'milestone_years' => [26, 27, 28, 30]]),
+    '2028-02-29=28');
+// Every milestone on the list lands in a non-leap year, and 'skip' means
+// exactly that: nothing to say, ever. Silence a page ought to spell out.
+is_eq('and says never when no milestone ever lands on one',
+    celebOn('2000-02-29', '2026-01-01',
+        ['leap_mode' => 'skip', 'mode' => 'milestones', 'milestone_years' => [26, 27, 30]]),
+    'never');
+
+// ---------------------------------------------------------------------------
+section('annivPrevAnniversary');
+
+function prevOn(string $hire, string $on, string $leap = 'feb28'): string
+{
+    $r = annivPrevAnniversary($hire, $on, $leap);
+    return $r === null ? 'none' : $r['date'] . '=' . $r['years'];
+}
+
+is_eq('the day itself counts',        prevOn('2020-08-31', '2026-08-31'), '2026-08-31=6');
+is_eq('the day after',                prevOn('2020-08-30', '2026-08-31'), '2026-08-30=6');
+is_eq('the day before rolls back a year',
+    prevOn('2020-09-01', '2026-08-31'), '2025-09-01=5');
+is_eq('the hire day itself is year zero', prevOn('2026-08-31', '2026-08-31'), '2026-08-31=0');
+is_eq('nothing before the hire date',  prevOn('2026-09-01', '2026-08-31'), 'none');
+is_eq('a January hire seen in August', prevOn('2015-01-05', '2026-08-31'), '2026-01-05=11');
+is_eq('leap hire, non-leap year',      prevOn('2000-02-29', '2026-06-01', 'feb28'), '2026-02-28=26');
+is_eq('leap hire, mar1, before 1 March',
+    prevOn('2000-02-29', '2026-02-28', 'mar1'), '2025-03-01=25');
+is_eq('leap hire under skip reaches back to the last leap year',
+    prevOn('2000-02-29', '2026-06-01', 'skip'), '2024-02-29=24');
+is_eq('a leap year uses the real date', prevOn('2000-02-29', '2028-06-01'), '2028-02-29=28');
+// The two directions must agree on the day itself, or a range that ends today
+// and one that starts today would disagree about who is in it.
+is_eq('forward and back agree on the day',
+    prevOn('2019-08-30', '2026-08-30'), nextOn('2019-08-30', '2026-08-30'));
+
+// ---------------------------------------------------------------------------
+section('annivDaysBetween');
+
+is_eq('same day',      annivDaysBetween('2026-08-31', '2026-08-31'), 0);
+is_eq('tomorrow',      annivDaysBetween('2026-08-31', '2026-09-01'), 1);
+is_eq('backwards',     annivDaysBetween('2026-08-31', '2026-08-24'), -7);
+is_eq('across a year', annivDaysBetween('2026-01-01', '2027-01-01'), 365);
+is_eq('across a leap year', annivDaysBetween('2024-01-01', '2025-01-01'), 366);
+// A local-time subtraction across a DST boundary is 23 or 25 hours, and
+// dividing that by 86400 loses or gains a day.
+$tzWas = date_default_timezone_get();
+@date_default_timezone_set('America/New_York');
+is_eq('spring forward does not lose a day', annivDaysBetween('2026-03-07', '2026-03-09'), 2);
+is_eq('fall back does not gain one',        annivDaysBetween('2026-10-31', '2026-11-02'), 2);
+@date_default_timezone_set($tzWas);
+
+// Leap years are four apart EXCEPT across a non-leap century, and a bound of
+// four here would report "the bot will never mention you again" about somebody
+// who has a real future date. Unreachable at this venue; still a wrong answer,
+// so it is pinned rather than left to a comment.
+is_eq('the eight-year gap across 2100 is still found',
+    celebOn('2092-02-29', '2097-01-01', ['leap_mode' => 'skip', 'min_years' => 1]),
+    '2104-02-29=12');
+is_eq('and the plain calendar answer agrees',
+    nextOn('2092-02-29', '2097-01-01', 'skip'), '2104-02-29=12');
+
+// ---------------------------------------------------------------------------
+section('annivYearsCompleted');
+
+is_eq('the day before is one less',   annivYearsCompleted('2020-09-01', '2026-08-31'), 5);
+is_eq('the day itself counts',        annivYearsCompleted('2020-08-31', '2026-08-31'), 6);
+is_eq('the day after is the same',    annivYearsCompleted('2020-08-30', '2026-08-31'), 6);
+is_eq('hired today is nought',        annivYearsCompleted('2026-08-31', '2026-08-31'), 0);
+is_eq('never negative for a future hire', annivYearsCompleted('2027-01-01', '2026-08-31'), 0);
+// The one place the calendar and the observance disagree, resolved in favour of
+// what the bot is saying out loud that morning.
+is_eq('a leap hire reads the announced number on the 28th',
+    annivYearsCompleted('2000-02-29', '2026-02-28', 'feb28'), 26);
+is_eq('and the plain calendar count a day earlier',
+    annivYearsCompleted('2000-02-29', '2026-02-27', 'feb28'), 25);
+is_eq('mar1 mode leaves the 28th on the calendar count',
+    annivYearsCompleted('2000-02-29', '2026-02-28', 'mar1'), 25);
+is_eq('skip mode never lifts it early',
+    annivYearsCompleted('2000-02-29', '2026-02-28', 'skip'), 25);
+is_eq('a leap year reads the real date',
+    annivYearsCompleted('2000-02-29', '2028-02-29'), 28);
+
+// ---------------------------------------------------------------------------
+section('annivRosterRows');
+
+$listRoster = [
+    person('Alex Rivera', '2019-08-30', '101'),   // 7 years, anniversary today-ish
+    person('Sam Chen',    '2021-08-30', '102'),   // 5 years
+    person('Dana Frost',  '2025-08-30', '103'),   // 1 year
+    person('Jordan Blake', '2016-02-29', '104'),  // leap-day hire
+    person('Robin Vale',  '2026-08-25', '105'),   // hired days ago: year zero
+];
+$listRows = annivRosterRows($listRoster, '2026-08-31');
+is_eq('one row per person', count($listRows), 5);
+
+$byName = [];
+foreach ($listRows as $r) { $byName[$r['name']] = $r; }
+
+is_eq('an anniversary just gone reads as completed',
+    $byName['Alex Rivera']['years'], 7);
+is_eq('and the next one is a year out',
+    $byName['Alex Rivera']['next_date'], '2027-08-30');
+is_eq('reaching one more year',   $byName['Alex Rivera']['next_years'], 8);
+is_eq('with the day count',       $byName['Alex Rivera']['days_until'], 364);
+is_eq('and the one just gone',    $byName['Alex Rivera']['prev_date'], '2026-08-30');
+
+is_eq('somebody hired last week has completed nothing',
+    $byName['Robin Vale']['years'], 0);
+is_eq('their first anniversary is next year',
+    $byName['Robin Vale']['next_date'], '2027-08-25');
+is_eq('the bot posts on it, since 1 year clears the floor',
+    $byName['Robin Vale']['post_date'], '2027-08-25');
+is_eq('so nothing is being suppressed', $byName['Robin Vale']['silent'], '');
+
+is_eq('three people share 30 August',
+    $byName['Sam Chen']['shared'] . '/' . $byName['Dana Frost']['shared'], '3/3');
+is_eq('the leap hire is on their own', $byName['Jordan Blake']['shared'], 1);
+is_eq('sorted soonest first', $listRows[0]['next_date'], '2027-02-28');
+
+// min_years pushes the posting date out without touching the calendar one.
+$strict = annivRosterRows($listRoster, '2026-08-31', ['min_years' => 5]);
+$strictByName = [];
+foreach ($strict as $r) { $strictByName[$r['name']] = $r; }
+is_eq('the calendar answer is unchanged',
+    $strictByName['Dana Frost']['next_date'], '2027-08-30');
+is_eq('but the bot waits for the fifth year',
+    $strictByName['Dana Frost']['post_date'], '2030-08-30');
+is_eq('and says why', $strictByName['Dana Frost']['silent'], 'below_min');
+
+// Milestone-only mode: the two columns come apart for nearly everybody.
+$msRows = annivRosterRows($listRoster, '2026-08-31',
+    ['mode' => 'milestones', 'milestone_years' => [1, 5, 10]]);
+$msByName = [];
+foreach ($msRows as $r) { $msByName[$r['name']] = $r; }
+is_eq('an eighth year is not posted at all',
+    $msByName['Alex Rivera']['post_date'], '2029-08-30');
+is_eq('flagged as milestone-only',  $msByName['Alex Rivera']['silent'], 'milestones_only');
+is_eq('a sixth year waits for the tenth',
+    $msByName['Sam Chen']['post_years'], 10);
+is_eq('past the end of the list is silence for good',
+    $msByName['Jordan Blake']['post_date'], null);
+is_eq('and says so', $msByName['Jordan Blake']['silent'], 'no_milestone_left');
+is_eq('an empty milestone list is a different silence',
+    annivRosterRows([person('Alex Rivera', '2019-08-30')], '2026-08-31',
+        ['mode' => 'milestones', 'milestone_years' => []])[0]['silent'], 'no_milestones');
+
+// When both the floor and the milestone list could be holding a post up, the
+// reported reason has to be the one actually doing it — naming the other sends
+// somebody to change a setting that changes nothing.
+$bothBlock = annivRosterRows([person('Ella Ford', '2024-06-01')], '2026-08-31',
+    ['mode' => 'milestones', 'milestone_years' => [5, 10], 'min_years' => 3])[0];
+is_eq('the milestone list is named when the year would not post anyway',
+    $bothBlock['silent'], 'milestones_only');
+$floorBlocks = annivRosterRows([person('Ella Ford', '2026-06-01')], '2026-08-31',
+    ['mode' => 'milestones', 'milestone_years' => [1, 5], 'min_years' => 3])[0];
+is_eq('the floor is named when the year IS a milestone but below it',
+    $floorBlocks['silent'], 'below_min');
+
+// `shared` has to be the bot's own count on that day, not a count of the rows
+// whose NEXT post lands there — milestone mode puts one person's fifth year on
+// the day another reaches ten, and grouping the rows misses it.
+$sameDay = [
+    person('Ada One', '2022-04-13'),    // reaches 5 in 2027
+    person('Bea Two', '2017-04-13'),    // reaches 10 in 2027
+    person('Cal Three', '2017-04-13'),  // likewise
+];
+$msOpts = ['mode' => 'milestones', 'milestone_years' => [5, 10], 'min_years' => 1];
+foreach (annivRosterRows($sameDay, '2026-08-31', $msOpts) as $r) {
+    is_eq('shared matches the bot for ' . $r['name'],
+        $r['shared'], count(annivCelebrants($sameDay, $r['post_date'], $msOpts)));
+}
+
+is_eq('names are left raw for the caller to style',
+    $byName['Alex Rivera']['first'] . '|' . $byName['Alex Rivera']['last'], 'Alex|Rivera');
+
+// A filter is never allowed to drop somebody from THIS list: it can only move
+// their posting date. "Complete" is the whole point.
+is_eq('the strictest possible settings still list everybody',
+    count(annivRosterRows($listRoster, '2026-08-31',
+        ['min_years' => 10, 'mode' => 'milestones', 'milestone_years' => [50]])),
+    count($listRoster));
+
+// The pin that fails when somebody spreads the person record into a row
+// instead of projecting it: `email` and `slack_id` must never be in here, and
+// therefore can never reach the browser by accident.
+is_eq('a row carries exactly the allowlisted keys', array_keys($listRows[0]), [
+    'emp_no', 'first', 'last', 'name', 'hire_date', 'years',
+    'next_date', 'next_years', 'next_milestone', 'days_until',
+    'prev_date', 'prev_years', 'post_date', 'post_years', 'post_is_next',
+    'silent', 'shared',
+]);
+
+// The year on the observance date always equals hire year + years. A future
+// leap rule that moved an observance across a year boundary would break the
+// page's agreement with Slack silently; this catches it.
+foreach ($listRows as $r) {
+    ok('year parity for ' . $r['name'],
+        substr($r['next_date'], 0, 4) === (string)((int)substr($r['hire_date'], 0, 4) + $r['next_years']));
+}
+
+// Every posting date this list advertises must actually produce a celebrant on
+// that day, with the same year count, when the bot asks.
+foreach (annivRosterRows($listRoster, '2026-08-31', ['mode' => 'milestones']) as $r) {
+    if ($r['post_date'] === null) { continue; }
+    $p = person($r['name'], $r['hire_date']);
+    $hit = annivCelebrants([$p], $r['post_date'], ['mode' => 'milestones']);
+    ok('the bot agrees about ' . $r['name'] . ' on ' . $r['post_date'],
+        count($hit) === 1 && (int)$hit[0]['years'] === (int)$r['post_years']);
+}
+
+// ---------------------------------------------------------------------------
+section('annivNormalizeRoster: dropped rows');
+
+$rawRows = [
+    ['EmpNo' => '1', 'FirstName' => 'Alex', 'LastName' => 'Rivera', 'DateOfHire' => '2019-08-30'],
+    ['EmpNo' => '2', 'FirstName' => 'Nell', 'LastName' => 'Voss',   'DateOfHire' => null],
+    ['EmpNo' => '3', 'FirstName' => 'Pat',  'LastName' => 'Oke',    'DateOfHire' => '1900-01-01'],
+    ['EmpNo' => '4', 'FirstName' => 'Wren', 'LastName' => 'Ash',    'DateOfHire' => '2027-04-01'],
+    ['EmpNo' => '5', 'FirstName' => 'Kit',  'LastName' => 'Lowe',   'DateOfHire' => 'not a date'],
+    ['EmpNo' => '6', 'FirstName' => 'Ola',  'LastName' => 'Reed',   'DateOfHire' => '2020-05-05'],
+];
+$plain = annivNormalizeRoster($rawRows, ['today' => '2026-08-31']);
+is_eq('collecting is off by default', $plain['dropped'], []);
+is_eq('the counts are unchanged', $plain['skipped']['no_hire_date'], 1);
+
+$withDrops = annivNormalizeRoster($rawRows, [
+    'today' => '2026-08-31', 'collect_dropped' => true,
+]);
+is_eq('four rows are set aside', count($withDrops['dropped']), 4);
+$reasons = array_column($withDrops['dropped'], 'reason');
+is_eq('each with its own reason', $reasons, ['no_hire_date', 'sentinel', 'future', 'unparsed']);
+is_eq('a dropped row is still named', $withDrops['dropped'][0]['name'], 'Nell Voss');
+is_eq('the rejected value is kept',   $withDrops['dropped'][3]['value'], 'not a date');
+// The opt-out has to say which rule matched, or a typo'd entry that matches
+// nobody looks exactly like one that works.
+$optOut = annivNormalizeRoster([$rawRows[5]], [
+    'today' => '2026-08-31', 'collect_dropped' => true, 'exclude_emp_nos' => ['6'],
+]);
+is_eq('an opt-out is recorded as one', $optOut['dropped'][0]['reason'], 'excluded');
+is_eq('naming the rule that matched',  $optOut['dropped'][0]['value'], 'employee number');
+$optOutName = annivNormalizeRoster([$rawRows[5]], [
+    'today' => '2026-08-31', 'collect_dropped' => true, 'exclude_names' => ['Ola Reed'],
+]);
+is_eq('or the other rule', $optOutName['dropped'][0]['value'], 'name');
+
+// The roster query is operator-editable and nothing stops it being SELECT *,
+// over a table that also holds SSN and PasswordHash. A dropped record is an
+// allowlist, not a copy of the row.
+$secretish = annivNormalizeRoster([
+    ['EmpNo' => '9', 'FirstName' => 'Ivy', 'LastName' => 'Bly', 'DateOfHire' => null,
+     'SSN' => '123-45-6789', 'PasswordHash' => 'x', 'FingerprintTemplate' => 'y'],
+], ['today' => '2026-08-31', 'collect_dropped' => true]);
+is_eq('a dropped record carries only the allowlisted keys',
+    array_keys($secretish['dropped'][0]), ['reason', 'name', 'first', 'last', 'emp_no', 'value']);
+ok('and nothing from the rest of the row',
+    strpos(json_encode($secretish['dropped']), '123-45-6789') === false);
+
+// ---------------------------------------------------------------------------
 section('names');
 
 $p = person('Alex Rivera', '2019-08-30', '101');

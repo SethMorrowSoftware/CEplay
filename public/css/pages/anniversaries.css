@@ -163,6 +163,65 @@
     border: 1px solid rgba(var(--anniversary-rgb), 0.45);
 }
 
+/* --- Roster toolbar ----------------------------------------------------
+   The same geometry as the Item Watch toolbar (pages/items.css) — only the
+   prefix differs, because it is the same job: a flex-wrap row of control
+   groups, one of which grows, over a list that is filtered client-side. */
+.an-toolbar { margin-bottom: 0.9rem; }
+.an-toolbar-body {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding-top: 0.7rem;
+    padding-bottom: 0.7rem;
+}
+.an-toolbar-group { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.an-toolbar-grow { flex: 1 1 12rem; min-width: 9rem; }
+.an-toolbar-grow .form-input { width: 100%; }
+.an-toolbar-select { width: auto; min-width: 8.5rem; }
+
+/* --- The roster table --------------------------------------------------- */
+.an-roster-table td { vertical-align: top; }
+/* A row-level highlight, not just a coloured name: in a six-column table the
+   name alone is too small a target to find today's row by. */
+.an-roster-table .an-row-today-row {
+    background: rgba(var(--anniversary-rgb), 0.10);
+    box-shadow: inset 3px 0 0 var(--anniversary);
+}
+/* The two states of the "Slack post" column that are not simply a date. */
+.an-post-on { color: var(--success); font-weight: 600; }
+.an-post-none { color: var(--warning); font-weight: 600; }
+/* Posting is switched off, so every date in that column is hypothetical. */
+.an-post-off { color: var(--text-muted); }
+.an-post-off .an-post-on,
+.an-post-off .an-post-none { color: var(--text-muted); text-decoration: line-through; }
+.an-mode-note { margin: 0 0 0.75rem; }
+
+/* --- "Not on the list" -------------------------------------------------- */
+.an-drop-section { margin-top: 0.9rem; }
+.an-drop-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary);
+    font-weight: 700;
+    margin-bottom: 0.15rem;
+}
+.an-drop-names {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.8rem;
+    margin-top: 0.4rem;
+}
+.an-drop-name {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
 /* --- Settings form ----------------------------------------------------- */
 .an-field { margin-bottom: 1.1rem; }
 .an-field:last-child { margin-bottom: 0; }
@@ -267,4 +326,20 @@
     .an-save-bar { flex-direction: column; align-items: stretch; }
     .an-save-bar .flex { justify-content: stretch; }
     .an-save-bar .btn { flex: 1; }
+
+    /* Each control gets its own line rather than three cramped ones. */
+    .an-toolbar-group { flex: 1 1 100%; }
+    .an-toolbar-select { width: 100%; }
+
+    /* The headcount line is long. Let it drop below the title rather than
+       squeezing the title into three words per line beside it. */
+    #an-roster .card-header { flex-wrap: wrap; gap: 0.25rem; }
+
+    /* Hide the two derivable columns so the common reading fits without
+       scrolling: "Reaching" is the years column plus one, and the hire date is
+       determined by the next anniversary and the year count. The table still
+       scrolls inside .table-scroll — nothing in this app stacks a table into
+       cards, and this is not the page to start. */
+    .an-roster-table th:nth-child(3), .an-roster-table td:nth-child(3),
+    .an-roster-table th:nth-child(5), .an-roster-table td:nth-child(5) { display: none; }
 }

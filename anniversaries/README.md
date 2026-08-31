@@ -27,7 +27,7 @@ anniversaries/
 ├─ discover.php           Re-derive the roster query from the live database
 ├─ config.example.php     Copy to data/anniversary_config.php (or use the page)
 ├─ lib/anniv_lib.php      Date matching, years of service, message building
-└─ tests/                 251 assertions — run anywhere, no database needed
+└─ tests/                 373 assertions — run anywhere, no database needed
 ```
 
 It also puts today's anniversaries — alongside today's birthdays — on the
@@ -360,16 +360,17 @@ Two keys, both granted once by a migration to every role that already holds
 ## Tests
 
 ```bash
-php anniversaries/tests/test_anniv_lib.php     # 186 — the bot's own logic
+php anniversaries/tests/test_anniv_lib.php     # 308 — the bot's own logic
 php anniversaries/tests/test_today_cache.php   # 39  — the dashboard strip's cache
 php anniversaries/tests/test_roster_guard.php  # 26  — the "still employed" filter
 ```
 
-186 assertions, no database and no network — the date matching, the
+308 assertions, no database and no network — the date matching, the
 years-of-service arithmetic, the milestone rules and the message building are
 all pure functions for exactly that reason. They cover the leap-day rule, year
 zero, the ordinal edge cases (11th, 21st, 111th), the placeholder semantics on
-a shared day, and the run-health verdicts. Two of them are worth knowing about:
+a shared day, the whole-roster list the page renders, and the run-health
+verdicts. Two of them are worth knowing about:
 one renders every built-in combination and fails if any placeholder is left
 unreplaced, and one fails if any flavour line would not stand alone after an
 arbitrary greeting.
