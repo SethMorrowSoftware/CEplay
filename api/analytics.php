@@ -420,6 +420,16 @@ function analyticsOverview(bool $hideMoney = false): void {
     if ($startLocalDate < $rawFloorDate) {
         $gran = $win['granularity'] ?? 'day';
         $v = analyticsVenueDaily($startLocalDate, $endLocalDateExcl, $gran);
+        // Calendar days the window ASKS for, never counting the future — the
+        // denominator for "covering N of M days". A rollup with holes in it
+        // returns a total that looks complete and is not; comparing these two
+        // numbers is the only way the reader can tell.
+        $expectedDays = analyticsWindowDays($startLocalDate, $endLocalDateExcl, $tz);
+        // The newest day the rollup could legitimately hold for this window:
+        // the window's last day, or yesterday if the window is still running.
+        $yesterday = (new DateTime('now', $tz))->modify('-1 day')->format('Y-m-d');
+        $windowLast = (new DateTime($endLocalDateExcl))->modify('-1 day')->format('Y-m-d');
+        $expectedThrough = $windowLast < $yesterday ? $windowLast : $yesterday;
         if ($v['has_data']) {
             $pv = analyticsVenueDaily(
                 (clone $win['prev_start'])->format('Y-m-d'),
@@ -432,6 +442,26 @@ function analyticsOverview(bool $hideMoney = false): void {
                 'since'                => $v['since'],
                 'through'              => $v['through'],
                 'recent_metrics_since' => $rawFloorDate,
+                // Coverage, so a partial rollup cannot present itself as a full
+                // period. covered_days counts days that CARRY ROWS (the same
+                // definition the year-over-year card's `days` uses), so a
+                // six-week hole in the middle of a year shows up as 196 of 242
+                // rather than as a clean, confident, wrong total. Reported as
+                // NEUTRAL context, never a warning: a closed day carries no
+                // rows either, and a venue that shuts on winter Mondays would
+                // otherwise cry wolf on every long range.
+                'covered_days'         => $v['covered_days'],
+                'expected_days'        => $expectedDays,
+                // Staleness IS a warning, and it is the one signature a closed
+                // day cannot explain: the rollup has simply stopped advancing.
+                // Same definition and same 3-day tolerance as the
+                // year-over-year card — 1 is normal (the nightly refresh runs
+                // at 00:05 UTC, i.e. 20:05 the previous day here, and never
+                // covers today), so anything under the tolerance must stay
+                // silent. This is exactly the six-week freeze that went
+                // unnoticed on this venue in 2026.
+                'stale_days'           => analyticsYoyStaleDays($v['through'], $expectedThrough),
+                'expected_through'     => $expectedThrough,
                 'plays'                => $v['plays'],
                 'value'                => $v['value'],
                 'tickets'              => $v['tickets'],
@@ -442,6 +472,23 @@ function analyticsOverview(bool $hideMoney = false): void {
                 'plays_by_dow'         => $v['plays_by_dow'],
                 'value_by_dow'         => $v['value_by_dow'],
                 'tickets_by_dow'       => $v['tickets_by_dow'],
+            ];
+        } else {
+            // The window reaches past the raw feed AND the ledger rollup has
+            // nothing for it. Everything below is therefore computed from the
+            // raw feed alone — i.e. from the last ~30 days, not the period the
+            // user picked. Left unsaid, that reads as fact: a Year view quietly
+            // reporting one month of plays, or a past month reporting a
+            // confident ZERO, with every panel populated and no warning.
+            // Report the shortfall instead of asserting the number.
+            // active=false, so the client keeps the normal (non-deep) layout
+            // and only adds a warning banner.
+            $history = [
+                'active'               => false,
+                'reason'               => 'no_ledger_coverage',
+                'recent_metrics_since' => $rawFloorDate,
+                'covered_days'         => 0,
+                'expected_days'        => $expectedDays,
             ];
         }
     }
@@ -501,6 +548,12 @@ function analyticsOverview(bool $hideMoney = false): void {
     // view_revenue like every other dollar figure.
     if ($history !== null) {
         $payload['history'] = $history;
+    }
+    // Only an ACTIVE history swaps the payload over to the ledger. A history
+    // block with active=false is a disclosure that the range outruns both
+    // sources — the raw-fed panels stay exactly as they were, and the client
+    // adds a warning rather than switching layout.
+    if ($history !== null && !empty($history['active'])) {
         // Headline KPIs from the ledger. `value` = $ played at readers (the deep
         // money metric); `cash` (walk-up only) and per-period-unique/points can't
         // go deep, so null them (client shows `value` and hides the rest).
@@ -592,6 +645,28 @@ function analyticsRawFloorDate(DateTimeZone $tz): string {
     } catch (Exception $e) {
         return (new DateTime('now', $tz))->format('Y-m-d');
     }
+}
+
+/**
+ * Calendar days a window actually asks about: [$fromDate, $toDateExcl), with
+ * the future clipped off (a Year view opened in August asks about December,
+ * which no source can ever cover and which must not count as "missing").
+ *
+ * This is the denominator for the deep-history coverage disclosure — see the
+ * `covered_days` / `expected_days` pair in analyticsOverview().
+ */
+function analyticsWindowDays(string $fromDate, string $toDateExcl, DateTimeZone $tz): int {
+    $utc = new DateTimeZone('UTC');
+    $from = DateTime::createFromFormat('!Y-m-d', $fromDate, $utc);
+    $to   = DateTime::createFromFormat('!Y-m-d', $toDateExcl, $utc);
+    if (!$from || !$to) return 0;
+    // Tomorrow, venue-local: today is partial but a source may already carry
+    // part of it, so it counts; anything past it cannot.
+    $capStr = (new DateTime('now', $tz))->modify('+1 day')->format('Y-m-d');
+    $cap = DateTime::createFromFormat('!Y-m-d', $capStr, $utc);
+    if ($cap && $to > $cap) $to = $cap;
+    if ($to <= $from) return 0;
+    return (int)round(($to->getTimestamp() - $from->getTimestamp()) / 86400);
 }
 
 /**

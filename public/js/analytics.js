@@ -321,17 +321,60 @@
     function renderDeepNote(data) {
         var note = document.getElementById('analytics-deep-note');
         if (!note) return;
-        if (!isDeep(data)) { note.style.display = 'none'; note.textContent = ''; return; }
-        var h = data.history;
+        var h = (data && data.history) || null;
+        note.classList.remove('analytics-deep-note--warn');
+        if (!h) { note.style.display = 'none'; note.textContent = ''; return; }
+
+        var recentSince = h.recent_metrics_since ? formatShortDate(h.recent_metrics_since) : null;
+
+        // The range outruns BOTH sources: past the detailed feed, and the
+        // ledger rollup has nothing for it either. Everything on screen is
+        // therefore just the recent window — which, on a past month or an
+        // earlier year, means a confident-looking ZERO. Say so; never let the
+        // page present that as the period's actual business.
+        if (!h.active) {
+            note.textContent = '⚠️ Incomplete range — this period reaches past the detailed feed we keep '
+                + '(about the last 30 days), and the deep-history rollup has no data for it yet. '
+                + 'The figures below therefore cover only'
+                + (recentSince ? ' ' + recentSince + ' onward' : ' the recent window')
+                + ', NOT the whole period shown above, so totals here are far too low. '
+                + 'Deep history is filled in by the nightly job that reads the card system — '
+                + 'if this persists, that job needs a look.';
+            note.classList.add('analytics-deep-note--warn');
+            note.style.display = '';
+            return;
+        }
+
         var since = h.since ? formatShortDate(h.since) : null;
         var through = h.through ? formatShortDate(h.through) : null;
-        var recentSince = h.recent_metrics_since ? formatShortDate(h.recent_metrics_since) : null;
         var span = (since && through) ? (since + ' – ' + through) : 'the selected range';
         var msg = '📚 Historical view — this range reaches past the detailed feed we keep (about the last 30 days). '
             + 'The headline plays, tickets and play value below come straight from the card-system ledger, covering ' + span + '. '
             + 'Detailed breakdowns — by hour, by game, category, payment mix and guest insights — are only kept for the recent window'
             + (recentSince ? ' (since ' + recentSince + ')' : '')
             + ', so they’re hidden for this longer range. Pick a shorter range to see them.';
+
+        // Coverage as NEUTRAL context — a day the venue was closed carries no
+        // ledger rows either, so "196 of 242 days" is information, not an
+        // alarm. Stated anyway, because without it there is no way to tell a
+        // partly-covered period from a complete one.
+        var covered = h.covered_days, expected = h.expected_days;
+        if (typeof covered === 'number' && typeof expected === 'number'
+            && expected > 0 && covered < expected) {
+            msg += ' It has activity on ' + formatInt(covered) + ' of the ' + formatInt(expected)
+                + ' days in this period (days with no recorded activity — closures included — carry no rows).';
+        }
+
+        // Staleness IS the alarm: the rollup has stopped advancing, which no
+        // closed day explains. Tolerance 3 days, matching the year-over-year
+        // card — 1 day behind is normal and must stay silent.
+        if (typeof h.stale_days === 'number' && h.stale_days > 3) {
+            msg += ' ⚠️ Heads up: deep history stops at ' + formatShortDate(h.through)
+                + ', about ' + formatInt(h.stale_days) + ' days behind — so the most recent part of '
+                + 'this period is missing and these totals read low. '
+                + 'The nightly job that reads the card system looks stuck.';
+            note.classList.add('analytics-deep-note--warn');
+        }
         note.textContent = msg;
         note.style.display = '';
     }

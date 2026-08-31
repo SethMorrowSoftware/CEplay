@@ -201,6 +201,33 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   "Historical view" banner with the exact coverage window, renders the deep KPIs
   (labeling money "Play value"), and hides the nulled panels with a
   "recent window only" note.
+  **THE FALL-THROUGH WHEN THE ROLLUP CANNOT COVER THE RANGE IS THE DANGEROUS
+  PATH, and it is why "the Analytics page looks broken on Month/Year".** Deep
+  mode is gated on `has_data` (any row in range). When the range starts before
+  the raw floor and the rollup has NOTHING for it, the old code left `history`
+  null and rendered the ordinary page — headline KPIs, a full daily chart, top
+  games, guests — computed from the raw feed ALONE. MEASURED: with the rollup
+  unpopulated, "2026" reported 68,200 plays against a true 1,041,120 (a 93%
+  under-report), and June 2026 / 2025 reported a confident **ZERO**, every panel
+  populated, no warning anywhere. It does not look broken; it looks like the
+  venue did no business. `analyticsOverview` now emits a `history` block with
+  **`active: false`** + `reason: no_ledger_coverage` in that case — the client
+  keeps the normal layout (`isDeep()` already keys off `active`) and adds a
+  warning banner saying the figures cover only the recent window. Do NOT
+  "simplify" that back to `if ($history !== null)` around the payload override;
+  the two conditions are deliberately different (`!== null` stores the block,
+  `active` swaps the payload).
+  Deep mode also reports **`covered_days` / `expected_days`**
+  (`analyticsWindowDays`, future clipped) and **`stale_days` / `expected_through`**
+  (`analyticsYoyStaleDays`, the yoy card's own helper). The split between them is
+  the point and must not be collapsed: **coverage is NEUTRAL context** — a closed
+  day carries no rows either, so a 45-day interior hole (196 of 242 days, −19% on
+  the year) is stated but never styled as an alarm — while **staleness is the
+  warning**, because a rollup that stopped advancing is the one signature a
+  closed day cannot explain. Tolerance is 3 days, same as the yoy card, and for
+  the same reason: a healthy rollup is legitimately 1 day behind (it never holds
+  today), so 241/242 on a Year view must stay silent or the banner cries wolf
+  every day.
 - The Analytics overview and both reader-group endpoints accept
   `exclude_time_plays=1` (a UI toggle on those pages). The overview filters
   whole transactions (exact — excluded plays' tickets/points/payments drop

@@ -241,3 +241,12 @@
     font-size: 0.85rem;
     line-height: 1.45;
 }
+
+/* Same banner, warning colours: the range is NOT fully covered, so the totals
+   on screen read low. Distinct from the informational deep-history note, which
+   describes a complete answer from a different source. */
+.analytics-deep-note--warn {
+    border-color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--text-primary);
+}
