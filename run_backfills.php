@@ -10,7 +10,11 @@
  * work already done. Safe with no MSSQL / no driver — each backfill reports
  * "skipped" (or "failed") and leaves its flag unset so cron retries later.
  *
- * Venue server only. Usage: php run_backfills.php
+ * Venue server only. There is no php on the venue host — everything runs in
+ * containers — so run it through the wrapper, which also guarantees you are
+ * pointed at the INSTALL directory's database rather than the git checkout's:
+ *
+ *     sudo bash /var/persist/pause-groups/run.sh run_backfills.php
  */
 
 if (php_sapi_name() !== 'cli') {

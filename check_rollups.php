@@ -13,7 +13,11 @@
  * This is the one command that answers "is the history healthy?" without
  * needing sqlite3 on the host (it isn't installed on the venue box).
  *
- * Venue server only. Usage: php check_rollups.php
+ * Venue server only. There is no php on the venue host — everything runs in
+ * containers — so run it through the wrapper, which also guarantees you are
+ * pointed at the INSTALL directory's database rather than the git checkout's:
+ *
+ *     sudo bash /var/persist/pause-groups/run.sh check_rollups.php
  */
 
 if (php_sapi_name() !== 'cli') {
