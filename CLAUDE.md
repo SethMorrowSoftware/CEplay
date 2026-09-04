@@ -17,7 +17,7 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 - `backfill_card_activity.php` — OPTIONAL manual runner (thin wrapper over `Scheduler::backfillCardActivityFromMssql()`). The nightly `cron.php` runs this backfill **automatically, once** (guarded by config flag `card_activity_backfill_done`, lock-free after the main plan) as soon as it runs with MSSQL configured — no CLI needed. It seeds the guest ledger (`card_activity`) from MSSQL `PlayerCardTrans` (MIN/MAX `TransDateTime` per card) so "new vs returning" reaches back ~2 decades instead of only the 30-day feed. Batched by year; idempotent (reuses the nightly rollup's monotonic UPSERT — only widens); venue server only
 - `run_backfills.php` — Runs whichever one-time MSSQL backfills are still pending (guest ledger + per-game play history) on demand via `Scheduler::runPendingBackfills()` — the single home for the flag-guard logic, shared with `cron.php`. `update.sh` invokes it after a deploy (best-effort, using the pdo_dblib overlay image) so the deep history appears immediately instead of at the next nightly cron; also runnable by hand. Idempotent/flag-guarded, so running early just means cron finds it done
 - `run.sh` — **The way to run ANY app CLI script on the venue.** There is NO `php` on the venue host (nor `sqlite3`) — the app runs entirely in containers — so every "Usage: php foo.php" line is unfollowable as written, and `php run_backfills.php` just answers `command not found`. This wrapper picks the pdo_dblib overlay image (loading it back from `php-fpm-mssql.tar` if an OS rebuild dropped it), mounts the install dir, and runs as `www-data` (33:33) so nothing in `data/` ends up root-owned and breaks the web tier. It also pins `-w` to the INSTALL dir (`/var/persist/pause-groups`), which matters because the git checkout is a DIFFERENT directory (`/var/persist/pause-groups-src`) with its own empty `data/` — running a script from there silently reads the wrong database. Same shape as `birthdays/run.sh`. Usage: `sudo bash /var/persist/pause-groups/run.sh check_rollups.php`
-- `check_rollups.php` — "Is the reporting history actually advancing?" Row counts + coverage windows for `venue_daily_stats`, `game_daily_stats`, `game_hourly_stats` and the raw feed, then a plain verdict on the first: EMPTY (backfill never ran → any range past the raw feed reads as ZERO), STALE (nightly job stopped; names the newest day and the gap), or HEALTHY. Tolerance 3 days, matching the yoy card and the Analytics deep banner — the rollup never holds today and refreshes at 00:05 UTC (20:05 local), so 1 day behind is normal and must not read as a fault. This is the first thing to run when someone says a reporting page "looks broken" on Month/Year
+- `check_rollups.php` — "Is the reporting history actually advancing?" Row counts + coverage windows for `venue_daily_stats`, `game_daily_stats`, `game_hourly_stats` and the raw feed, then a plain verdict on the first: EMPTY (backfill never ran → any range past the raw feed reads as ZERO), STALE (the job stopped, or the POS is missing days the venue worked), QUIET VENUE (the refresh is current and nobody swiped — nothing to fix), or HEALTHY. Tolerance 3 days, matching the yoy card and the Analytics deep banner — the rollup never holds today and refreshes at 00:05 UTC (20:05 local), so 1 day behind is normal and must not read as a fault. The verdict comes from the same `Reporting::rollupHealth()` the pages use, so the CLI and the dashboard can never disagree, and it PRINTS ITS EVIDENCE (when the refresh last ran and through what day, the days it covered but found empty, and how many plays the app's own feed saw on them) rather than only its conclusion. This is the first thing to run when someone says a reporting page "looks broken" on Month/Year
 - `lib/scheduler.php` — Core scheduling engine (plan, execute, enforce, resolve conflicts)
 - `lib/centeredge_client.php` — CenterEdge API client (auth, games, kiosks, capabilities, pagination, retry)
 - `lib/db.php` — SQLite singleton, schema init, query helpers (`:p0` positional params)
@@ -110,13 +110,56 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   August 2026 (see the frozen-rollup entry below). Two guards, do not remove
   them: the MTD label names its month outright ("July to date") whenever
   `through`'s month isn't the current one (same for the year), and the payload
-  carries `expected_through` (yesterday, venue-local) + `stale_days`, which the
-  widget turns into a warning banner past 3 days. **`stale_days` 1 is NORMAL**
-  and must not warn: the nightly refresh runs at 00:05 UTC = 20:05 the previous
-  day Eastern, so it writes days `< ` a local date that hasn't ended yet.
+  carries `expected_through` (yesterday, venue-local) + `stale_days`.
+  **`stale_days` 1 is NORMAL** and must not warn: the nightly refresh runs at
+  00:05 UTC = 20:05 the previous day Eastern, so it writes days `< ` a local
+  date that hasn't ended yet.
   `days` on each window counts days that CARRY ROWS, not calendar days — a
   YTD reading "Jan 1 – Jul 16 · 185 days" against 197 calendar days means 12
   closed days, not a gap.
+  **`stale_days` DOES NOT NAME A CAUSE, and the banner must never make it —
+  see `rollup_health` below.** Both rollups store one row per day that HAS
+  ACTIVITY, so a day the venue was shut leaves exactly the trace a night the
+  refresh never ran does: nothing. Interior holes are safe to read as coverage
+  (the rollup demonstrably moved past them), but the NEWEST day is not — four
+  quiet days at the end of a season and four dead cron runs both stop
+  `MAX(stat_date)` at the same place. The card used to assert one of them
+  outright ("the nightly refresh has not advanced them"), which sends somebody
+  to debug a working systemd unit; dropping the warning instead would re-open
+  the six-week freeze that nothing shouted about. Evidence settles it, not
+  inference.
+- **`rollup_health` (`Reporting::rollupHealth()` / `classifyRollup()` in
+  `lib/reporting.php`) is the thing that decides whether to warn.** Carried on
+  the yoy payload AND inside the Analytics deep-history `history` block, and
+  read by `check_rollups.php`, so the page, the banner and the CLI can never
+  disagree about what the evidence means. It weighs two facts, both local — no
+  MSSQL round trip:
+  1. **A watermark the refresh writes itself** (`Reporting::markRollupRefreshed`,
+     config keys `venue_daily_refresh_*` for the ledger and
+     `game_daily_rollup_*` for the app rollup): when it last ran and the newest
+     complete day that run covered. Written ONLY after the last batch commits,
+     so a run that throws part way still reads as behind. This makes "the job
+     ran" a recorded fact instead of a guess about missing rows.
+  2. **The app's own raw play feed as an independent witness** of whether the
+     venue did business on the days the rollup has nothing for. `cron_watchdog.php`
+     polls it every minute on the STOCK image, so it keeps advancing through
+     precisely the MSSQL and nightly-cron failures that freeze these rollups.
+     One `COUNT(*)`, never a row fetch (the feed runs to thousands of plays a
+     day — see the `DB::each()` rule under **Database**), and it reports whether
+     it still retains that far back, because an empty count over days the
+     ~30-day feed has already purged proves nothing.
+  Five states: `ok` (within the 3-day tolerance), `stalled` (the refresh itself
+  stopped — the actionable fault, and the shape the six-week freeze had), `gap`
+  (the refresh covered those days but the source has no rows while the app saw
+  plays — business missing from the POS, not from the job), `quiet` (covered,
+  and neither source saw anything — the venue was shut; **NOT a warning**, and
+  killing that false alarm is the whole point), `unknown` (no watermark yet, or
+  the feed no longer reaches back over the gap — warn, but name no cause).
+  `warn` drives the styling; `quiet` renders in the neutral `.yoy-quiet` voice
+  the coverage line uses. The classifier is PURE so the boundaries are pinned by
+  `tests/test_rollup_health.php` (`php tests/test_rollup_health.php`, no DB, no
+  network) rather than only ever exercised on a venue at 4am. Wording lives in
+  PHP; the client only reformats the dates inside it (`App.humanizeDates`).
 - Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
   for the live feed, per-game drill-downs, and hourly reporting.
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
@@ -224,12 +267,23 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   (`analyticsYoyStaleDays`, the yoy card's own helper). The split between them is
   the point and must not be collapsed: **coverage is NEUTRAL context** — a closed
   day carries no rows either, so a 45-day interior hole (196 of 242 days, −19% on
-  the year) is stated but never styled as an alarm — while **staleness is the
-  warning**, because a rollup that stopped advancing is the one signature a
-  closed day cannot explain. Tolerance is 3 days, same as the yoy card, and for
-  the same reason: a healthy rollup is legitimately 1 day behind (it never holds
-  today), so 241/242 on a Year view must stay silent or the banner cries wolf
-  every day.
+  the year) is stated but never styled as an alarm — while **staleness is where
+  the warning can come from**, because a rollup that stopped advancing is the one
+  thing a reader cannot see for themselves. Tolerance is 3 days, same as the yoy
+  card, and for the same reason: a healthy rollup is legitimately 1 day behind
+  (it never holds today), so 241/242 on a Year view must stay silent or the
+  banner cries wolf every day.
+  **But staleness alone is not proof of a fault, and this banner used to claim
+  it was** ("The nightly job that reads the card system looks stuck"). At the
+  TRAILING edge the closed-day argument above applies just as much as it does in
+  the interior: the newest day stops moving whether the job died or the season
+  did. So the block also carries **`rollup_health`** (see the yoy entry above),
+  which weighs the refresh's own watermark and the app's independent play feed
+  and returns one verdict; the banner prints `rollup_health.summary` and applies
+  `analytics-deep-note--warn` only when `rollup_health.warn` is set. A `quiet`
+  verdict — the refresh is current and nobody swiped — joins the coverage
+  sentence in the same neutral voice instead of raising an alarm about a venue
+  that was simply shut.
 - The Analytics overview and both reader-group endpoints accept
   `exclude_time_plays=1` (a UI toggle on those pages). The overview filters
   whole transactions (exact — excluded plays' tickets/points/payments drop
@@ -1450,7 +1504,13 @@ before building.
   audit-logged and rate-limited (15 / 10 min per user).
 
 ### Testing
-- No automated test suite
+- No suite-wide test runner; a few pure helpers carry their own assertions,
+  each runnable standalone with no database and no network:
+  - `php tests/test_rollup_health.php` — the rollup-freshness verdict
+    (`Reporting::classifyRollup`): the tolerance boundaries, and the cases that
+    separate a stopped nightly job from a venue that was simply closed
+  - `php birthdays/tests/*.php`, `php anniversaries/tests/*.php` — the two Slack
+    bots' date/roster/message logic (310+ assertions)
 - Manual smoke testing via install.php, cron.php, UI flows
 - `php -l` for syntax checking across all PHP files
 

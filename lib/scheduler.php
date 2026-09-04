@@ -7,6 +7,7 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/crypto.php';
 require_once __DIR__ . '/centeredge_client.php';
+require_once __DIR__ . '/reporting.php';
 
 class Scheduler {
     /**
@@ -1738,6 +1739,11 @@ class Scheduler {
             throw $e;
         }
 
+        // Same watermark the ledger refresh writes, for the same reason: this
+        // rollup also stores nothing for a day with no plays, so its newest row
+        // cannot say whether the job ran. See Reporting::rollupHealth().
+        Reporting::markRollupRefreshed('app', $todayStr);
+
         return [
             'days_recomputed'     => count($targetDates),
             'rows_written'        => $written,
@@ -2243,6 +2249,11 @@ class Scheduler {
                 $written += self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $from, $upper));
             }
         }
+        // Covered every day up to (not including) today, so it leaves the same
+        // watermark the nightly refresh does — otherwise a fresh install reads
+        // as "never refreshed" until the first cron fires.
+        Reporting::markRollupRefreshed('ledger', $today);
+
         $row = DB::queryOne('SELECT MIN(stat_date) AS earliest FROM venue_daily_stats');
         $note("Venue daily backfill wrote {$written} day-rows; earliest " . ($row['earliest'] ?? '?') . '.');
         return ['days' => $written, 'earliest' => $row['earliest'] ?? null];
@@ -2307,6 +2318,17 @@ class Scheduler {
             $written += self::writeVenueDailyRows(self::venueDailyRowsFromMssql($client, $cursor, $upper));
             $cursor = $upper;
         }
+
+        // Record that the refresh actually RAN, and through which complete day.
+        // Written only here, after the last batch commits — a run that throws
+        // part way leaves the old watermark standing and still reads as behind.
+        //
+        // This is what lets the year-over-year card tell a stopped job from a
+        // shut venue. Both leave the same trace in the table itself: the rollup
+        // writes one row per day WITH ACTIVITY, so four closed days and four
+        // missed nights both end at the same MAX(stat_date). Only the job knows
+        // which it was, so the job records it. See Reporting::rollupHealth().
+        Reporting::markRollupRefreshed('ledger', $today);
 
         if ($log) {
             $log("Venue daily refresh: {$written} day-rows from {$from}"

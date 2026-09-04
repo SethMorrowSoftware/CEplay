@@ -365,14 +365,23 @@
                 + ' days in this period (days with no recorded activity — closures included — carry no rows).';
         }
 
-        // Staleness IS the alarm: the rollup has stopped advancing, which no
-        // closed day explains. Tolerance 3 days, matching the year-over-year
-        // card — 1 day behind is normal and must stay silent.
-        if (typeof h.stale_days === 'number' && h.stale_days > 3) {
+        // The trailing edge needs the same care the interior does, for the
+        // opposite reason. A rollup that stopped advancing and a venue that
+        // closed both leave no rows for the newest days, so "N days behind" on
+        // its own names no cause — the server settles it against the refresh's
+        // own watermark and this app's independent play feed, and sends one
+        // verdict. Only a fault gets the warning treatment; a closed stretch
+        // explains itself in the same neutral voice as the coverage line above.
+        // Tolerance is 3 days either way, matching the year-over-year card —
+        // one day behind is normal here and must stay silent.
+        var health = h.rollup_health;
+        if (health && health.summary && (health.warn || health.state === 'quiet')) {
+            msg += (health.warn ? ' ⚠️ Heads up: ' : ' ') + App.humanizeDates(health.summary);
+            if (health.warn) note.classList.add('analytics-deep-note--warn');
+        } else if (!health && typeof h.stale_days === 'number' && h.stale_days > 3) {
             msg += ' ⚠️ Heads up: deep history stops at ' + formatShortDate(h.through)
-                + ', about ' + formatInt(h.stale_days) + ' days behind — so the most recent part of '
-                + 'this period is missing and these totals read low. '
-                + 'The nightly job that reads the card system looks stuck.';
+                + ', about ' + formatInt(h.stale_days) + ' days behind, so the most recent part of '
+                + 'this period may be missing and these totals may read low.';
             note.classList.add('analytics-deep-note--warn');
         }
         note.textContent = msg;

@@ -452,16 +452,19 @@ function analyticsOverview(bool $hideMoney = false): void {
                 // otherwise cry wolf on every long range.
                 'covered_days'         => $v['covered_days'],
                 'expected_days'        => $expectedDays,
-                // Staleness IS a warning, and it is the one signature a closed
-                // day cannot explain: the rollup has simply stopped advancing.
-                // Same definition and same 3-day tolerance as the
-                // year-over-year card — 1 is normal (the nightly refresh runs
-                // at 00:05 UTC, i.e. 20:05 the previous day here, and never
-                // covers today), so anything under the tolerance must stay
-                // silent. This is exactly the six-week freeze that went
-                // unnoticed on this venue in 2026.
+                // How far behind the rollup's newest day is. Same definition and
+                // same 3-day tolerance as the year-over-year card — 1 is normal
+                // (the nightly refresh runs at 00:05 UTC, i.e. 20:05 the
+                // previous day here, and never covers today).
+                //
+                // NOT on its own a warning: a closed day carries no rows either,
+                // so the newest day going quiet looks identical whether the job
+                // stopped (the six-week freeze this venue had in 2026) or the
+                // season ended. rollup_health carries the evidence that tells
+                // those apart and the verdict the banner prints.
                 'stale_days'           => analyticsYoyStaleDays($v['through'], $expectedThrough),
                 'expected_through'     => $expectedThrough,
+                'rollup_health'        => Reporting::rollupHealth('ledger', $expectedThrough, $v['through'], $tz),
                 'plays'                => $v['plays'],
                 'value'                => $v['value'],
                 'tickets'              => $v['tickets'],
@@ -930,6 +933,13 @@ function analyticsYoy(bool $hideMoney = false): void {
         'through'          => $through,
         'expected_through' => $expected,
         'stale_days'       => analyticsYoyStaleDays($through, $expected),
+        // How far behind the rollup is says WHAT the totals cover; it cannot say
+        // WHY, because a closed day and a missed night leave the same trace.
+        // rollup_health carries the evidence that settles it (did the refresh
+        // run, and did the app's own feed see plays on the missing days) plus
+        // the verdict the UI should print. `stale_days` above stays the plain
+        // gap — it is context, and only rollup_health.warn is an alarm.
+        'rollup_health'    => Reporting::rollupHealth($source, $expected, $through, $tz),
         'history_since'    => analyticsYoyHistorySince($source),
         'hide_money'       => $hideMoney,
     ];

@@ -1276,25 +1276,60 @@ const App = {
 
         // A rollup that stopped updating still renders a clean card — every
         // window is honestly labelled, just cut at a day that drifts further
-        // into the past each night. Say so once it's more than a couple of days
-        // back; one day behind is routine (the nightly refresh can land while
-        // the day it would cover is still running).
-        const stale = Number(data.stale_days);
-        if (Number.isFinite(stale) && stale >= 3) {
-            const src = data.source === 'app' ? 'play rollup' : 'POS ledger rollup';
-            body.appendChild(this.el('p', {
-                className: 'yoy-stale',
-                role: 'status',
-                textContent: 'The ' + src + ' is ' + stale + ' days behind: its newest complete day is '
-                    + this.formatPlainDate(data.through) + ', not '
-                    + this.formatPlainDate(data.expected_through)
-                    + '. These totals stop there — the nightly refresh has not advanced them.'
-            }));
-        }
+        // into the past each night. But so does a rollup that is working
+        // perfectly while the venue is shut: both store nothing for the missing
+        // days, so the newest day alone cannot tell them apart. The server
+        // gathers the evidence that can (did the nightly refresh actually run,
+        // and did this app's own play feed see anything on those days) and
+        // sends the verdict; only a fault gets the warning treatment.
+        this._yoyFreshness(body, data);
 
         const grid = this.el('div', { className: 'yoy-grid' });
         periods.forEach((p) => grid.appendChild(this._yoyPeriod(p, data, canSeeMoney)));
         body.appendChild(grid);
+    },
+
+    /**
+     * Rewrite bare YYYY-MM-DD stamps inside a server sentence as "Aug 30, 2026".
+     * The wording of these verdicts lives in PHP (Reporting::classifyRollup) so
+     * the page, the Analytics banner and check_rollups.php can never disagree
+     * about what the evidence means; only the date formatting is ours.
+     */
+    humanizeDates(text) {
+        if (!text) return '';
+        return String(text).replace(/\b\d{4}-\d{2}-\d{2}\b/g, (m) => this.formatPlainDate(m));
+    },
+
+    /**
+     * Render the rollup-freshness line, if there is anything worth saying.
+     *
+     * Three outcomes, and the difference between them is the point: a fault
+     * warns, a closed stretch explains itself quietly, and a healthy rollup
+     * prints nothing at all.
+     */
+    _yoyFreshness(body, data) {
+        const h = data && data.rollup_health;
+        if (!h || !h.summary) {
+            // Older payload (or a client ahead of the server): fall back to the
+            // raw gap, and say only what a gap actually proves — never that the
+            // refresh failed, which this path has no way to know.
+            const stale = Number(data && data.stale_days);
+            if (Number.isFinite(stale) && stale > 3) {
+                body.appendChild(this.el('p', {
+                    className: 'yoy-stale', role: 'status',
+                    textContent: 'These totals stop at ' + this.formatPlainDate(data.through)
+                        + ', ' + stale + ' days before ' + this.formatPlainDate(data.expected_through)
+                        + '. Either the nightly refresh is stuck or the venue recorded nothing since.'
+                }));
+            }
+            return;
+        }
+        if (!h.warn && h.state !== 'quiet') return;
+        body.appendChild(this.el('p', {
+            className: h.warn ? 'yoy-stale' : 'yoy-quiet',
+            role: 'status',
+            textContent: this.humanizeDates(h.summary)
+        }));
     },
 
     /** One period block (Month to date / Year to date). */
