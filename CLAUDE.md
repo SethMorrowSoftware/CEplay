@@ -148,6 +148,18 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
      day — see the `DB::each()` rule under **Database**), and it reports whether
      it still retains that far back, because an empty count over days the
      ~30-day feed has already purged proves nothing.
+     **SILENCE ONLY COUNTS FROM A WITNESS KNOWN TO BE AWAKE** (`feed_live`,
+     `Reporting::feedIsLive()`): the `quiet` verdict rests on the feed being
+     EMPTY, and a watchdog that stopped polling is exactly as empty as a closed
+     venue. So it is trusted only while the watchdog HEARTBEAT is fresh
+     (`FEED_WITNESS_MAX_AGE` 900s — the heartbeat is written every minute
+     whether or not anyone swiped, which is precisely why the feed's own rows
+     cannot stand in for it) and no `game_tx_backlog_*` flag says it is still
+     catching up. Otherwise the verdict is `unknown`, never `quiet`. Without
+     that guard two dead data paths would report as a reassuring "nothing to
+     fix here" — the one direction in which this verdict could be WORSE than
+     the false alarm it replaced. Recorded plays still decide it outright: a
+     poller that captured activity was plainly running when it mattered.
   Five states: `ok` (within the 3-day tolerance), `stalled` (the refresh itself
   stopped — the actionable fault, and the shape the six-week freeze had), `gap`
   (the refresh covered those days but the source has no rows while the app saw
@@ -160,6 +172,20 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   `tests/test_rollup_health.php` (`php tests/test_rollup_health.php`, no DB, no
   network) rather than only ever exercised on a venue at 4am. Wording lives in
   PHP; the client only reformats the dates inside it (`App.humanizeDates`).
+  **`/api/health` also reports the watermark** under `rollups.ledger` /
+  `rollups.app` (`last_refresh`, `covered_through`, `newest_day`,
+  `days_behind`, `healthy`), so a stalled nightly job is machine-visible
+  without waiting for somebody to open the dashboard — which is what let the
+  last freeze run six weeks. Two properties, both deliberate: it NEVER moves
+  the top-level `status` (same rule as the two Slack bots — a reporting table
+  falling behind pauses nothing, and that field has to stay trustworthy), and
+  it reports the WATERMARK ONLY — two config reads plus an indexed `MAX`, no
+  feed scan, because this endpoint is unauthenticated and may be polled hard.
+  The closed-vs-broken reasoning stays on the page and in `check_rollups.php`,
+  where a human is asking. `healthy: null` means no refresh has ever been
+  recorded (not yet upgraded, or a rollup this install doesn't populate) —
+  unknown, not sick. `newest_day` is reported BESIDE `covered_through` rather
+  than instead of it: that pair IS the distinction this whole entry is about.
 - Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
   for the live feed, per-game drill-downs, and hourly reporting.
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)

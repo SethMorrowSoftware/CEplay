@@ -70,6 +70,7 @@ function facts(array $over = []): array
         'gap_to'           => '2026-09-02',
         'feed_plays'       => null,
         'feed_covers_gap'  => false,
+        'feed_live'        => true,
     ];
 }
 
@@ -137,6 +138,21 @@ ok('and warns', $v['warn'] === true);
 ok('crediting the days to the source, not the job',
     strpos($v['summary'], 'missing from the source') !== false);
 ok('and quoting the plays it counted', strpos($v['summary'], '41,200') !== false);
+
+// The witness must be AWAKE for its silence to mean anything. A watchdog that
+// stopped polling is exactly as quiet as a closed venue, and reading that as
+// "nothing to fix here" would make this verdict worse than the warning it
+// replaced — two dead data paths reported as a calm night off.
+$v = Reporting::classifyRollup(['feed_live' => false] + $quiet);
+is_eq('an empty feed from a stopped poller is NOT a closure', $v['state'], 'unknown');
+ok('and warns', $v['warn'] === true);
+ok('saying the feed cannot testify',
+    strpos($v['summary'], 'not currently polling') !== false);
+
+// Plays in the gap still decide it outright — a poller that recorded activity
+// was plainly running when it mattered, whatever its heartbeat says now.
+$v = Reporting::classifyRollup(['feed_live' => false, 'feed_plays' => 41200] + $quiet);
+is_eq('but recorded plays still prove the venue was open', $v['state'], 'gap');
 
 // ---------------------------------------------------------------------------
 section('Unsettled evidence says so instead of picking a cause');
