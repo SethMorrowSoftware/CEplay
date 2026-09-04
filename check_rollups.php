@@ -28,6 +28,7 @@ if (php_sapi_name() !== 'cli') {
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/crypto.php';
+require_once __DIR__ . '/lib/reporting.php';
 
 $tzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
 try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); $tzName = 'UTC'; }
@@ -50,15 +51,6 @@ function rollupSpan(string $table, string $dateCol): ?array {
         'a' => $r['a'] ? substr((string)$r['a'], 0, 10) : null,
         'b' => $r['b'] ? substr((string)$r['b'], 0, 10) : null,
     ];
-}
-
-/** Whole days between two ISO dates (0 when b >= a). */
-function daysBehind(?string $newest, string $expected): ?int {
-    if ($newest === null) return null;
-    if ($newest >= $expected) return 0;
-    $x = DateTime::createFromFormat('!Y-m-d', $newest, new DateTimeZone('UTC'));
-    $y = DateTime::createFromFormat('!Y-m-d', $expected, new DateTimeZone('UTC'));
-    return ($x && $y) ? (int)$x->diff($y)->days : null;
 }
 
 $tables = [
@@ -98,24 +90,59 @@ if ($v === null || $v['n'] === 0) {
     echo "  The one-time backfill reads ~2 decades from the POS ledger; it takes a\n";
     echo "  few minutes. Backfill flag: " . ($flag === null ? "NOT SET (never completed)" : $flag) . "\n";
 } else {
-    $behind = daysBehind($v['b'], $yesterday);
-    // 1 day behind is NORMAL: the nightly refresh never holds today, and it runs
-    // at 00:05 UTC = 20:05 the previous day here. Same 3-day tolerance the
-    // year-over-year card and the Analytics deep banner use.
-    if ($behind !== null && $behind > 3) {
+    // The newest stored day alone cannot answer this. The rollup writes one row
+    // per day WITH ACTIVITY, so a week the venue was shut ends the table at
+    // exactly the same place a week of failed cron runs does — and telling
+    // somebody to go restart a working systemd unit is its own kind of wrong.
+    // Reporting::rollupHealth() weighs the refresh's own watermark and this
+    // app's independent play feed; the same verdict the dashboard prints.
+    $h = Reporting::rollupHealth('ledger', $yesterday, $v['b'], $tz);
+    $behind = $h['data_stale_days'];
+
+    if ($h['state'] === 'stalled' || $h['state'] === 'gap') {
         echo "  venue_daily_stats is STALE — newest day " . $v['b'] . ", about " . $behind . " days behind.\n\n";
-        echo "  The nightly rollup has stopped advancing, so recent weeks are missing from\n";
-        echo "  Analytics Month/Year and the year-over-year card, and those totals read low.\n\n";
+        echo "  " . wordwrap($h['summary'], 70, "\n  ") . "\n\n";
+        echo "  Analytics Month/Year and the year-over-year card lose everything after\n";
+        echo "  that day.\n\n";
         echo "  Check the daily job and its container image:\n";
         echo "      systemctl status pause-groups-daily.service\n";
         echo "      tail -50 data/cron.log        # 'No MSSQL PDO driver' means the wrong image\n";
         echo "  Then catch it up:  php run_backfills.php\n";
+    } elseif ($h['state'] === 'quiet') {
+        echo "  venue_daily_stats looks HEALTHY — newest day " . $v['b'] . ", " . $behind . " days back,\n";
+        echo "  and that is a QUIET VENUE rather than a stuck job.\n\n";
+        echo "  " . wordwrap($h['summary'], 70, "\n  ") . "\n\n";
+        echo "  Nothing to fix here. Deep history covers " . $v['a'] . " .. " . $v['b'] . ".\n";
+    } elseif ($h['state'] === 'unknown' && $h['summary'] !== '') {
+        echo "  venue_daily_stats is " . $behind . " days back — newest day " . $v['b'] . " — and the\n";
+        echo "  evidence does not yet say why.\n\n";
+        echo "  " . wordwrap($h['summary'], 70, "\n  ") . "\n\n";
+        echo "  Worth a look either way:\n";
+        echo "      systemctl status pause-groups-daily.service\n";
+        echo "      tail -50 data/cron.log        # 'No MSSQL PDO driver' means the wrong image\n";
+        echo "  Catching it up is harmless if it was fine:  php run_backfills.php\n";
     } else {
         echo "  venue_daily_stats looks HEALTHY — newest day " . $v['b']
              . ($behind ? " (" . $behind . " day behind, which is normal)" : " (current)") . ".\n\n";
         echo "  Deep history covers " . $v['a'] . " .. " . $v['b'] . ", so Analytics Month/Year\n";
         echo "  should report real figures. If a range still looks wrong, the cause is\n";
         echo "  something else — say what the page shows and we'll chase it.\n";
+    }
+
+    // The evidence, always — this is the command someone runs when a page looks
+    // wrong, so it should show its working rather than just its conclusion.
+    echo "\n  Evidence:\n";
+    echo "    nightly refresh last ran   " . ($h['refresh_at'] ?? 'never recorded')
+         . ($h['refresh_through'] ? " (covered through " . $h['refresh_through'] . ")" : '') . "\n";
+    echo "    newest day with activity   " . $v['b'] . "  (expected " . $yesterday . ")\n";
+    if ($h['gap_from'] !== null && $h['gap_from'] <= $h['gap_to']) {
+        echo "    days covered but empty     " . $h['gap_from'] . " .. " . $h['gap_to'] . "\n";
+        echo "    plays in this app's feed   "
+             . ($h['feed_plays'] === null
+                 ? 'not checked'
+                 : number_format($h['feed_plays'])
+                   . ($h['feed_covers_gap'] ? '' : ' (feed does not reach back that far)'))
+             . "\n";
     }
 }
 echo "\n";

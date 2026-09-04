@@ -26,6 +26,22 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* The rollup is healthy and the venue simply had no activity on the trailing
+   days. Says why the totals stop where they do WITHOUT the warning treatment —
+   there is nothing here to fix, and styling a closed week as a fault is what
+   sends somebody to debug a working cron job. */
+.yoy-quiet {
+    margin: 0 0 0.85rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+}
+
 .yoy-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
