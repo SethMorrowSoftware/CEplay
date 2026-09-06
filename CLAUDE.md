@@ -52,7 +52,12 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
 - **`DB::each()` — stream a read you are AGGREGATING; `DB::query()` only when
   the caller really needs the rows.** `query()` materializes every row first, at
   ~900 bytes of PHP array per row, and the app runs on the stock `php:8.3-fpm`
-  **128M `memory_limit`** (nothing in `deploy/` raises it). Blowing that is a
+  **128M `memory_limit`**. The WEB tier keeps that deliberately — there a
+  runaway read is a bug to catch, not to feed — but the two CLI batch units and
+  `run.sh` now pass `-d memory_limit=512M` (`deploy/write-daily-unit.sh`),
+  because 128M is a web-tier figure and a nightly job that aggregates the whole
+  raw feed has no business sitting one busy season away from a fatal. That is
+  HEADROOM, never a substitute for streaming. Blowing the limit is a
   FATAL, not an exception: `index.php`'s handler never runs, the response
   carries NO JSON body, and `public/js/api.js` can only report
   **"Request failed (HTTP 500)"** — a bare 500 with no message anywhere in the
@@ -67,6 +72,27 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   and `analyticsOverview` were the same read away from the same death and are
   fixed too (measured at 12,000 plays/day: 304-338MB → 6-44MB, output
   byte-identical across 30 endpoint/range combinations).
+  **THE SAME BUG THEN KILLED THE NIGHTLY CRON FOR A WEEK (Sep 2026), because
+  that fix was applied to the WEB endpoints and stopped there.** `cron.php` ran
+  on the same 128M limit and both of its aggregations still used `DB::query()`
+  over the raw feed: `rollupDailyStats()` (28 days ≈ 300k rows at this venue)
+  and `rollupCardActivity()` (the WHOLE table, no date bound). Measured on a
+  336k-row feed: the read alone fatals at 128M; streamed, both now peak at
+  **62MB**. The venue log is unambiguous — `Allowed memory size of 134217728
+  bytes exhausted in lib/scheduler.php` (the rollup's aggregation loop) and
+  `in lib/db.php` line 1267 (`DB::query()`'s `$rows[] = $row`).
+  Two things made it far worse than a failed step:
+  - **The fatal landed BEFORE the purge**, so the raw feed was never trimmed to
+    its 30-day window, grew, and made the next night's read bigger — a spiral.
+    `rollupCardActivity()`'s comment even said its input was "already bounded to
+    ~30 days by the purge", relying on a LATER step in the same script that had
+    itself stopped running. **Never assume a sibling step pruned your input.**
+  - It is a FATAL, so it took every later step with it — including the venue
+    rollup refresh, which is why the reporting numbers froze. That coupling is
+    fixed separately (see `cron.php` under **Key Files**), but the memory bug is
+    the root cause.
+  When you fix a `DB::query()` blow-up, **grep the CRON path too** — it has no
+  user watching it fail, and its inputs are the biggest in the app.
   Two rules follow, and the second is the one that actually saves you:
   **stream anything reduced on the spot**, and **filter to the games you
   report on** — `perfDailyPerGame()`/`perfRawDailyPerGame()`/

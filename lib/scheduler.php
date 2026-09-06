@@ -1616,15 +1616,6 @@ class Scheduler {
             $cursor->modify('+1 day');
         }
 
-        $rows = DB::query(
-            'SELECT transaction_time, game_id, game_description, card_number,
-                    redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
-                    regular_points, bonus_points, used_time_play
-             FROM game_play_transactions
-             WHERE transaction_time >= :p0 AND transaction_time < :p1',
-            [$startIso, $endIso]
-        );
-
         // Aggregate into [date][game_id] => totals, tracking distinct cards per
         // (date, game) with a set so unique_cards is exact for that day. The
         // hourly aggregate rides along keyed by (date, hour, game).
@@ -1632,19 +1623,40 @@ class Scheduler {
         $aggHourly = [];
         $names = [];
         $cardSets = [];
-        foreach ($rows as $r) {
+
+        // STREAM the feed — do NOT DB::query() it. This is the read that killed
+        // the nightly job on the venue for a week straight (Sep 2026: "Allowed
+        // memory size of 134217728 bytes exhausted in lib/scheduler.php"). A
+        // 28-day window at this venue's volume is ~300k rows, and query()
+        // materializes every one at ~900 bytes of PHP array before the loop
+        // starts — several hundred MB against the stock 128M limit. What comes
+        // OUT is tiny (4k game-day rows); it is the input that kills you, which
+        // is exactly the case the DB::each() rule in CLAUDE.md exists for. That
+        // rule had been applied to the web endpoints and missed here.
+        //
+        // Worse, this fatal landed BEFORE the purge, so the raw feed was never
+        // trimmed, grew past its 30-day window, and made the next night's read
+        // bigger still — a spiral that ends with every nightly step dead.
+        DB::each(
+            'SELECT transaction_time, game_id, game_description, card_number,
+                    redemption_tickets, (cash_amount + credit_card_amount) AS cash_amount,
+                    regular_points, bonus_points, used_time_play
+             FROM game_play_transactions
+             WHERE transaction_time >= :p0 AND transaction_time < :p1',
+            [$startIso, $endIso],
+            function (array $r) use (&$agg, &$aggHourly, &$names, &$cardSets, $tz, $targetDates) {
             $tt = $r['transaction_time'] ?? '';
-            if ($tt === '') continue;
+            if ($tt === '') return;
             try {
                 $d = new DateTime($tt);
             } catch (Exception $e) {
-                continue;
+                return;
             }
             $d->setTimezone($tz);
             $date = $d->format('Y-m-d');
-            if (!isset($targetDates[$date])) continue; // outside authoritative window
+            if (!isset($targetDates[$date])) return; // outside authoritative window
             $gid = (string)($r['game_id'] ?? '');
-            if ($gid === '') continue;
+            if ($gid === '') return;
 
             $key = $date . "\0" . $gid;
             if (!isset($agg[$key])) {
@@ -1684,7 +1696,8 @@ class Scheduler {
             if ($desc !== '') {
                 $names[$gid] = $desc;
             }
-        }
+            }
+        );
 
         // Fall back to the game cache for names the feed didn't carry.
         $cacheNames = [];
@@ -1777,32 +1790,46 @@ class Scheduler {
             $tz = new DateTimeZone('UTC');
         }
 
-        // Per-card min/max local calendar date across the whole raw feed
-        // (already bounded to ~30 days by the purge). Bucketed in PHP so the
-        // date math uses the venue timezone, matching the rest of reporting.
+        // Per-card min/max local calendar date across the whole raw feed.
+        // Bucketed in PHP so the date math uses the venue timezone, matching the
+        // rest of reporting.
+        //
+        // STREAMED, and the comment this replaces is why: it read "already
+        // bounded to ~30 days by the purge", which is an assumption about
+        // ANOTHER step in the same script — one that runs LATER and had itself
+        // stopped running. When the rollup above fataled on memory, the purge
+        // never executed, the feed grew unbounded, and this unbounded SELECT
+        // over the whole table then fataled too (venue Sep 2026: "Allowed
+        // memory size ... exhausted in lib/db.php" — that line is DB::query()'s
+        // row-accumulation loop). Streaming holds one row at a time, so the
+        // retained state is one entry per CARD rather than one per PLAY, and
+        // the size of the table stops being able to kill the job. Never rely on
+        // a sibling step having pruned your input.
         $seen = [];
-        foreach (DB::query(
+        DB::each(
             'SELECT card_number, transaction_time
              FROM game_play_transactions
-             WHERE card_number != \'\' AND card_number != \'000000\''
-        ) as $r) {
-            $tt = (string)($r['transaction_time'] ?? '');
-            if ($tt === '') continue;
-            try {
-                $d = new DateTime($tt);
-            } catch (Exception $e) {
-                continue;
+             WHERE card_number != \'\' AND card_number != \'000000\'',
+            [],
+            function (array $r) use (&$seen, $tz) {
+                $tt = (string)($r['transaction_time'] ?? '');
+                if ($tt === '') return;
+                try {
+                    $d = new DateTime($tt);
+                } catch (Exception $e) {
+                    return;
+                }
+                $d->setTimezone($tz);
+                $date = $d->format('Y-m-d');
+                $card = (string)$r['card_number'];
+                if (!isset($seen[$card])) {
+                    $seen[$card] = ['first' => $date, 'last' => $date];
+                } else {
+                    if ($date < $seen[$card]['first']) $seen[$card]['first'] = $date;
+                    if ($date > $seen[$card]['last'])  $seen[$card]['last']  = $date;
+                }
             }
-            $d->setTimezone($tz);
-            $date = $d->format('Y-m-d');
-            $card = (string)$r['card_number'];
-            if (!isset($seen[$card])) {
-                $seen[$card] = ['first' => $date, 'last' => $date];
-            } else {
-                if ($date < $seen[$card]['first']) $seen[$card]['first'] = $date;
-                if ($date > $seen[$card]['last'])  $seen[$card]['last']  = $date;
-            }
-        }
+        );
 
         if (empty($seen)) {
             return ['cards_seen' => 0, 'rows_written' => 0];
