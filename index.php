@@ -439,6 +439,59 @@ function handleHealthCheck(): void {
         $status['anniversaries'] = ['last_run' => null, 'healthy' => null, 'installed' => false];
     }
 
+    // Reporting rollups. Same rule as the two bots above: reported here, but
+    // NEVER moves the top-level `status` — that field means "is the pause-group
+    // system working", and a reporting table falling behind pauses nothing.
+    //
+    // It is here because the freeze this guards against is INVISIBLE by nature:
+    // venue_daily_stats is advanced only by the nightly cron, every page over it
+    // keeps rendering clean numbers when it stops, and the last one went six
+    // weeks before a human noticed. Only the WATERMARK is reported (two config
+    // reads and an indexed MAX — no scan, since this endpoint is unauthenticated
+    // and may be polled hard); it answers the one question monitoring needs —
+    // did the nightly job run — without the closed-vs-broken reasoning that
+    // belongs on the page and in check_rollups.php, where a human is asking.
+    try {
+        require_once __DIR__ . '/lib/reporting.php';
+        $rtzName = DB::getConfig('timezone') ?: DEFAULT_TIMEZONE;
+        try { $rtz = new DateTimeZone($rtzName); } catch (Exception $e) { $rtz = new DateTimeZone('UTC'); }
+        $rYesterday = (new DateTime('now', $rtz))->modify('-1 day')->format('Y-m-d');
+        $status['rollups'] = [];
+        foreach ([
+            'ledger' => 'venue_daily_stats',
+            'app'    => 'game_daily_stats',
+        ] as $rKey => $rTable) {
+            $mark = Reporting::rollupWatermark($rKey);
+            $newest = null;
+            try {
+                $r = DB::queryOne("SELECT MAX(stat_date) AS d FROM {$rTable}");
+                $d = $r['d'] ?? null;
+                if (is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) $newest = $d;
+            } catch (Exception $e) {
+                // Table not readable — reported as nulls below.
+            }
+            $behind = null;
+            if ($mark['through'] !== null) {
+                $behind = $mark['through'] >= $rYesterday
+                    ? 0
+                    : (int)(new DateTime($mark['through']))->diff(new DateTime($rYesterday))->days;
+            }
+            $status['rollups'][$rKey] = [
+                'last_refresh'    => $mark['at'],
+                'covered_through' => $mark['through'],
+                'newest_day'      => $newest,
+                'days_behind'     => $behind,
+                // null = never recorded a refresh (not yet upgraded, or a rollup
+                // this install doesn't populate) — that is "unknown", not "sick".
+                'healthy'         => $behind === null
+                    ? null
+                    : $behind <= Reporting::ROLLUP_STALE_TOLERANCE_DAYS,
+            ];
+        }
+    } catch (Exception $e) {
+        // Health must never fail on an optional report.
+    }
+
     // Security warnings for operators
     $warnings = [];
     // Transaction-feed backlog: set by pollGameTransactions when the per-cycle

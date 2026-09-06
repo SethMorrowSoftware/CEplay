@@ -149,6 +149,14 @@ class Reporting {
     const ROLLUP_STALE_TOLERANCE_DAYS = 3;
 
     /**
+     * How stale the watchdog's heartbeat may be before the raw play feed stops
+     * counting as a witness. The watchdog fires every minute, so this is very
+     * forgiving of a skipped cycle while still being orders of magnitude
+     * tighter than the multi-day gaps being judged.
+     */
+    const FEED_WITNESS_MAX_AGE = 900;
+
+    /**
      * Config keys per rollup: when its refresh last ran, and the newest
      * complete local day that run covered.
      *
@@ -178,6 +186,25 @@ class Reporting {
     }
 
     /**
+     * When $rollup's refresh last ran, and the newest complete day it covered.
+     * Two config reads, no scan — cheap enough for /api/health to call on every
+     * poll, which is the point: a stalled nightly job becomes machine-visible
+     * without anyone opening the dashboard.
+     *
+     * @return array{at:?string, through:?string}
+     */
+    public static function rollupWatermark(string $rollup): array {
+        if (!isset(self::ROLLUP_KEYS[$rollup])) return ['at' => null, 'through' => null];
+        $at      = DB::getConfig(self::ROLLUP_KEYS[$rollup]['at']);
+        $through = DB::getConfig(self::ROLLUP_KEYS[$rollup]['through']);
+        return [
+            'at'      => is_string($at) && $at !== '' ? $at : null,
+            'through' => is_string($through) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $through)
+                ? $through : null,
+        ];
+    }
+
+    /**
      * Gather the freshness evidence for one rollup and classify it.
      *
      * @param string      $rollup          'ledger' | 'app'
@@ -198,11 +225,9 @@ class Reporting {
             try { $tz = new DateTimeZone($tzName); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
         }
 
-        $refreshAt      = DB::getConfig(self::ROLLUP_KEYS[$rollup]['at']);
-        $refreshThrough = DB::getConfig(self::ROLLUP_KEYS[$rollup]['through']);
-        if (!is_string($refreshThrough) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $refreshThrough)) {
-            $refreshThrough = null;
-        }
+        $mark           = self::rollupWatermark($rollup);
+        $refreshAt      = $mark['at'];
+        $refreshThrough = $mark['through'];
 
         // The days actually in question: after the newest day carrying rows, up
         // to the newest day the last run COVERED. Days past that were never in
@@ -215,7 +240,7 @@ class Reporting {
         // Only ask the feed when the answer can change the verdict — i.e. when
         // the rollup is past tolerance and the refresh did cover days that came
         // back empty. Everything else settles without touching it.
-        $feed = ['plays' => null, 'covers' => false];
+        $feed = ['plays' => null, 'covers' => false, 'live' => false];
         $dataStale = self::daysBehind($dataThrough, $expectedThrough);
         if ($dataStale !== null && $dataStale > self::ROLLUP_STALE_TOLERANCE_DAYS
             && $gapFrom !== null && $gapFrom <= $gapTo) {
@@ -226,12 +251,13 @@ class Reporting {
             'rollup'           => $rollup,
             'expected_through' => $expectedThrough,
             'data_through'     => $dataThrough,
-            'refresh_at'       => is_string($refreshAt) ? $refreshAt : null,
+            'refresh_at'       => $refreshAt,
             'refresh_through'  => $refreshThrough,
             'gap_from'         => $gapFrom,
             'gap_to'           => $gapTo,
             'feed_plays'       => $feed['plays'],
             'feed_covers_gap'  => $feed['covers'],
+            'feed_live'        => $feed['live'],
         ]);
     }
 
@@ -276,6 +302,7 @@ class Reporting {
             'gap_to'             => $f['gap_to'] ?? null,
             'feed_plays'         => $f['feed_plays'] ?? null,
             'feed_covers_gap'    => !empty($f['feed_covers_gap']),
+            'feed_live'          => !empty($f['feed_live']),
         ];
 
         // Nothing recorded at all is the empty-rollup case the callers already
@@ -330,13 +357,29 @@ class Reporting {
                     . ' plays on them — so business is missing from the source, not from the job.',
             ];
         }
-        if ($out['feed_covers_gap'] && $plays === 0) {
+        // SILENCE ONLY COUNTS FROM A WITNESS KNOWN TO BE AWAKE. An empty feed
+        // means "nobody swiped" only while the watchdog is actually polling and
+        // has finished catching up; a stopped poller is equally silent, and
+        // treating that as proof of a closure would turn two broken data paths
+        // into a reassuring "nothing to fix here" — the one direction where
+        // this whole verdict could be worse than the warning it replaced.
+        if ($out['feed_covers_gap'] && $out['feed_live'] && $plays === 0) {
             return $out + [
                 'state' => 'quiet',
                 'warn'  => false,
                 'summary' => 'No recorded activity since ' . $through . '. The nightly refresh is '
                     . 'up to date and this app\'s own play feed is empty for those days too, so '
                     . 'this reads as a closure rather than a stalled job.',
+            ];
+        }
+        if ($out['feed_covers_gap'] && !$out['feed_live'] && $plays === 0) {
+            return $out + [
+                'state' => 'unknown',
+                'warn'  => true,
+                'summary' => 'The ' . $noun . ' has no completed day after ' . $through . '. Its '
+                    . 'nightly refresh is up to date, but this app\'s own play feed is not currently '
+                    . 'polling, so its silence over those days cannot be taken as proof the venue '
+                    . 'was closed.',
             ];
         }
 
@@ -359,7 +402,7 @@ class Reporting {
      * Scheduler::rollupDailyStats() does, so "a day" means the same thing here.
      */
     private static function feedActivity(string $fromDate, string $toDate, DateTimeZone $tz): array {
-        $out = ['plays' => null, 'covers' => false];
+        $out = ['plays' => null, 'covers' => false, 'live' => self::feedIsLive()];
         try {
             $utc   = new DateTimeZone('UTC');
             $start = new DateTime($fromDate . ' 00:00:00', $tz);
@@ -383,6 +426,36 @@ class Reporting {
             // A feed we can't read is evidence of nothing — leave it unknown.
         }
         return $out;
+    }
+
+    /**
+     * Is the raw play feed currently a trustworthy witness?
+     *
+     * Two conditions, and both matter for the same reason: the feed's SILENCE
+     * is the evidence, and silence from a poller that stopped means nothing.
+     *   - the watchdog is running (its heartbeat is written every minute
+     *     regardless of whether anyone swiped, so unlike the feed's own rows it
+     *     does not go quiet on a closed day);
+     *   - it is not still draining a backlog, since the days in question may
+     *     simply not have been fetched yet.
+     */
+    private static function feedIsLive(): bool {
+        $beat = dirname(DB_PATH) . '/.heartbeat_watchdog';
+        if (!is_file($beat)) return false;
+        $raw = @file_get_contents($beat);
+        $ts  = ($raw !== false && $raw !== '') ? strtotime(trim($raw)) : false;
+        if ($ts === false || (time() - $ts) > self::FEED_WITNESS_MAX_AGE) return false;
+
+        try {
+            $row = DB::queryOne(
+                "SELECT COUNT(*) AS n FROM api_config
+                 WHERE key LIKE 'game_tx_backlog_%' AND value IS NOT NULL"
+            );
+            if ((int)($row['n'] ?? 0) > 0) return false;
+        } catch (Exception $e) {
+            return false;
+        }
+        return true;
     }
 
     /** Whole days from $date to $expected; 0 when already caught up, null if unparseable. */

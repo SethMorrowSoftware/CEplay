@@ -11,8 +11,9 @@ Self-hosted, framework-free pause-group automation for Castle Fun Center (arcade
 ## Key Files
 - `index.php` — Main router: SPA shell, API dispatch, safety nets (Tier 1/2 enforcement)
 - `config.php` — Constants: encryption key, DB path, session lifetime, API timeouts
-- `cron.php` — Daily cron (00:05): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data, one-time MSSQL backfills (guest history + per-game play history)
+- `cron.php` — Daily cron (00:05 **app-local**, see Scheduling Engine): game sync, plan day, queue `at` jobs, nightly DB backup (`data/backups/`, VACUUM INTO, keep 14), rollup, purge old data. Then `cronRefreshReporting()` — the venue daily rollup refresh + one-time MSSQL backfills — which is LOCK-FREE and runs on EVERY firing, including one that skipped the plan because the watchdog held the scheduler lock, or whose plan threw. Do not fold it back inside the lock or behind the plan's success: that made it one unretried attempt per day, and every miss cost a full day of reporting
 - `cron_watchdog.php` — Per-minute watchdog: missed actions, state enforcement, re-queue
+- `print_timezone.php` — Prints the APP's timezone and nothing else, for the deploy scripts. `deploy/write-daily-unit.sh` asks it which clock "00:05" means, exactly as the two Slack bot installers ask their runners `--print-timezone`. Falls back to `DEFAULT_TIMEZONE` rather than failing, and validates the stored value before printing (a junk zone yields a timer systemd silently refuses to load — the exact failure the pin exists to prevent)
 - `run_action.php` — Single-action executor invoked by `at` jobs
 - `backfill_card_activity.php` — OPTIONAL manual runner (thin wrapper over `Scheduler::backfillCardActivityFromMssql()`). The nightly `cron.php` runs this backfill **automatically, once** (guarded by config flag `card_activity_backfill_done`, lock-free after the main plan) as soon as it runs with MSSQL configured — no CLI needed. It seeds the guest ledger (`card_activity`) from MSSQL `PlayerCardTrans` (MIN/MAX `TransDateTime` per card) so "new vs returning" reaches back ~2 decades instead of only the 30-day feed. Batched by year; idempotent (reuses the nightly rollup's monotonic UPSERT — only widens); venue server only
 - `run_backfills.php` — Runs whichever one-time MSSQL backfills are still pending (guest ledger + per-game play history) on demand via `Scheduler::runPendingBackfills()` — the single home for the flag-guard logic, shared with `cron.php`. `update.sh` invokes it after a deploy (best-effort, using the pdo_dblib overlay image) so the deep history appears immediately instead of at the next nightly cron; also runnable by hand. Idempotent/flag-guarded, so running early just means cron finds it done
@@ -148,6 +149,18 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
      day — see the `DB::each()` rule under **Database**), and it reports whether
      it still retains that far back, because an empty count over days the
      ~30-day feed has already purged proves nothing.
+     **SILENCE ONLY COUNTS FROM A WITNESS KNOWN TO BE AWAKE** (`feed_live`,
+     `Reporting::feedIsLive()`): the `quiet` verdict rests on the feed being
+     EMPTY, and a watchdog that stopped polling is exactly as empty as a closed
+     venue. So it is trusted only while the watchdog HEARTBEAT is fresh
+     (`FEED_WITNESS_MAX_AGE` 900s — the heartbeat is written every minute
+     whether or not anyone swiped, which is precisely why the feed's own rows
+     cannot stand in for it) and no `game_tx_backlog_*` flag says it is still
+     catching up. Otherwise the verdict is `unknown`, never `quiet`. Without
+     that guard two dead data paths would report as a reassuring "nothing to
+     fix here" — the one direction in which this verdict could be WORSE than
+     the false alarm it replaced. Recorded plays still decide it outright: a
+     poller that captured activity was plainly running when it mattered.
   Five states: `ok` (within the 3-day tolerance), `stalled` (the refresh itself
   stopped — the actionable fault, and the shape the six-week freeze had), `gap`
   (the refresh covered those days but the source has no rows while the app saw
@@ -160,6 +173,20 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   `tests/test_rollup_health.php` (`php tests/test_rollup_health.php`, no DB, no
   network) rather than only ever exercised on a venue at 4am. Wording lives in
   PHP; the client only reformats the dates inside it (`App.humanizeDates`).
+  **`/api/health` also reports the watermark** under `rollups.ledger` /
+  `rollups.app` (`last_refresh`, `covered_through`, `newest_day`,
+  `days_behind`, `healthy`), so a stalled nightly job is machine-visible
+  without waiting for somebody to open the dashboard — which is what let the
+  last freeze run six weeks. Two properties, both deliberate: it NEVER moves
+  the top-level `status` (same rule as the two Slack bots — a reporting table
+  falling behind pauses nothing, and that field has to stay trustworthy), and
+  it reports the WATERMARK ONLY — two config reads plus an indexed `MAX`, no
+  feed scan, because this endpoint is unauthenticated and may be polled hard.
+  The closed-vs-broken reasoning stays on the page and in `check_rollups.php`,
+  where a human is asking. `healthy: null` means no refresh has ever been
+  recorded (not yet upgraded, or a rollup this install doesn't populate) —
+  unknown, not sick. `newest_day` is reported BESIDE `covered_through` rather
+  than instead of it: that pair IS the distinction this whole entry is about.
 - Raw play feed (`game_play_transactions`) is a short rolling window (30 days)
   for the live feed, per-game drill-downs, and hourly reporting.
 - `Scheduler::rollupDailyStats()` (run nightly by `cron.php` BEFORE the purge)
@@ -201,10 +228,24 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   game once `rdrkey=0`). Written once
   ~2 decades deep (`Scheduler::backfillVenueDailyStatsFromMssql`, monthly MSSQL
   batches, flag `venue_daily_backfill_done`, via `runPendingBackfills`) and
-  refreshed nightly for the trailing 40 days
-  (`Scheduler::refreshVenueDailyStatsRecent`, cron Step 5c) — both cron-only,
-  MSSQL-only (self-skip if unconfigured), and never touch today (today stays
-  live from the raw feed). That refresh REACHES BACK to the rollup's newest
+  refreshed for the trailing 40 days
+  (`Scheduler::refreshVenueDailyStatsRecent`) — both MSSQL-only (self-skip if
+  unconfigured), and neither touches today (today stays live from the raw feed).
+  **THE REFRESH RUNS MORE THAN ONCE A DAY, and it must stay that way.** It used
+  to be a single nightly step inside `cron.php`'s scheduler-locked section, and
+  that is one attempt per day with no retry: a night the plan was skipped (the
+  per-minute watchdog held the lock at 00:05 — `acquireLock(0)` is non-blocking
+  and the old code `exit(0)`'d right there, before the reporting work), or threw
+  in some unrelated step, cost a FULL DAY of every reporting figure, and the
+  misses accumulate with nothing to say so. Two changes fixed that, both
+  deliberate: `cron.php` moved the refresh + `runPendingBackfills` into
+  `cronRefreshReporting()`, called on EVERY firing — a contended lock now skips
+  only the plan, and a failed plan sets `$planFailed` and exits at the END
+  instead of before the reporting; and `pause-groups-refresh.timer` (written by
+  `deploy/write-daily-unit.sh`, every 2h on the pdo_dblib image) runs
+  `run_backfills.php`, which is the same lock-free pair. So yesterday's numbers
+  appear within a couple of hours of local midnight rather than depending on one
+  nightly firing that may not come. That refresh REACHES BACK to the rollup's newest
   stored day when it is further behind than the trailing window, in monthly
   batches, capped by `VENUE_DAILY_CATCHUP_MAX_DAYS` (400, `clamped` in the
   return when it bites — that case wants a version bump instead). Do not
@@ -232,7 +273,16 @@ docs/         — Internal docs: security audit (AUDIT.md), CenterEdge API refer
   watchdog deliberately stays on the stock image** — it never touches MSSQL and
   it is the safety-critical pause/unpause path. When adding any cron-only MSSQL
   step, check the daily unit's image first, and give the reader of the number a
-  way to see that it stopped moving. `GET /api/analytics/overview` activates deep mode
+  way to see that it stopped moving.
+  **A SECOND, QUIETER VERSION OF THE SAME LESSON (Sep 2026).** Once the image
+  was fixed the rollup did advance — and still read days behind, because the
+  freeze was never the only thing wrong with a once-a-day job on the wrong
+  clock. Two independent taxes, each worth a day: the unpinned UTC timer (see
+  **Scheduling Engine**) and the single unretried nightly attempt (see the
+  refresh entry above). Neither is visible from the code that computes the
+  numbers, and both look exactly like "the rollup is behind again". When a
+  reporting figure lags, check WHEN the job runs and HOW OFTEN it gets to try
+  before assuming the job is broken. `GET /api/analytics/overview` activates deep mode
   ONLY when the requested range starts before the raw feed's earliest day
   (`analyticsRawFloorDate`); it is SINGLE-SOURCE (`analyticsVenueDaily`, the
   rollup only — never mixed with the raw feed, so no definitional seam), swaps
@@ -1442,10 +1492,26 @@ before building.
   `hasAtScheduler()` needs `at`+`atrm` on PATH and the php-fpm container ships
   neither; measured 181 planned actions, 0 with an `at_job_id`, ever. Net: all
   transitions come from the per-minute watchdog (so up to ~60s late, never
-  wrong). What the UTC host DOES cost: `pause-groups-daily.timer` fires 00:05
-  UTC = 20:05 Eastern the PREVIOUS day, so `cron.php` plans a day with 4 hours
-  left in it; harmless while `at` is absent, and the nightly rollup is
-  self-correcting (`rollupDailyStats()` recomputes a rolling 28 days).
+  wrong). What the UTC host DID cost: `pause-groups-daily.timer` carried a bare
+  `OnCalendar=*-*-* 00:05:00`, and systemd fires that on the SYSTEM zone — so it
+  ran at 00:05 UTC = **20:05 Eastern the PREVIOUS day**. **This was written off
+  here as "harmless while `at` is absent". It was harmless for pausing and
+  NOT harmless for reporting, which is the mistake to learn from: the
+  consequence was measured on the wrong subsystem.** `cron.php` sets the app
+  timezone, so a run at 20:05 Eastern computes `$today` as that previous day,
+  and `refreshVenueDailyStatsRecent()` never writes the running day — so the
+  newest day it could reach was the day before THAT. A perfectly healthy nightly
+  chain still left every reporting figure **two days behind**, permanently, and
+  no amount of successful runs could close it (venue, Sep 6 2026: newest
+  complete day Sep 4 at best, and the operator quite reasonably read that as
+  broken). **`deploy/write-daily-unit.sh` now writes the timer with the APP's
+  timezone pinned** (`OnCalendar=*-*-* 00:05:00 America/New_York`, systemd 252+,
+  the same mechanism `write-bot-units.sh` uses and verified with
+  `systemd-analyze calendar`: unpinned next-elapse 00:05 UTC, pinned 04:05 UTC =
+  00:05 local). The run now lands after LOCAL midnight, where "yesterday" is a
+  complete day. Never substitute a fixed UTC offset — it breaks at every DST
+  changeover. Planning also improves as a side effect: `planDay()` now plans a
+  day that is starting rather than one with four hours left.
 - Schedule windows = active (unpaused) hours. Outside windows = paused.
 - Priority: manual override > schedule override > recurring schedule
 - `planDay()` computes transition points, resolves conflicts, deduplicates
