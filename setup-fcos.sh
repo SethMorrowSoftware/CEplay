@@ -596,28 +596,22 @@ UNIT
 # on the SAME image as FPM (the pdo_dblib overlay when one was built): cron.php
 # refreshes the venue-wide daily rollup from MSSQL every night, and the stock
 # php:fpm image has no MSSQL driver to do it with.
+# It also writes BOTH timers: the nightly one (pinned to the APP's timezone —
+# on a UTC host running an Eastern venue an unpinned 00:05 fires at 20:05 the
+# previous local evening, which costs the reporting rollups a whole extra day)
+# and pause-groups-refresh.timer, the every-2h catch-up that gives the venue
+# rollup more than one attempt per day.
 bash "${SOURCE_DIR}/deploy/write-daily-unit.sh" \
     "$ENV_FILE" "$INSTALL_DIR" "$DATA_DIR" "$RUNTIME_IMAGE" "$LOAD_TAR_ARG"
-
-cat > /etc/systemd/system/pause-groups-daily.timer <<UNIT
-[Unit]
-Description=pause-groups daily planner — 00:05 every night
-
-[Timer]
-OnCalendar=*-*-* 00:05:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
 
 systemctl daemon-reload
 systemctl enable --now pause-groups-watchdog.timer
 systemctl enable --now pause-groups-daily.timer
+systemctl enable --now pause-groups-refresh.timer
 
 # Verify
 TIMERS_OK=1
-for TIMER in pause-groups-watchdog.timer pause-groups-daily.timer; do
+for TIMER in pause-groups-watchdog.timer pause-groups-daily.timer pause-groups-refresh.timer; do
     if systemctl is-active --quiet "$TIMER"; then
         ok "${TIMER} is active."
     else
@@ -821,6 +815,14 @@ if systemctl is-active --quiet pause-groups-daily.timer; then
     echo -e "${GRN}active${NC}"
 else
     echo -e "${RED}INACTIVE${NC} — run: systemctl status pause-groups-daily.timer"
+    ALL_GOOD=0
+fi
+
+printf "  %-45s" "pause-groups-refresh.timer"
+if systemctl is-active --quiet pause-groups-refresh.timer; then
+    echo -e "${GRN}active${NC}"
+else
+    echo -e "${RED}INACTIVE${NC} — run: systemctl status pause-groups-refresh.timer"
     ALL_GOOD=0
 fi
 

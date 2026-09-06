@@ -254,7 +254,22 @@ if [[ -f "${SRC_DIR}/deploy/Containerfile.mssql" && -f "${SRC_DIR}/deploy/write-
                 bash "${SRC_DIR}/deploy/write-daily-unit.sh" \
                     "$ENV_FILE" "$INSTALL_DIR" "$DATA_DIR" "$MSSQL_IMAGE" "$MSSQL_TAR"
                 ok "Nightly planner unit points at the MSSQL-enabled image."
-                note "Tonight's cron can now refresh the venue daily rollup (year-over-year, deep history)."
+                # The writer also (re)writes both timers: the nightly one with
+                # the APP's timezone pinned, and the every-2h reporting
+                # catch-up. Enable the catch-up here — installs that predate it
+                # have the unit on disk now but nothing starting it, and it is
+                # the thing that stops one missed night costing a whole day of
+                # reporting.
+                systemctl daemon-reload 2>/dev/null || true
+                if systemctl enable --now pause-groups-refresh.timer >/dev/null 2>&1; then
+                    ok "Reporting catch-up timer enabled (every 2h)."
+                else
+                    warn "Could not enable pause-groups-refresh.timer — check: systemctl status pause-groups-refresh.timer"
+                fi
+                # Restart the nightly timer so a rewritten schedule (e.g. the
+                # timezone pin) takes effect now rather than after a reboot.
+                systemctl restart pause-groups-daily.timer 2>/dev/null || true
+                note "Reporting rollups now refresh through the day, on venue-local time."
             fi
         else
             rm -f "${MSSQL_TAR}.tmp"

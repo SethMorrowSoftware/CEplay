@@ -25,20 +25,73 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0770, true);
 }
 
-// Acquire the global scheduler lock (non-blocking — skip if another instance
-// is running). Uses the shared re-entrant helper so nested Scheduler calls
-// (e.g. replanToday) don't deadlock against our own lock.
+// Load timezone before anything branches on the date — the reporting work at
+// the bottom runs whether or not the plan does, and it is all date-driven.
+$tz = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
+date_default_timezone_set($tz);
+$today = date('Y-m-d');
+$planFailed = false;
+
+/**
+ * The reporting half of the nightly job: LOCK-FREE, and it must run on EVERY
+ * firing — including one that skips the plan entirely.
+ *
+ * Both steps only widen analytics tables and race nothing, which is why they
+ * need no scheduler lock. Keeping them tied to the plan was the bug: this is
+ * the ONLY thing that advances venue_daily_stats, so a night the plan was
+ * skipped (the per-minute watchdog held the lock at 00:05) or threw in some
+ * unrelated step cost a full day of every reporting figure, with no retry
+ * until the next night — and those misses accumulate with nothing to say so.
+ * pause-groups-refresh.timer runs the same pair through the day for the same
+ * reason.
+ */
+function cronRefreshReporting(): void {
+    // Trailing window of the venue-wide daily rollup (venue_daily_stats) from
+    // the POS ledger — the deep-history source for the Analytics overview and
+    // the year-over-year card. MSSQL-only (self-skips if unconfigured); one
+    // bounded query per month touched, so it is cheap. It reaches back to the
+    // rollup's newest stored day, so a run following missed ones closes the
+    // WHOLE gap rather than just its own trailing window.
+    echo "Refreshing venue daily rollup...\n";
+    try {
+        $venueRefresh = Scheduler::refreshVenueDailyStatsRecent(40);
+        if (!empty($venueRefresh['skipped'])) {
+            echo "  Skipped: {$venueRefresh['reason']}.\n";
+        } else {
+            echo "  Refreshed {$venueRefresh['days']} day-rows from {$venueRefresh['from']}"
+                . (!empty($venueRefresh['clamped'])
+                    ? " (gap clamped at " . Scheduler::VENUE_DAILY_CATCHUP_MAX_DAYS . " days —"
+                        . " bump VENUE_DAILY_BACKFILL_VERSION to rebuild the rest)"
+                    : '') . ".\n";
+        }
+    } catch (Exception $e) {
+        echo "  WARNING: Venue daily rollup refresh failed: " . $e->getMessage() . "\n";
+    }
+
+    // One-time MSSQL historical backfills (guest ledger, per-game play history,
+    // venue-wide daily). Each is flag-guarded and retried until it succeeds;
+    // the same call backs run_backfills.php / update.sh.
+    Scheduler::runPendingBackfills(function ($m) { echo "[" . date('c') . "] " . $m . "\n"; });
+}
+
+// Acquire the global scheduler lock (non-blocking — skip the PLAN if another
+// instance is running). Uses the shared re-entrant helper so nested Scheduler
+// calls (e.g. replanToday) don't deadlock against our own lock.
+//
+// A contended lock must NOT end the run. The per-minute watchdog takes this
+// same lock, so the nightly firing can land on top of it — and this used to
+// `exit(0)` immediately, skipping the reporting refresh and the one-time
+// backfills at the bottom, neither of which needs the lock at all. One unlucky
+// second cost a whole day of venue_daily_stats with no retry until the next
+// night, and those misses accumulate invisibly. So: skip the plan, keep the
+// reporting.
 if (!Scheduler::acquireLock(0)) {
-    echo "[" . date('c') . "] Another instance is already running. Exiting.\n";
+    echo "[" . date('c') . "] Another instance holds the scheduler lock — skipping the daily plan.\n";
+    cronRefreshReporting();
     exit(0);
 }
 
 try {
-    // Load timezone
-    $tz = DB::getConfig('timezone') ?? DEFAULT_TIMEZONE;
-    date_default_timezone_set($tz);
-    $today = date('Y-m-d');
-
     echo "[" . date('c') . "] === Daily Plan for $today (TZ: $tz) ===\n";
 
     // Step 1: Sync game states from CenterEdge
@@ -118,27 +171,6 @@ try {
         echo "  WARNING: Card activity ledger refresh failed: " . $e->getMessage() . "\n";
     }
 
-    // Step 5c: Refresh the trailing window of the venue-wide daily rollup
-    // (venue_daily_stats) from the POS ledger — the deep-history source for the
-    // Analytics overview. MSSQL-only (self-skips if not configured); one bounded
-    // query, so it's cheap. The one-time DEEP backfill runs later via
-    // runPendingBackfills; this keeps recent complete days accurate.
-    echo "Refreshing venue daily rollup...\n";
-    try {
-        $venueRefresh = Scheduler::refreshVenueDailyStatsRecent(40);
-        if (!empty($venueRefresh['skipped'])) {
-            echo "  Skipped: {$venueRefresh['reason']}.\n";
-        } else {
-            echo "  Refreshed {$venueRefresh['days']} day-rows from {$venueRefresh['from']}"
-                . (!empty($venueRefresh['clamped'])
-                    ? " (gap clamped at " . Scheduler::VENUE_DAILY_CATCHUP_MAX_DAYS . " days —"
-                        . " bump VENUE_DAILY_BACKFILL_VERSION to rebuild the rest)"
-                    : '') . ".\n";
-        }
-    } catch (Exception $e) {
-        echo "  WARNING: Venue daily rollup refresh failed: " . $e->getMessage() . "\n";
-    }
-
     // Step 6: Purge old data to prevent unbounded growth. Skip purging the raw
     // play feed if the rollup failed — purging would delete raw rows that never
     // made it into the permanent summary, silently losing reporting history.
@@ -202,16 +234,18 @@ try {
         echo "Failed to log error: " . $logE->getMessage() . "\n";
     }
 
-    exit(1);
+    // A failed plan is reported at the end, not by exiting here: the reporting
+    // work below takes no lock, depends on none of the above, and is the thing
+    // an operator notices when it stops. Losing a day of it because the game
+    // sync threw is how the rollup silently falls behind.
+    $planFailed = true;
 } finally {
     Scheduler::releaseLock();
 }
 
-// One-time MSSQL historical backfills (guest ledger + per-game play history).
-// Runs AFTER the scheduler lock is released — they only widen analytics tables
-// and race nothing — and only on a night the main plan above succeeded (so the
-// game cache is fresh and the rollup cutoff reflects the feed's coverage; the
-// catch exits first on failure). Each is flag-guarded and retried until it
-// succeeds; the same call backs run_backfills.php / update.sh for an on-demand
-// run right after a deploy.
-Scheduler::runPendingBackfills(function ($m) { echo "[" . date('c') . "] " . $m . "\n"; });
+cronRefreshReporting();
+
+if ($planFailed) {
+    echo "[" . date('c') . "] Daily plan FAILED (reporting refresh above still ran).\n\n";
+    exit(1);
+}
