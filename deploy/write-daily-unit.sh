@@ -53,6 +53,17 @@
 #     up to yesterday. A missed night now self-heals within hours instead of
 #     waiting for the next one.
 #
+#  3. BOTH SERVICES RUN PHP WITH A BATCH-SIZED MEMORY LIMIT. PHP's built-in
+#     default is 128M, which is a WEB-tier figure — and these are batch jobs
+#     that aggregate the whole raw play feed. At this venue's volume that read
+#     is ~300k rows, and the nightly job spent a week dying on
+#     "Allowed memory size of 134217728 bytes exhausted" before any of its
+#     later steps ran. The reads themselves are streamed now (DB::each, see
+#     lib/scheduler.php) — that is the actual fix, and this does not replace
+#     it — but a nightly job has no reason to sit one busy season away from the
+#     same fatal, so it gets real headroom. The FPM tier keeps the stock limit
+#     deliberately: there, a runaway read is a bug to catch, not to feed.
+#
 #  USAGE:
 #    write-daily-unit.sh <env_file> <install_dir> <data_dir> <runtime_image> [load_tar]
 #
@@ -141,7 +152,7 @@ ExecStart=/usr/bin/podman run --rm \\
     -w ${INSTALL_DIR} \\
     -u 33:33 \\
     ${RUNTIME_IMAGE} \\
-    php cron.php
+    php -d memory_limit=512M cron.php
 StandardOutput=append:${DATA_DIR}/cron.log
 StandardError=append:${DATA_DIR}/cron.log
 UNIT
@@ -193,7 +204,7 @@ ExecStart=/usr/bin/podman run --rm \\
     -w ${INSTALL_DIR} \\
     -u 33:33 \\
     ${RUNTIME_IMAGE} \\
-    php run_backfills.php
+    php -d memory_limit=512M run_backfills.php
 StandardOutput=append:${DATA_DIR}/cron.log
 StandardError=append:${DATA_DIR}/cron.log
 UNIT

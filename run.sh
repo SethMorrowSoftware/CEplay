@@ -78,7 +78,7 @@ else
     warn "No env file at ${ENV_FILE}; the encryption key may be missing."
 fi
 
-[[ -n "${PG_QUIET:-}" ]] || echo -e "${DIM}→ ${IMAGE} php ${SCRIPT} $*${NC}" >&2
+[[ -n "${PG_QUIET:-}" ]] || echo -e "${DIM}→ ${IMAGE} php -d memory_limit=512M ${SCRIPT} $*${NC}" >&2
 exec podman run --rm \
     --network host \
     "${ENV_ARGS[@]}" \
@@ -86,4 +86,4 @@ exec podman run --rm \
     -w "$INSTALL_DIR" \
     -u 33:33 \
     "$IMAGE" \
-    php "$SCRIPT" "$@"
+    php -d memory_limit=512M "$SCRIPT" "$@"
