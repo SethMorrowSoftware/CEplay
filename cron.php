@@ -33,6 +33,28 @@ $today = date('Y-m-d');
 $planFailed = false;
 
 /**
+ * Record a step that threw, so an INTERMITTENT nightly failure is diagnosable
+ * after the fact instead of only while someone is tailing cron.log.
+ *
+ * The outer catch already writes one of these; the per-step catches below need
+ * it too, because "the daily job failed" is useless without "which step, and on
+ * which nights". Failing to log must never itself abort the run.
+ */
+function cronStepFailed(string $step, Exception $e): void {
+    echo "  ERROR: {$step} failed: " . $e->getMessage() . "\n";
+    try {
+        DB::execute(
+            'INSERT INTO action_log (source, action, success, error_message, details)
+             VALUES (:p0, :p1, :p2, :p3, :p4)',
+            ['cron', 'plan_day', 0, $step . ': ' . $e->getMessage(),
+             json_encode(['step' => $step, 'trace' => $e->getTraceAsString()])]
+        );
+    } catch (Exception $logE) {
+        echo "  (could not record that failure: " . $logE->getMessage() . ")\n";
+    }
+}
+
+/**
  * The reporting half of the nightly job: LOCK-FREE, and it must run on EVERY
  * firing — including one that skips the plan entirely.
  *
@@ -114,22 +136,56 @@ try {
         echo "  Note: kiosk sync skipped — " . $e->getMessage() . "\n";
     }
 
+    // Steps 2-4 were the ONLY ones in this file without their own catch, so a
+    // throw in any of them — executeMissedActions talks to the CenterEdge API,
+    // so a slow or unreachable card system is enough — aborted the entire
+    // nightly job: no backup, no rollup, no purge, and (before cronRefreshReporting
+    // was hoisted out) no reporting refresh either. The unit then sat in
+    // `failed` and the next attempt was 24 hours away. MEASURED at the venue
+    // Sep 2026: `systemctl` reported pause-groups-daily.service failed, and the
+    // venue rollup had advanced on exactly the nights it hadn't.
+    //
+    // Each step now fails on its own. They stay INDEPENDENT of each other on
+    // purpose — planning must still happen when replaying missed actions
+    // throws, since it is the newer information. The run is still reported as
+    // failed at the end, so nothing becomes silently fine; it just no longer
+    // takes the other seven steps down with it. This is safe on this install
+    // because transitions come from the per-minute watchdog, which recomputes
+    // desired state live and never depends on planDay's output (see
+    // **Scheduling Engine** in CLAUDE.md).
+
     // Step 2: Execute any missed actions from earlier
     echo "Checking for missed actions...\n";
-    Scheduler::executeMissedActions($today);
+    try {
+        Scheduler::executeMissedActions($today);
+    } catch (Exception $e) {
+        $planFailed = true;
+        cronStepFailed('Replaying missed actions', $e);
+        echo "  Continuing — the watchdog enforces current state every minute regardless.\n";
+    }
 
     // Step 3: Plan today's actions
     echo "Planning actions for $today...\n";
-    $actions = Scheduler::planDay($today);
-    echo "  Planned " . count($actions) . " actions:\n";
-    foreach ($actions as $a) {
-        echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
+    try {
+        $actions = Scheduler::planDay($today);
+        echo "  Planned " . count($actions) . " actions:\n";
+        foreach ($actions as $a) {
+            echo "    {$a['time']} - {$a['action']} - {$a['group_name']} ({$a['source']})\n";
+        }
+    } catch (Exception $e) {
+        $planFailed = true;
+        cronStepFailed('Planning the day', $e);
     }
 
     // Step 4: Queue at jobs (if available on this host)
     echo "Queuing at jobs (or fallback mode if at/atrm unavailable)...\n";
-    Scheduler::queueAtJobs($today);
-    echo "  Done.\n";
+    try {
+        Scheduler::queueAtJobs($today);
+        echo "  Done.\n";
+    } catch (Exception $e) {
+        $planFailed = true;
+        cronStepFailed('Queuing at jobs', $e);
+    }
 
     // Step 5a: Snapshot the database BEFORE tonight's rollup + purge mutate
     // it. game_daily_stats is irreplaceable reporting history, and update.sh
